@@ -1,0 +1,15 @@
+# 原始资料（代码库、原始文档等），仅本地留存，不入库
+planning/01-raw/
+
+# 常见临时/环境文件
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+dist/
+build/
