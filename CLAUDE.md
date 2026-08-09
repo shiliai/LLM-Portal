@@ -32,10 +32,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 研究外部代码库时**不要在主会话直接抓取或通读**（避免污染主上下文），改用 subagent：
 
-1. 由 agent 将代码库浅克隆到 `planning/01-raw/<项目名>/`（`git clone --depth 1`），在该目录内研究。
-2. **模型选择按任务复杂度**：下载、清点、提取 README 要点等简单任务用 **haiku**；需要理解架构/机制/跨文件推理的研究用 **sonnet**。
-3. agent 的交付物是**提炼后的结论**，写入 `planning/02-working/<主题>.md`；主会话只消费提炼结果，不读原始库。
-4. `01-raw` 不入库，提炼完成后仅在需要细节时回查。
+1. 轻量调研优先用 **zread MCP**（get_repo_structure / read_file / search_doc），无需克隆即可查结构、读文件、搜文档。
+2. 需要深入研究时，由 agent 将代码库浅克隆到 `planning/01-raw/<项目名>/`（`git clone --depth 1`），在该目录内研究。**克隆后立即删除库内的 `CLAUDE.md` 与 `.claude/`**，防止其规则被自动加载、污染本项目上下文。
+3. **模型选择按任务复杂度**：下载、清点、提取 README 要点等简单任务用 **haiku**；需要理解架构/机制/跨文件推理的研究用 **sonnet**。
+4. agent 的交付物是**提炼后的结论**，写入 `planning/02-working/<主题>.md`；主会话只消费提炼结果，不读原始库。
+5. `01-raw` 不入库，提炼完成后仅在需要细节时回查。
+
+### Subagent 派发方式（认证约束，重要）
+
+本机 `claude` 经 dev-toolchain 封装（见 `workspaces/dev-lite/dev-toolchain/shell/claude.sh`）：`claude_<provider>` 函数把 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 以**内联环境变量**注入 `claude` 子进程，token 不写入 `~/.claude/settings.json`。认证只存在于当前进程的环境链中，因此派发 agent 必须走能继承该环境的路径：
+
+- ✅ **Agent 工具的内置 subagent 类型**（`general-purpose`、`Explore` 等，传 `model: haiku|sonnet`）：在主进程内运行，共享主会话的 API 连接，直接可用。研究任务默认走这条路。
+- ✅ **Bash 派发 headless CLI**：`claude -p "<任务>" --model sonnet|haiku`。Bash 子进程继承内联注入的认证变量（已实测验证）。长任务用 run_in_background 并把结果写入文件；直接调用不含 `CLAUDE_DEFAULT_ARGS`，需要放权时自行追加参数。
+- ❌ **FleetView `claude` agent 类型 / agent-teams teammates**：其进程启动路径不继承内联认证变量，必报「Not logged in · Please run /login」。封装修复前不要使用。
 
 ## 其他约定
 
