@@ -42,9 +42,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 本机 `claude` 经 dev-toolchain 封装（见 `workspaces/dev-lite/dev-toolchain/shell/claude.sh`）：`claude_<provider>` 函数把 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 以**内联环境变量**注入 `claude` 子进程，token 不写入 `~/.claude/settings.json`。认证只存在于当前进程的环境链中，因此派发 agent 必须走能继承该环境的路径：
 
-- ✅ **Agent 工具的内置 subagent 类型**（`general-purpose`、`Explore` 等，传 `model: haiku|sonnet`）：在主进程内运行，共享主会话的 API 连接，直接可用。研究任务默认走这条路。
-- ✅ **Bash 派发 headless CLI**：`claude -p "<任务>" --model sonnet|haiku`。Bash 子进程继承内联注入的认证变量（已实测验证）。长任务用 run_in_background 并把结果写入文件；直接调用不含 `CLAUDE_DEFAULT_ARGS`，需要放权时自行追加参数。
-- ❌ **FleetView `claude` agent 类型 / agent-teams teammates**：其进程启动路径不继承内联认证变量，必报「Not logged in · Please run /login」。封装修复前不要使用。
+- ✅ **Agent 工具内置 subagent + 同步模式**（`general-purpose`、`Explore` 等，传 `model: haiku|sonnet`，**必须 `run_in_background: false`**）：同步派发在主进程内运行、共享主会话 API 连接（已实测验证）。注意：**后台模式（默认）会另起独立 claude 进程，认证丢失，必报 Not logged in**——后台派发已实测失败，不要用。
+- ✅ **Bash 派发 headless CLI**：`claude -p "<任务>" --model sonnet|haiku`。Bash 子进程继承内联注入的认证变量（已实测验证）。**需要后台/并行的长任务走这条路**（Bash 工具的 run_in_background 安全，环境仍被继承），结果写入文件供主会话消费；直接调用不含 `CLAUDE_DEFAULT_ARGS`，需要放权时自行追加参数。
+- ❌ **Agent 工具后台模式（默认）、FleetView `claude` agent 类型、agent-teams teammates**：这些路径起独立进程且不继承内联认证变量，必报「Not logged in · Please run /login」。封装修复前不要使用。
 
 ## 其他约定
 
