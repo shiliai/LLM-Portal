@@ -32,9 +32,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 研究外部代码库时**不要在主会话直接抓取或通读**（避免污染主上下文），改用 subagent：
 
-1. 由 subagent 将代码库浅克隆到 `planning/01-raw/<项目名>/`（`git clone --depth 1`），在该目录内研究。
+1. 由 agent 将代码库浅克隆到 `planning/01-raw/<项目名>/`（`git clone --depth 1`），在该目录内研究。
 2. **模型选择按任务复杂度**：下载、清点、提取 README 要点等简单任务用 **haiku**；需要理解架构/机制/跨文件推理的研究用 **sonnet**。
-3. subagent 的交付物是**提炼后的结论**，写入 `planning/02-working/<主题>.md`；主会话只消费提炼结果，不读原始库。
+3. agent 的交付物是**提炼后的结论**，写入 `planning/02-working/<主题>.md`；主会话只消费提炼结果，不读原始库。
 4. `01-raw` 不入库，提炼完成后仅在需要细节时回查。
 
 ## 其他约定
