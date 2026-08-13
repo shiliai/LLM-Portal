@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>设置 · LLM-portal</title>
+<link rel="stylesheet" href="assets/portal.css">
+</head>
+<body data-page="settings">
+<template id="page">
+<div style="max-width:760px">
+
+  <!-- ① 数据保留 -->
+  <div class="pf-card">
+    <div class="pf-card-head">
+      <div class="pf-card-title">数据保留</div>
+      <button class="pf-btn sm primary" data-toast="已保存，热生效">保存</button>
+    </div>
+    <div class="pf-form-row">
+      <label>调用日志保留</label>
+      <div>
+        <input class="pf-input" value="90" style="width:110px;vertical-align:middle"> 天
+        <div class="pf-desc">到期由清理任务删除，rollup 汇总长期保留。</div>
+      </div>
+    </div>
+    <div class="pf-form-row" style="margin-bottom:0">
+      <label>对话正文保留</label>
+      <div>
+        <input class="pf-input" value="7" style="width:110px;vertical-align:middle"> 天
+        <div class="pf-desc">C7：正文独立保留期，同时是 SSE 断线回放窗口。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ② 超时 -->
+  <div class="pf-card">
+    <div class="pf-card-head">
+      <div class="pf-card-title">超时</div>
+      <button class="pf-btn sm primary" data-toast="已保存，热生效">保存</button>
+    </div>
+    <div class="pf-banner">示意默认值，实现阶段定稿；超时归为可重试类参与 fallback（US-09 截断阈值同此约定）。</div>
+    <div class="pf-form-row">
+      <label>上游连接超时</label>
+      <div><input class="pf-input" value="10" style="width:110px;vertical-align:middle"> s</div>
+    </div>
+    <div class="pf-form-row">
+      <label>首字节超时</label>
+      <div><input class="pf-input" value="60" style="width:110px;vertical-align:middle"> s</div>
+    </div>
+    <div class="pf-form-row" style="margin-bottom:0">
+      <label>流空闲超时</label>
+      <div><input class="pf-input" value="120" style="width:110px;vertical-align:middle"> s</div>
+    </div>
+  </div>
+
+  <!-- ③ 入口规范化（US-13） -->
+  <div class="pf-card">
+    <div class="pf-card-head">
+      <div class="pf-card-title">入口规范化（US-13）</div>
+      <button class="pf-btn sm primary" data-toast="已保存，热生效">保存</button>
+    </div>
+    <div class="pf-form-row" style="margin-bottom:0">
+      <label>全局默认</label>
+      <div>
+        <label class="pf-radio"><input type="radio" name="us13" checked>兼容模式</label>
+        <label class="pf-radio"><input type="radio" name="us13">严格模式</label>
+        <div class="pf-desc">可被密钥级设置覆盖。兼容模式自动规范化并计入事件计数；严格模式直接以 400 invalid_request 拒绝。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ④ 管理员安全 -->
+  <div class="pf-card">
+    <div class="pf-card-head">
+      <div class="pf-card-title">管理员安全</div>
+    </div>
+    <div class="pf-form-row">
+      <label class="req">当前密码</label>
+      <div><input class="pf-input" type="password" placeholder="请输入当前密码" style="width:280px"></div>
+    </div>
+    <div class="pf-form-row">
+      <label class="req">新密码</label>
+      <div><input class="pf-input" type="password" placeholder="至少 12 位，含大小写与数字" style="width:280px"></div>
+    </div>
+    <div class="pf-form-row">
+      <label class="req">确认新密码</label>
+      <div>
+        <input class="pf-input" type="password" placeholder="再次输入新密码" style="width:280px">
+        <div class="pf-desc">会话 24 小时无操作过期（Argon2id 存储）。</div>
+      </div>
+    </div>
+    <div class="pf-form-row" style="margin-bottom:0">
+      <label></label>
+      <div><button class="pf-btn primary" data-toast="密码已修改，下次登录生效">修改密码</button></div>
+    </div>
+  </div>
+
+  <!-- ⑤ 备份 -->
+  <div class="pf-card">
+    <div class="pf-card-head">
+      <div class="pf-card-title">备份</div>
+    </div>
+    <div style="font-size:12.5px;font-weight:500;margin-bottom:2px">冷备</div>
+    <div class="pf-desc">WAL checkpoint 后复制 /data 卷（含主密钥文件）。</div>
+    <div style="font-size:12.5px;font-weight:500;margin:14px 0 2px">热备</div>
+    <div class="pf-desc">在线执行 SQLite 备份命令，不中断服务：</div>
+    <div class="pf-code"><pre>sqlite3 /data/portal.db <span class="s">".backup /backup/portal-$(date +%F).db"</span></pre></div>
+    <div class="pf-banner" style="margin-bottom:0">主密钥文件丢失将无法解密上游凭据，请与数据库一并备份。</div>
+  </div>
+
+</div>
+</template>
+<script src="assets/portal.js"></script>
+</body>
+</html>
