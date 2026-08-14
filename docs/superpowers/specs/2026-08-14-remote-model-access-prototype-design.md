@@ -2,14 +2,14 @@
 
 > 日期：2026-08-14
 > 状态：待用户评审
-> 用户故事基线：`proto-r5`（BASELINE_APPROVED，已冻结）
-> 基线文件：`planning/03-core/prototype_remote_model_access_baseline_proto-r5.md`
-> 基线 SHA-256：`05857180a4147a93b62533f0c1a80b830299234b186fa03fa991ff1bb0a0bb40`
+> 用户故事基线：`proto-r6`（BASELINE_APPROVED，已冻结；r1~r5 修订链见对应文件）
+> 基线文件：`planning/03-core/prototype_remote_model_access_baseline_proto-r6.md`
+> 基线 SHA-256：`71748cdbed568ffcf65918d85cd2233da3594ea2ef345311ec5e247a6c1d15ab`
 > 范围声明：独立于 LLM-portal 旧 PRD 基线（r2~r4），互不引用、互不约束。
 
 ## 0. 一句话方案
 
-**VPS 上跑 LiteLLM Proxy（统一 API 网关 + 虚拟 Key + Admin UI）+ 自写 mcp-hub（网关托管视觉 MCP 与外部 MCP 代理）+ WireGuard（多站点公钥身份隧道）+ 自写 onboardd/site-add（一键站点接入与吊销）+ 自写 ~30 行分组路由钩子（Key 绑定 provider 分组，US-P13），Caddy 443 单入口自动 HTTPS。自写代码合计约 730 行，其余全部复用成熟开源组件。**
+**VPS 上跑 LiteLLM Proxy（统一 API 网关 + 虚拟 Key，纯底层执行与记账引擎，管理面不对公网暴露）+ 自写 mcp-hub（网关托管视觉 MCP 与外部 MCP 代理）+ WireGuard（多站点公钥身份隧道）+ 自写 onboardd/site-add（一键站点接入与吊销）+ 自写 ~30 行分组路由钩子（Key 绑定 provider 分组，US-P13）+ 自写 consoled 与 9 页控制台（唯一管理入口，US-P14），443 单入口自动 HTTPS。自写代码合计约 1850 行，其余全部复用成熟开源组件。**（r5 口径 ~730 行 + r6 新增 consoled ~700 行、onboardd 分组同步 ~25 行、控制台页面接线与部署脚本 ~400 行）
 
 ## 1. 技术选型与被否方案
 
@@ -19,6 +19,7 @@
 | 内网穿透 | **WireGuard**：每站点密钥对即站点身份，公钥可列出/吊销（US-P7/P8 的「公钥管理」只有 WG 天然支持）；内核态、断线自愈（US-P5）；未注册公钥的 UDP 探测被静默丢弃（C2） | **frp**：共享 token 鉴权，无逐站点公钥身份，无法满足 US-P8 吊销语义 |
 | 视觉 MCP | **自写 mcp-hub**（Python + fastmcp，约 300 行）：Streamable HTTP 挂 `/mcp`，形态同智谱 vision-mcp-server（US-P4 逐字要求）；同时承担外部 MCP 代理（US-P12）；对外契约锁定「Streamable HTTP + 标准 Bearer + `[a-z0-9_]` 工具名」最小可移植集，覆盖 Claude Code / Hermes / DeepSeek Harness / Pi 四类客户端（US-P4，依据见 §3.3） | 现成 MCP 网关（如 mcp-proxy 类项目）：无「内建视觉工具 + 上传换临时 URL + 按调用者 Key 记账」的组合能力，改造成本高于自写 |
 | 反代/TLS | **Caddy**：自动证书（C1），`flush_interval -1` 放行 SSE 流式 | Nginx + certbot：可用但配置量更大，原型期不选 |
+| 管理控制台（r6） | **自写 consoled + 9 页静态控制台**（`/console/`，企业蓝视觉沿用高保真原型 `remote-access-console`）：站点/分组/模型别名/Key/用量/MCP 全部管理动作经它完成，LiteLLM 退居底层引擎（US-P9 修订、US-P14）；数据面复用已验证端点（LiteLLM 管理 API 回环 + onboardd admin + wg show + mcp-hub 状态文件），不引入新存储 | **沿用 LiteLLM Admin UI**（r5 方案）：四块缺口实测不可覆盖——站点/WG 隧道生命周期（无概念）、分组一等对象化（只剩 tags 裸操作）、用户自查页（虚拟 Key 登不进 `/ui`，实测 401）、网关托管 MCP 管理面（管的是它自己的 connector）；且「LiteLLM 对外不暴露」评审意见下管理面必须换掉 |
 
 ## 2. 架构总览
 
@@ -27,21 +28,23 @@
 ┌─ 任意地点客户端 ────────────────────────────────────────────────┐
 │ OpenAI SDK / Claude Code / 任意 MCP 客户端                        │
 │  base_url = https://<你的域名>   key = sk-<用户虚拟Key>            │
+│ 管理员/用户浏览器：https://<你的域名>/console/（r6）                │
 └───────────────┬─────────────────────────────────────────────────┘
                 │ HTTPS :443
 ┌─ VPS ─────────▼─────────────────────────────────────────────────┐
-│ Caddy（自动 HTTPS，按路径分发）                                    │
-│   /v1/*、/ui*  → 127.0.0.1:4000  LiteLLM Proxy ──┐               │
-│   /mcp*        → 127.0.0.1:8200  mcp-hub ────────┤ 回环互访       │
-│   /onboard/*   → 127.0.0.1:8100  onboardd ───────┘               │
+│ 入口反代（自动 HTTPS，allowlist 路径分发，SSE 放行；r6 收敛见 §6）    │
+│   /v1/*        → 127.0.0.1:4000  LiteLLM Proxy ──┐               │
+│   /console/*   → :8300  consoled（r6，自写管理台）┤ 回环互访       │
+│   /mcp*        → 127.0.0.1:8200  mcp-hub ────────┤               │
+│   /onboard/安装三端点 → 127.0.0.1:8100 onboardd ──┘               │
 │ Postgres（LiteLLM 虚拟 Key/用量）   SQLite（mcp-hub 调用计数）      │
 │ wg0 = 10.77.0.1/24  监听 :51820/udp（wg-quick@wg0）               │
-└───────┬──────────────────────────────┬──────────────────────────┘
+└───────┬──────────────────────────────────────┬──────────────────┘
         │ WireGuard 加密隧道             │
 ┌─ 站点A（10.77.0.11）────────┐  ┌─ 站点B（10.77.0.12）… ─────────┐
 │ 常开机器 192.0.2.10      │  │ 各站点 LAN 网段允许重叠          │
 │  deepseek :8890  qwen :8004 │  │ （只寻址 WG 虚拟 IP，不路由 LAN）│
-└─────────────────────────────┘  └────────────────────────────────┘
+└─────────────────────────────┘  └─────────────────────────────────┘
 ```
 
 **组件与职责（每个单元一句话即可说清）：**
@@ -49,7 +52,8 @@
 | 组件 | 职责 | 端口 | 来源 |
 |---|---|---|---|
 | Caddy | 唯一公网 HTTP 入口，自动 HTTPS，路径分发，SSE 放行 | 443（公网） | 开源 |
-| LiteLLM Proxy | 双协议 API、模型别名、多站点路由、虚拟 Key、Admin UI、用量 | 4000（回环） | 开源 |
+| LiteLLM Proxy | 双协议 API、模型别名、多站点路由、虚拟 Key、用量记账 | 4000（回环） | 开源 |
+| consoled（自写 ~700 行，r6） | `/console/`：9 页管理控制台后端——会话/角色、聚合 LiteLLM 管理 API + onboardd + wg 状态 + mcp-hub 状态（US-P9 修订/US-P14） | 8300（仅 docker 网段/本机） | 自写 |
 | group-routing 钩子（自写 ~30 行） | LiteLLM 自定义 logger：鉴权后把 Key 的 `metadata.group` 注入为请求路由 tag，使分组授权服务端化、客户端不可旁路 | （随 LiteLLM 进程） | 自写 |
 | Postgres | LiteLLM 的 Key 与用量存储 | 5432（回环） | 开源 |
 | WireGuard | 站点隧道，公钥即站点身份 | 51820/udp（公网） | 内核 |
@@ -111,6 +115,7 @@ litellm_settings:
 - **US-P6 的实现即配置**：同 `model_name` 多条 deployment + `least-busy` + `cooldown`，无需自写调度代码。
 - **每站点限额**（US-P6「可为每站点设并发/速率上限」）：deployment 级 `rpm`/`tpm` 字段，由 onboardd 注册时可选传入。
 - **别名的多站点分流**：`site-add --model` 传什么对外名就注册什么 deployment；若希望别名（如 `claude-opus-5`）也跨站点分流，需在各站点显式以该别名注册（同一端口可注册多个对外名）。T6 演练前按此配置。
+- **（r6）静态别名一次性迁移**：`model_list` 中的静态别名条目（`claude-opus-5`、`qwen3.6-35b-a3`）迁为经 `/model/new` 注册的 DB 条目（参数不变），`config.yaml` 只保留 router/general/litellm 设置骨架——模型与别名的唯一事实来源收敛到控制台（US-P14 静态别名迁移条款）。
 - **分组即 tag（US-P13 的实现）**：分组不引入新存储——deployment 的 `litellm_params.tags` 列出其所属分组名（多对多），Key 建号时把分组名写入 Key `metadata.group`（一把 Key 一个组）；`enable_tag_filtering: true` 后，路由器按本请求的路由 tag 只在同 tag 的 deployment 中做 least-busy 分流与熔断，组内无该模型部署即返回可判读错误。未绑组 Key 走 `default` 组（全部 provider 的 deployment 都带 `default` tag）。
   - **为什么需要一个 ~30 行的自写 pre-call 钩子**：免费版 `enable_tag_filtering` 按**请求自带的 tag** 过滤（客户端用 `x-litellm-tags` 头携带）；而「Key 自带的组自动作用于路由」属于 LiteLLM **Enterprise** 的 team-based tag routing，且 key 级 `allowed_tags` 尚在提案阶段未实现（[litellm#22966](https://github.com/BerriAI/litellm/issues/22966)）。为避免客户端自行伪造 tag 绕过分组授权，组标签必须在**网关侧、鉴权之后**注入——故加一个免费版自定义 logger（`async_pre_call_hook`）读取已鉴权 Key 的 `metadata.group`、写入本请求的路由 tag，使分组授权不可被客户端旁路；钩子读不到组时回落 `default`。此钩子是本期唯一为 US-P13 新增的自写代码（计入 §10 自写合计 ~700→~730）。双保险：`general_settings.reject_clientside_metadata_tags: true` 在 HTTP 边界直接拒绝客户端携带的 metadata tags，钩子侧再**无条件覆写**本请求路由 tag——伪造的 `x-litellm-tags` 既进不来、也盖不掉网关注入的组 tag。
 
@@ -204,10 +209,34 @@ site-revoke beijing
 
 - **本期无独立「账号」实体，Key 即身份**：这是基线冻结口径决定的——C3 为「管理员创建/分发/禁用 Key」，US-P10 为「凭自己这把 Key 查自己的用量」，均以 Key 为粒度。一人多设备发多把 Key（别名区分），用量各记各的。
 - **Key ↔ provider 分组（US-P13，sub2api group 分层）**：管理员把 provider（本期即站点，未来含外部云上游）归入命名分组（多对多），每把 Key 绑一个分组，请求只在组内 provider 的 deployment 上做 least-busy 分流与故障转移；组内无该模型部署 → 可判读错误，不误路由到组外；未绑组走 `default` 组（全部 provider）。调整分组成员即对组内全部 Key 批量生效。实现为 LiteLLM tag 过滤 + 一个 ~30 行自写 pre-call 钩子（见 §3.1「分组即 tag」要点：免费版只按请求 tag 过滤，组标签须网关侧注入以防旁路）。
-- **分组的管理面（US-P13，参照 sub2api 双向编辑）**：分组作为一等对象有两个等价管理入口——①「分组」页：列出全部分组（成员站点 chip、绑定 Key 数）、新建/改名/删除分组、勾选成员站点；②「站点与公钥」页：每个 provider 可勾选 0 个或多个所属分组（多对多，与①等价、双向同步）。`default` 为系统组（= 全部在线 provider，新接入站点自动并入，不可删除/改名）。落到 LiteLLM 侧即改 deployment 的 `tags` 与 Key 的 `metadata.group`，**无新增自写组件**（计入既有 ~730 行预算）。
+- **分组的管理面（US-P13，参照 sub2api 双向编辑；r6 落地为自写控制台页面）**：分组作为一等对象有两个等价管理入口——①「分组」页：列出全部分组（成员站点 chip、绑定 Key 数）、新建/改名/删除分组、勾选成员站点；②「站点与公钥」页：每个 provider 可勾选 0 个或多个所属分组（多对多，与①等价、双向同步）。`default` 为系统组（= 全部在线 provider，新接入站点自动并入，不可删除/改名）。落到 LiteLLM 侧即改 deployment 的 `litellm_params.tags` 与 Key 的 `metadata.group`，由 consoled 承载（§3.6，r6 起「无新增自写组件」修订为「新增 consoled 承载，计入 §10 自写合计」）；改组写路径 = 对站点全部 deployment 先 `/model/new`（带新 tags）再 `/model/delete`（旧条目）——只用 onboardd 注册/吊销已验证的同款端点，不依赖 `/model/update` 对 tags 的透传。
 - **Key ↔ 模型授权（与分组正交）**：默认新 Key 可调用全部对外模型名（含别名与 MCP 工具）。如管理员需限制某把 Key，创建时填 LiteLLM 原生 `models` 白名单（零自写代码），越权调用返回明确的拒绝错误；白名单裁剪的是「模型名」维度，分组裁剪的是「provider」维度，两者独立设定、交集生效。「用户申请模型开通」的审批流是基线 non-goal，留下一阶段。
 - **API 与 MCP 同权、同分组、同白名单**：同一把 Key 通吃 `/v1/*` 与 `/mcp`（US-P4 条款）；`analyze_image` 以调用者的 Key 回调 LiteLLM，因此分组与模型白名单对视觉工具天然同样生效；禁用 Key 对 API 与 MCP 同时即时生效（mcp-hub 每次经 `/key/info` 校验）。
 - **生命周期**：创建（别名 + 分组 + 可选模型白名单 + 可选 rpm/tpm）→ 分发 → 禁用/启用 → 删除，全程管理页操作（US-P9）；日志与用量只记尾 4 位。
+
+### 3.6 consoled + 9 页控制台（自写，r6，US-P9 修订/US-P14）
+
+**形态**：host systemd 服务 `consoled`（Starlette + uvicorn，`:8300`，root——需 `wg show`、读 mcp-hub 的 `usage.db` 与 `/etc/private-llm/external-mcp.json`、`systemctl restart mcp-hub`），对外经入口反代挂 `/console/`；页面为纯静态 HTML/CSS/原生 JS（高保真原型 `docs/superpowers/prototypes/remote-access-console/` 接真数据落地，视觉与信息架构不变），零构建零外部依赖。
+
+**会话与角色（C3 口径）**：
+
+- 登录双角色：**master key → 管理员**（8 个管理页）；**用户虚拟 Key → 普通用户**（仅「我的用量」页，US-P10 页面形态）。角色探测：`GET /global/spend` 200 即 master（用户 Key 实测 401）；否则 `GET /key/info` 200 即有效虚拟 Key。
+- 会话：服务端内存表 `{sid → role, key}`，cookie 只含随机 sid + HMAC 签名（key 永不进 cookie），TTL 8h，HttpOnly + Secure + SameSite=Lax；登录限速 5 次失败/60s/IP；变更类 API 要求 `X-Requested-With` 头（CSRF）。consoled 重启即全员下线（可接受）。
+
+**数据源与端点（全部复用已验证能力，无新存储）**：
+
+| 控制台 API | 数据源 / 动作 |
+|---|---|
+| `GET /console/api/overview` | `/spend/logs` 今日聚合（请求数/入出 token/近期错误）+ onboardd `admin/list` + `wg show wg0`（握手新近度→在线判定）+ deployment 近期成败（按日志行 `model_id/api_base` 聚合） |
+| `sites`：list / token / revoke / set-groups | onboardd admin API（127.0.0.1:8100，`x-admin-token`）；set-groups 另做 deployment retag（先 `/model/new` 后 `/model/delete`）+ onboardd 分组列同步 |
+| `groups`：list / create / rename / delete | 读 = deployment `litellm_params.tags` ∪ Key `metadata.group` ∪ `default`；写 = retag + 批量 `/key/update` + onboardd 同步；delete 前置校验无 Key 绑定 |
+| `models`：list / alias | `/model/info` + `/v1/models`；新建别名 = 对目标模型每个 deployment 克隆一条同 `api_base`/tags 条目（别名继承全部站点 deployment） |
+| `keys`：list / create / block / unblock / delete | `/key/list?return_full_object=true`（注意 `blocked` 字段，非 `is_disabled`）、`/key/generate`（`metadata.group` + `models` 白名单）、`/key/block`/`/key/unblock`、`/key/delete` |
+| `usage` | `/spend/logs` 全量拉取后 consoled 本地聚合（1.96.2 的 api_key/start_date 过滤参数实测行为不可靠，本地过滤更稳；`status=='failure'` 行即近期错误，鉴权失败不入日志——UI 注明） |
+| `my` | 用户角色：代查 `/key/info` + `/mcp/usage`；mcp 计数对账键 = `sha256(key)[:16]`（LiteLLM key 对象与 usage.db 同源哈希） |
+| `mcp`：list / register / remove / tools / usage | `/etc/private-llm/external-mcp.json` 读写（api_key 回显仅尾 4 位，C5）；注册/移除后 `systemctl restart mcp-hub` 生效（UI 明示会中断进行中工具调用）；`tools` 预览 = fastmcp `Client` 连本机 `/mcp`；usage = 直读 usage.db 聚合 |
+
+**页面清单**（8 导航项 + 登录页，与原型一致）：仪表盘 / 站点与公钥 / 分组 / 模型与别名 / 用户 Key / 用量总览 / 我的用量（用户角色唯一可见页）/ MCP 管理。
 
 ## 4. 数据流（五条主链路）
 
@@ -241,17 +270,26 @@ site-revoke beijing
 | onboard token 复用/过期 | 403，一次性语义 | US-P7 |
 | 上游模型 5xx | 原样透传状态码 + 上游错误摘要 | US-P1 |
 
-## 6. 观测与用量
+## 6. 观测、用量与管理面（r6 重写）
 
-- **API 侧**（US-P9/P10）：LiteLLM 全部请求落 Postgres；Admin UI（`/ui`，master key 登录）管理 Key/渠道/分组（分组 = deployment `tags` 与 Key `metadata.group` 的 CRUD，US-P13，提供「分组」页与「站点」页 provider↔分组 多选两个等价入口）、看用量与错误日志；普通用户凭自己的 Key 调 `/key/info` 只见自身用量（请求数 + token 数，无计费——基线口径）。
+**职责边界（US-P14）——两层：**
+
+| 层 | 内容 | 入口 |
+|---|---|---|
+| 运行时数据面（日常） | 站点接入/吊销、分组与成员、模型别名、用户 Key、用量与错误视图、外部 MCP 注册 | **自写控制台 `/console/`（唯一管理入口）**；LiteLLM 退居执行与记账引擎，日常零接触 |
+| 引擎配置（低频部署期） | LiteLLM `config.yaml`（路由策略/超时/重试/冷却、总开关）、group_routing 钩子、镜像版本升级 | SSH + deploy.sh，runbook 管；应急可 `ssh -L 4000:127.0.0.1:4000` 隧道直查 LiteLLM 本机端点 |
+
+**公网暴露面（r6 allowlist，US-P14 条款）**：`/`（网关主页）、`/v1/*`（双协议 API）、`= /key/info`（用户自查 API）、`= /health/liveliness`（主页状态灯）、`/mcp*`（MCP 端点）、`/onboard/install|register|confirm`（站点接入三端点）、`/console/`（控制台）。**其余一律 404**：LiteLLM `/ui`、`/login`、`/sso`、`/openapi.json`、`/redoc`、全部管理 API（`/key/generate|block|update|delete`、`/model/*`、`/global/*`、`/spend/logs` 等）、onboardd `/onboard/admin/*`（r5 时代曾仅靠 token 保护暴露公网，r6 一并收敛）。
+
+- **API 侧用量（US-P9/P10）**：LiteLLM 全部请求落 Postgres；控制台「用量总览」按 Key/模型/时间筛选（consoled 聚合 `/spend/logs`），「我的用量」= `/key/info` + `/mcp/usage` 页面化；`/key/info` API 并存不变。
 - **MCP 侧**：mcp-hub SQLite 按 Key 计次，`GET /mcp/usage` 自查；`analyze_image` 的 token 消耗因走 LiteLLM 通道自动并入 API 侧账本。
-- 日志中 Key 仅记尾 4 位。
+- 日志中 Key 仅记尾 4 位（控制台展示与 LiteLLM 行为一致：`/key/list` 全对象返回 sha256 哈希，控制台只显示尾 4 位）。
 
 ## 7. 安全基线（C1/C2/C5 落地）
 
 - **公网攻击面仅三处**：443/tcp（Caddy）、51820/udp（WireGuard）、SSH（既有）。LiteLLM、Postgres、mcp-hub、onboardd 全部只绑 127.0.0.1。
 - WG 对未注册公钥的 UDP 包**内核层静默丢弃**——端口扫描不可见；模型端口永不暴露公网（C2）。
-- Key 分层：master key 仅用于 Admin UI / 管理 API / onboardd 注册 deployment；用户虚拟 Key 按人发放、可禁用（C3）；用户 Key 永不出网关（C5，实现口径见 §3.3）。
+- Key 分层：master key 仅用于控制台登录 / 管理 API（回环）/ onboardd 注册 deployment（r6：公网不再有任何接受 master key 的端点）；用户虚拟 Key 按人发放、可禁用（C3）；用户 Key 永不出网关（C5，实现口径见 §3.3）。
 - onboard token 一次性 + 15 分钟 + 高熵；上传文件随机路径 + 30min TTL + 类型/大小白名单。
 - 全部密钥（master key、外部 MCP 凭据、WG 私钥）走 `.env`/配置文件（0600）：模板入库（`.env.example`），实值进 `.gitignore`（配合本机 privacy-filter 提交钩子）。
 - 文档与代码库中域名/密钥一律占位符（`<你的域名>`、`os.environ/*`）。
@@ -273,6 +311,8 @@ site-revoke beijing
 | T11 | US-P11 | Claude Code 用默认名 `claude-opus-5` 直接可用；`/v1/models` 见全部对外名；未知名→400/404 |
 | T12 | US-P12 | 注册外部 vision MCP（如智谱）后 `tools/list` 现前缀工具且调用成功；错凭据→可判读错误；`/mcp/usage` 计数递增 |
 | T13 | US-P13 | 经「分组」页建分组 home（仅 hq-office）并把某 Key 绑 home：请求 qwen 只落 hq-office（lab-2f 挂同名模型也不被选中）；在「站点与公钥」页调整某 provider 所属分组后，组内 Key 路由范围随之变更；请求组内无部署的模型→可判读错误；未绑组 Key 仍走全部 provider |
+| T14 | US-P9/P14 | 控制台：master/用户 Key/错 Key 三态登录（错 Key 连续 5 次限速）；建站 token 下发与复用 403；吊销即摘 deployment；分组 CRUD + Key 绑组后路由矩阵同 T13；Key 建/禁/删即时生效；用量聚合与 `/key/info` 对账；MCP 注册/重载/计数；用户 Key 登录仅见「我的用量」 |
+| T15 | US-P14 | 收敛回归：公网访问 `/ui`、`/login`、`/sso`、`/openapi.json`、`/key/generate`、`/onboard/admin/list` 全 404；`/v1/chat/completions`（SSE）、`/v1/messages`（Claude Code）、`/v1/models`、`/key/info`、`/health/liveliness`、`/mcp`、`/onboard/install` 正常；site-tools CLI 走本机 8100 不受影响 |
 
 ## 9. 部署形态与实施顺序
 
@@ -287,6 +327,7 @@ site-revoke beijing
 | D2 | Claude Code 联调（含 spike 遗留：多轮 tool_result、`</think>` 透传、Responses API 开关行为）+ mcp-hub 内建视觉与上传 + 另一 harness（Hermes / DeepSeek Harness 任一）连 `/mcp` 冒烟 | US-P3/P4 |
 | D3 | onboardd + site-add/site-revoke + 外部 MCP 代理 | US-P7/P8/P12 |
 | D4 | 双站点分流演练 + 分组过滤（US-P13：分组页建组、站点页调成员、Key 绑组、客户端伪造 tag 无法越组）+ 全量验收 T1~T13 + runbook | US-P5/P6/P9/P10/P13 收口 |
+| D5（r6） | consoled + 控制台 9 页接真数据 + 静态别名迁移 + 入口 allowlist 收敛 + 全量验收 T14/T15 + runbook 同步 | US-P9 修订/P10 页面形态/P14 收口 |
 
 **前置核对清单（部署前确认）：**
 
@@ -300,18 +341,22 @@ site-revoke beijing
 ```text
 execution/proto-remote-access/
 ├── vps/
-│   ├── docker-compose.yml          # litellm + postgres + caddy
-│   ├── caddy/Caddyfile
-│   ├── litellm/config.yaml
+│   ├── docker-compose.yml          # litellm + postgres
+│   ├── nginx/private-llm.conf      # 入口反代（环境适配后；r6 allowlist 收敛）
+│   ├── deploy.sh                   # 幂等部署（r6 增 console 服务接线）
+│   ├── litellm/config.yaml         # r6 迁移静态别名后仅剩设置骨架
 │   ├── litellm/group_routing.py    # ~30 行 pre-call 钩子：Key→组→路由 tag（US-P13）
 │   ├── .env.example                # LITELLM_MASTER_KEY / DATABASE_URL 等占位
 │   └── wireguard/wg0.conf.example
 ├── mcp-hub/                        # ~300 行 Python（fastmcp）
-├── onboardd/                       # ~150 行 Python
+├── onboardd/                       # ~150+25 行 Python（r6 增分组同步端点）
+├── console/                        # r6：consoled ~700 行 + 9 页静态控制台（US-P14）
+│   ├── console.py  console.service  requirements.txt
+│   └── static/                     # 由高保真原型接线落地（页面 + portal.css/js）
 ├── site-tools/
 │   ├── site-add.sh  site-revoke.sh  site-list.sh   # 合计 ~150 行
 │   └── install.sh.tpl              # ~100 行
-└── docs/runbook.md                 # 部署步骤 + T1~T13 验收记录表 + 四客户端接入示例（Claude Code headersHelper / Hermes headers / dsh cordis.yml / pi-mcp-adapter 前置）
+└── docs/runbook.md                 # 部署步骤 + T1~T15 验收记录表 + 四客户端接入示例
 ```
 
 ## 11. 故事覆盖映射（设计 playback，drift 0）
@@ -325,10 +370,11 @@ execution/proto-remote-access/
 | US-P6 | §3.1 router_settings + 同名多 deployment |
 | US-P7 | §3.4 site-add/install.sh/onboardd |
 | US-P8 | §3.4 site-revoke + 站点清单 |
-| US-P9/P10 | §6（Admin UI / `/key/info`） |
-| US-P11 | §3.1 别名条目 + §5 未知模型 |
-| US-P12 | §3.3 外部 MCP 注册与代理 |
+| US-P9/P10 | §6（自写控制台 / `/key/info` + 「我的用量」页）、§3.6 consoled |
+| US-P11 | §3.1 别名条目 + §5 未知模型；r6 静态别名迁移后别名归控制台管（§3.1 要点、§3.6 models API） |
+| US-P12 | §3.3 外部 MCP 注册与代理；管理面 = §3.6 mcp API |
 | US-P13 | §3.1「分组即 tag」要点 + enable_tag_filtering；§3.5 Key 绑定分组 + 分组管理面（分组页 + 站点页 provider↔分组 多选）；§5 组内无部署报错 |
+| US-P14 | §3.6 consoled + §6 职责边界与公网暴露面 allowlist + §3.1 静态别名迁移 |
 | C1~C5 | §7 安全基线（C3 = §3.5 Key 绑定模型/分组；C4 = §3.1 路由深度） |
 | Non-goals | 未引入内容路由/GPU 调度/自助注册/本地 stdio 桥/计费缓存/分组回退/分组预算，均不在本设计 |
 
@@ -339,10 +385,21 @@ execution/proto-remote-access/
 3. **least-busy 策略在低并发下近似轮询**：属预期行为，不影响 US-P6 验收口径。
 4. **US-P13 分组路由依赖一个自写钩子**：免费版 LiteLLM 的 `enable_tag_filtering` 按请求 tag 过滤、不按 Key 自带分组过滤（team-based tag routing 属 Enterprise）；本设计以 ~30 行 pre-call 钩子在网关侧注入组 tag 补齐，并已加双保险——`general_settings.reject_clientside_metadata_tags: true` 在 HTTP 边界拒绝客户端携带的任何路由 tag、钩子**无条件覆写**本请求 tag。D4 双站点演练须验证「客户端伪造 `x-litellm-tags` 无法越组」。若上游免费版后续补齐 key 级 `allowed_tags`（见 litellm#22966），可移除钩子、回归纯配置。
 5. **MCP 多客户端怪癖（US-P4）**：① Claude Code 偶发忽略静态 Bearer 转而发起 OAuth 发现（anthropics/claude-code#47424）——主要缓解是 runbook 指定 `headersHelper`；若 D2 复现，再加 MCP OAuth 2.1 元数据端点兜底（§3.3，预留）。② Pi 无原生 MCP，须先 `pi install npm:pi-mcp-adapter`（runbook 前置说明）。③ DeepSeek Harness 处于 developer preview、官方预告会有 breaking changes——接入示例以官方 README 为准，runbook 注明。
+6. **控制台相关（r6）**：① mcp-hub 外部 MCP 注册的生效方式 = `systemctl restart mcp-hub`，进行中的工具调用会被中断——控制台 UI 明示，属管理员主动操作；② consoled 以 root 运行（wg show / usage.db / systemctl），攻击面控制 = 仅 docker 网段与本机可达 + 公网唯一经 `/console/` 会话鉴权；③ LiteLLM 管理 API 语义以 1.96.2 实测为准（见下），升级须重跑 T3/T14。
+
+**r6 管理 API spike 结论（2026-08-14，LiteLLM 1.96.2 生产实例实测）**：
+
+- deployment `tags` 经 `/model/new` 写入、`/model/info` 完整回显（`litellm_params.tags`，`db_model: true`；敏感字段读回时剥离）——分组读路径确认；写路径仍定为先建后删，不依赖 `/model/update`（其 litellm_params 走类型化序列化，未定义字段有被丢风险）。
+- `/key/list` 默认只回哈希数组，须 `?return_full_object=true`；禁用字段为 `blocked`（无 `is_disabled`），禁用/启用走 `/key/block`、`/key/unblock`。
+- 登录探测端点：master key `GET /global/spend` → 200；用户 Key → 401（`Only proxy admin`）；用户 Key `GET /key/info` → 200 自查。
+- `/spend/logs` 行含 `model_group`（对外名）、`api_key`（sha256 哈希）、token 三元组、`status`（`success`/`failure`）、`api_base`/`model_id`；`api_key`/`start_date` 过滤参数实测行为不可靠 → consoled 全量拉取本地聚合；鉴权失败（401）不入日志 → 「近期错误」仅覆盖已入账请求，UI 注明。
+- mcp-hub `usage.db` 的 `key_hash = sha256(key)[:16]` 与 LiteLLM key 对象的 sha256 哈希同源，可对账。
+- `/model/info` 用用户 Key 也可读（200）——r6 allowlist 后公网不可达，风险消解。
 
 ## 13. 参考资料（设计输入）
 
-- `planning/03-core/prototype_remote_model_access_baseline_proto-r5.md`（权威基线，含 r1~r5 修订链）
+- `planning/03-core/prototype_remote_model_access_baseline_proto-r6.md`（权威基线，含 r1~r6 修订链）
+- `docs/superpowers/prototypes/remote-access-console/`（控制台高保真原型与 BRIEF 契约——r6 实现的视觉与信息架构来源）
 - `planning/02-working/new_api_analysis.md`（new-api 被否依据：AGPL + 加权随机 LB）
 - `planning/02-working/vps_provider_registration.md`（单入口拓扑、SSE 反代要点、SSRF 边界思想）
 - LiteLLM Tag Routing 文档 + [litellm#22966](https://github.com/BerriAI/litellm/issues/22966)（US-P13 实现依据：免费版 deployment `tags` + `enable_tag_filtering` 按请求 tag 过滤；Key 自带分组自动作用于路由属 Enterprise team-based tag routing，故加自写 pre-call 钩子补齐）
