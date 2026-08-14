@@ -293,10 +293,20 @@ async def files(request: Request) -> Response:
     return Response(path.read_bytes(), media_type=mime or "application/octet-stream")
 
 
+# ---------------------------------------------------------------- 网关主页（隐藏 LiteLLM Swagger 的对外脸面）
+
+HOMEPAGE_PATH = Path(__file__).parent / "homepage.html"
+
+
+async def homepage(request: Request) -> Response:
+    return Response(HOMEPAGE_PATH.read_bytes(), media_type="text/html")
+
+
 # ---------------------------------------------------------------- 组装 ASGI 应用（勿用 from_fastapi：会剥 authorization 头）
 
 app = mcp.http_app(path="/mcp")
 # 同一 ASGI app 上追加辅助路由（不经 Mount，保留 authorization 头）
+app.routes.append(Route("/", homepage, methods=["GET"]))
 app.routes.append(Route("/mcp/upload", upload, methods=["POST"]))
 app.routes.append(Route("/mcp/usage", usage, methods=["GET"]))
 app.routes.append(Route("/mcp/files/{name}", files, methods=["GET"]))
