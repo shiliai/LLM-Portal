@@ -25,7 +25,7 @@
       <thead>
         <tr>
           <th>站点名</th><th>公钥指纹</th><th>WG IP</th><th>最近握手</th>
-          <th class="num">模型数</th><th>状态</th><th>操作</th>
+          <th class="num">模型数</th><th>分组</th><th>状态</th><th>操作</th>
         </tr>
       </thead>
       <tbody id="sites-tbody">
@@ -35,8 +35,13 @@
           <td class="mono">10.77.0.11</td>
           <td class="mono">23 秒前</td>
           <td class="num">2</td>
+          <td class="site-groups">
+            <span class="pf-chip">default</span>
+            <span class="pf-chip">home</span>
+          </td>
           <td class="site-status"><span class="pf-chip ok"><span class="pf-dot ok"></span>在线</span></td>
           <td>
+            <button class="pf-link js-edit-groups" data-site="hq-office">分组</button>
             <button class="pf-link danger js-revoke-btn"
               data-site="hq-office" data-wg="10.77.0.11" data-models="2">吊销</button>
           </td>
@@ -47,8 +52,12 @@
           <td class="mono">10.77.0.12</td>
           <td class="mono">1 分钟前</td>
           <td class="num">1</td>
+          <td class="site-groups">
+            <span class="pf-chip">default</span>
+          </td>
           <td class="site-status"><span class="pf-chip ok"><span class="pf-dot ok"></span>在线</span></td>
           <td>
+            <button class="pf-link js-edit-groups" data-site="lab-2f">分组</button>
             <button class="pf-link danger js-revoke-btn"
               data-site="lab-2f" data-wg="10.77.0.12" data-models="1">吊销</button>
           </td>
@@ -59,6 +68,7 @@
           <td class="mono">10.77.0.9</td>
           <td class="mono">27 天前</td>
           <td class="num">0</td>
+          <td class="site-groups"><span class="pf-desc">—</span></td>
           <td class="site-status"><span class="pf-chip gray">已吊销（2026-07-18）</span></td>
           <td><button class="pf-link" disabled>已吊销</button></td>
         </tr>
@@ -140,6 +150,25 @@
     </div>
   </div>
 
+  <!-- 调整站点分组弹窗（多选，0 个或多个） -->
+  <div class="pf-modal" id="modal-site-groups" style="width:440px">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title">调整站点分组 · <span id="sg-site-name" class="mono"></span></div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-modal-body">
+      <div class="pf-desc" style="margin-bottom:10px">勾选该 provider 所属分组（一个站点可属于 0 个或多个分组）。新分组在「分组」页创建。</div>
+      <div id="sg-checks">
+        <label style="display:block;margin:6px 0"><input type="checkbox" class="sg-cb" value="default"> <span class="pf-chip">default</span> 系统组（全部在线 provider）</label>
+        <label style="display:block;margin:6px 0"><input type="checkbox" class="sg-cb" value="home"> <span class="pf-chip">home</span></label>
+      </div>
+    </div>
+    <div class="pf-modal-foot">
+      <button class="pf-btn" data-close>取消</button>
+      <button class="pf-btn primary" id="btn-sg-save">保存</button>
+    </div>
+  </div>
+
 </template>
 <script src="assets/portal.js"></script>
 <script>
@@ -203,6 +232,30 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     pfModalClose();
     pfToast('站点已吊销，隧道已断开');
+  });
+
+  /* ---------- 调整站点分组（多选，回写该行 chips） ---------- */
+  var sgRow = null;
+  document.querySelectorAll('.js-edit-groups').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      sgRow = document.querySelector('[data-site-row="' + btn.dataset.site + '"]');
+      document.getElementById('sg-site-name').textContent = btn.dataset.site;
+      var current = {};
+      if (sgRow) sgRow.querySelectorAll('.site-groups .pf-chip').forEach(function (c) { current[c.textContent.trim()] = true; });
+      document.querySelectorAll('.sg-cb').forEach(function (cb) { cb.checked = !!current[cb.value]; });
+      pfModal('modal-site-groups');
+    });
+  });
+  document.getElementById('btn-sg-save').addEventListener('click', function () {
+    if (sgRow) {
+      var html = '';
+      document.querySelectorAll('.sg-cb').forEach(function (cb) {
+        if (cb.checked) html += '<span class="pf-chip">' + cb.value + '</span> ';
+      });
+      sgRow.querySelector('.site-groups').innerHTML = html || '<span class="pf-desc">—</span>';
+    }
+    pfModalClose();
+    pfToast('站点分组已更新');
   });
 });
 </script>

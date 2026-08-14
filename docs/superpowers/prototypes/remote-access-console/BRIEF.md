@@ -2,7 +2,7 @@
 
 > 本文件是本原型的统一契约。产品名称：**远程模型网关**（局域网私有推理模型的统一公网入口）。
 > 设计依据：`docs/superpowers/specs/2026-08-14-remote-model-access-prototype-design.md`；
-> 需求基线：`planning/03-core/prototype_remote_model_access_baseline_proto-r4.md`（US-P1~P12、C1-C5）。
+> 需求基线：`planning/03-core/prototype_remote_model_access_baseline_proto-r5.md`（US-P1~P13、C1-C5）。
 > 视觉风格与组件语言直接沿用同目录下 `../llm-portal-console/`（风格 A · 企业蓝）——**两者是不同产品**，仅共享视觉与组件库，不共享导航、数据或业务含义。
 
 ## 0. 与 llm-portal-console 的关系（重要）
@@ -29,6 +29,7 @@ docs/superpowers/prototypes/remote-access-console/
 ├── login.html        管理员登录（Master Key，无壳）
 ├── index.html        仪表盘
 ├── sites.html        站点与公钥管理（US-P7/P8）
+├── groups.html       provider 分组管理（US-P13）
 ├── models.html       模型与别名（US-P6/P11）
 ├── keys.html         用户 Key 管理（US-P9/C3）
 ├── usage.html        管理员用量视图（US-P9）
@@ -52,12 +53,13 @@ docs/superpowers/prototypes/remote-access-console/
 
 结构与 `llm-portal-console` 完全一致：页面写 `<body data-page="key">` + `<template id="page">…</template>`，`portal.js` 读取 `data-page` 注入侧边栏（logo「远程模型网关」+ 导航 + 底部 `管理员 admin`）与顶栏，并把模板内容移入 `.pf-content`；`login.html` 不写 `data-page`/`#page`，不注入壳，但助手函数仍可用。
 
-导航表（key → 标题 → 文件），共 7 项，**不含 login**：
+导航表（key → 标题 → 文件），共 8 项，**不含 login**：
 
 | key | 标题 | 文件 |
 |---|---|---|
 | dashboard | 仪表盘 | index.html |
 | sites | 站点与公钥 | sites.html |
+| groups | 分组 | groups.html |
 | models | 模型与别名 | models.html |
 | keys | 用户 Key | keys.html |
 | usage | 用量总览 | usage.html |
@@ -76,7 +78,7 @@ docs/superpowers/prototypes/remote-access-console/
 | lab-2f | 10.77.0.12 | `rT9mK2pL5nQ8…5nPqx=` | 1 分钟前 | deepseek-v4-flash-0731:8890 | 在线 |
 | old-site | 10.77.0.9 | `zA1bC4dE5fG9…A1bCd=` | 27 天前 | 无（已摘除） | 已吊销（2026-07-18），全页面灰化 |
 
-**provider 分组归属（对应设计 §3.1/§3.5，US-P13）**：hq-office ∈ `{default, home}`，lab-2f ∈ `{default}`，old-site 已吊销不属任何组。故 `home` 组 = 仅 hq-office——`家人共用` Key 绑 home 组时，其请求只落 hq-office（lab-2f 即使挂同名模型也不被选中）；`default` 组 = 全部在线站点。
+**provider 分组归属（对应设计 §3.1/§3.5，US-P13）**：hq-office ∈ `{default, home}`，lab-2f ∈ `{default}`，old-site 已吊销不属任何组。故 `home` 组 = 仅 hq-office——`家人共用` Key 绑 home 组时，其请求只落 hq-office（lab-2f 即使挂同名模型也不被选中）；`default` 组 = 全部在线站点，且为**系统组**（不可删除/改名，新接入站点自动并入）。分组与成员归属为多对多，既可在「分组」页按组管理成员，也可在「站点与公钥」页按 provider 勾选 0 个或多个所属分组。
 
 ### 5.2 模型与别名（models.html / index.html / usage.html / my-usage.html）
 
@@ -128,7 +130,8 @@ docs/superpowers/prototypes/remote-access-console/
 
 - **login.html**：Master Key 登录（无壳）；说明 Master Key 仅用于控制台与站点接入注册、不作为客户端调用凭据；底部攻击面提示「公网仅开放 443/tcp · 51820/udp」。
 - **index.html（仪表盘）**：4 统计卡（今日请求/Token/站点隧道 2/3/模型部署健康 2/3）；「站点隧道状态」+「公网攻击面」双卡（仅 443/51820，C1/C2 基线）；「模型 Deployment 健康」表；「最近错误」表。
-- **sites.html（US-P7/P8）**：站点表（站点名/公钥指纹/WG IP/最近握手/模型数/状态/操作）；「新增站点」两态弹窗（表单 → 一次性 15 分钟倒计时安装命令 `curl … token`）；「吊销确认」弹窗（明示隧道立即断开 + 路由池摘除 + 不可逆），确认后就地把该行降级为已吊销灰态。
+- **sites.html（US-P7/P8/P13）**：站点表（站点名/公钥指纹/WG IP/最近握手/模型数/分组/状态/操作）；每行「分组」列以 chip 显示该 provider 所属分组，操作列「分组」入口开多选弹窗调整其归属（一个站点可属于 0 个或多个分组，US-P13）；「新增站点」两态弹窗（表单 → 一次性 15 分钟倒计时安装命令 `curl … token`）；「吊销确认」弹窗（明示隧道立即断开 + 路由池摘除 + 不可逆），确认后就地把该行降级为已吊销灰态。
+- **groups.html（US-P13）**：分组列表（分组名/说明/成员站点 chip/绑定 Key 数/状态/操作）；`default` 系统组标「系统组·不可删除」；「新建分组」弹窗（分组名 + 站点多选）；改名/删除入口（原型占位）。说明文案重申「可用模型 = 组内 provider 部署的模型 ∩ 模型白名单」「分组对 API 与网关托管 MCP 同时生效」。
 - **models.html（US-P6/US-P11）**：可展开表格（直选/别名 chip、deployment 数、least-busy 路由、健康摘要），点击行展开每个 deployment 的 api_base/限流/状态；「路由与解析说明」kv 卡；「新建别名」弹窗。
 - **keys.html（US-P9/C3）**：Key 列表 + 启用/禁用即时切换；「新建密钥」两态弹窗（表单 → 一次性展示假 `sk-gw-…` 全文）。
 - **usage.html（US-P9）**：Key/模型筛选工具栏（真实 `<select>` change 事件过滤表格行 + 空态行）；用量明细表（含 tfoot 合计）；按 Key 占比条形图；近期错误表。

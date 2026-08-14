@@ -194,6 +194,7 @@ site-revoke beijing
 
 - **本期无独立「账号」实体，Key 即身份**：这是基线冻结口径决定的——C3 为「管理员创建/分发/禁用 Key」，US-P10 为「凭自己这把 Key 查自己的用量」，均以 Key 为粒度。一人多设备发多把 Key（别名区分），用量各记各的。
 - **Key ↔ provider 分组（US-P13，sub2api group 分层）**：管理员把 provider（本期即站点，未来含外部云上游）归入命名分组（多对多），每把 Key 绑一个分组，请求只在组内 provider 的 deployment 上做 least-busy 分流与故障转移；组内无该模型部署 → 可判读错误，不误路由到组外；未绑组走 `default` 组（全部 provider）。调整分组成员即对组内全部 Key 批量生效。实现为 LiteLLM tag 过滤 + 一个 ~30 行自写 pre-call 钩子（见 §3.1「分组即 tag」要点：免费版只按请求 tag 过滤，组标签须网关侧注入以防旁路）。
+- **分组的管理面（US-P13，参照 sub2api 双向编辑）**：分组作为一等对象有两个等价管理入口——①「分组」页：列出全部分组（成员站点 chip、绑定 Key 数）、新建/改名/删除分组、勾选成员站点；②「站点与公钥」页：每个 provider 可勾选 0 个或多个所属分组（多对多，与①等价、双向同步）。`default` 为系统组（= 全部在线 provider，新接入站点自动并入，不可删除/改名）。落到 LiteLLM 侧即改 deployment 的 `tags` 与 Key 的 `metadata.group`，**无新增自写组件**（计入既有 ~730 行预算）。
 - **Key ↔ 模型授权（与分组正交）**：默认新 Key 可调用全部对外模型名（含别名与 MCP 工具）。如管理员需限制某把 Key，创建时填 LiteLLM 原生 `models` 白名单（零自写代码），越权调用返回明确的拒绝错误；白名单裁剪的是「模型名」维度，分组裁剪的是「provider」维度，两者独立设定、交集生效。「用户申请模型开通」的审批流是基线 non-goal，留下一阶段。
 - **API 与 MCP 同权、同分组、同白名单**：同一把 Key 通吃 `/v1/*` 与 `/mcp`（US-P4 条款）；`analyze_image` 以调用者的 Key 回调 LiteLLM，因此分组与模型白名单对视觉工具天然同样生效；禁用 Key 对 API 与 MCP 同时即时生效（mcp-hub 每次经 `/key/info` 校验）。
 - **生命周期**：创建（别名 + 分组 + 可选模型白名单 + 可选 rpm/tpm）→ 分发 → 禁用/启用 → 删除，全程管理页操作（US-P9）；日志与用量只记尾 4 位。
@@ -231,7 +232,7 @@ site-revoke beijing
 
 ## 6. 观测与用量
 
-- **API 侧**（US-P9/P10）：LiteLLM 全部请求落 Postgres；Admin UI（`/ui`，master key 登录）管理 Key/渠道、看用量与错误日志；普通用户凭自己的 Key 调 `/key/info` 只见自身用量（请求数 + token 数，无计费——基线口径）。
+- **API 侧**（US-P9/P10）：LiteLLM 全部请求落 Postgres；Admin UI（`/ui`，master key 登录）管理 Key/渠道/分组（分组 = deployment `tags` 与 Key `metadata.group` 的 CRUD，US-P13，提供「分组」页与「站点」页 provider↔分组 多选两个等价入口）、看用量与错误日志；普通用户凭自己的 Key 调 `/key/info` 只见自身用量（请求数 + token 数，无计费——基线口径）。
 - **MCP 侧**：mcp-hub SQLite 按 Key 计次，`GET /mcp/usage` 自查；`analyze_image` 的 token 消耗因走 LiteLLM 通道自动并入 API 侧账本。
 - 日志中 Key 仅记尾 4 位。
 
@@ -260,7 +261,7 @@ site-revoke beijing
 | T10 | US-P10 | 用户 Key 调 `/key/info` 仅见自身用量（请求数+token）；换别人的 Key 看不到 |
 | T11 | US-P11 | Claude Code 用默认名 `claude-opus-5` 直接可用；`/v1/models` 见全部对外名；未知名→400/404 |
 | T12 | US-P12 | 注册外部 vision MCP（如智谱）后 `tools/list` 现前缀工具且调用成功；错凭据→可判读错误；`/mcp/usage` 计数递增 |
-| T13 | US-P13 | 建分组 home（仅 hq-office）并把某 Key 绑 home：请求 qwen 只落 hq-office（lab-2f 挂同名模型也不被选中）；请求组内无部署的模型→可判读错误；未绑组 Key 仍走全部 provider |
+| T13 | US-P13 | 经「分组」页建分组 home（仅 hq-office）并把某 Key 绑 home：请求 qwen 只落 hq-office（lab-2f 挂同名模型也不被选中）；在「站点与公钥」页调整某 provider 所属分组后，组内 Key 路由范围随之变更；请求组内无部署的模型→可判读错误；未绑组 Key 仍走全部 provider |
 
 ## 9. 部署形态与实施顺序
 
@@ -274,7 +275,7 @@ site-revoke beijing
 | D1 | 手工配 WG（首站点）+ LiteLLM + Caddy 上线 | US-P1/P2/P11（+US-P5 的 wg-quick 部分） |
 | D2 | Claude Code 联调 + mcp-hub 内建视觉与上传 | US-P3/P4 |
 | D3 | onboardd + site-add/site-revoke + 外部 MCP 代理 | US-P7/P8/P12 |
-| D4 | 双站点分流演练 + 分组过滤（US-P13）+ 全量验收 T1~T13 + runbook | US-P5/P6/P9/P10/P13 收口 |
+| D4 | 双站点分流演练 + 分组过滤（US-P13：分组页建组、站点页调成员、Key 绑组、客户端伪造 tag 无法越组）+ 全量验收 T1~T13 + runbook | US-P5/P6/P9/P10/P13 收口 |
 
 **前置核对清单（部署前确认）：**
 
@@ -316,7 +317,7 @@ execution/proto-remote-access/
 | US-P9/P10 | §6（Admin UI / `/key/info`） |
 | US-P11 | §3.1 别名条目 + §5 未知模型 |
 | US-P12 | §3.3 外部 MCP 注册与代理 |
-| US-P13 | §3.1「分组即 tag」要点 + enable_tag_filtering；§3.5 Key 绑定分组；§5 组内无部署报错 |
+| US-P13 | §3.1「分组即 tag」要点 + enable_tag_filtering；§3.5 Key 绑定分组 + 分组管理面（分组页 + 站点页 provider↔分组 多选）；§5 组内无部署报错 |
 | C1~C5 | §7 安全基线（C3 = §3.5 Key 绑定模型/分组；C4 = §3.1 路由深度） |
 | Non-goals | 未引入内容路由/GPU 调度/自助注册/本地 stdio 桥/计费缓存/分组回退/分组预算，均不在本设计 |
 
