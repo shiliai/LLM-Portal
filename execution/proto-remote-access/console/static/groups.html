@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>分组 · 远程模型网关</title>
+<link rel="stylesheet" href="assets/portal.css">
+</head>
+<body data-page="groups">
+<template id="page">
+
+  <!-- 页头 -->
+  <div class="pf-page-head">
+    <div class="pf-desc">把上游 provider（本期即站点）归入命名分组，再把每把用户 Key 绑定到一个分组，使不同 Key 的请求只在授权 provider 范围内分流（US-P13，分层语义同 sub2api 的 group）。分组与按 Key 模型白名单正交；也可在「站点与公钥」页按 provider 调整归属。</div>
+    <button class="pf-btn primary" data-modal="modal-newgroup" id="btn-open-newgroup">新建分组</button>
+  </div>
+
+  <!-- 分组列表 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head">
+      <div class="pf-card-title">分组列表</div>
+      <div class="pf-card-extra" id="groups-extra">加载中…</div>
+    </div>
+    <table class="pf-table">
+      <thead>
+        <tr><th>分组名</th><th>说明</th><th>成员站点</th><th class="num">绑定 Key 数</th><th>状态</th><th>操作</th></tr>
+      </thead>
+      <tbody id="groups-tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="pf-desc">Key 的可用模型 = 其分组内 provider 部署的模型 ∩ 模型白名单（未设白名单即不裁剪）；分组对 API 与网关托管 MCP 同时生效。「绑定 Key 数」为只读统计，改某 Key 的分组请到「用户 Key」页。</div>
+
+  <!-- 新建分组弹窗 -->
+  <div class="pf-modal" id="modal-newgroup" style="width:480px">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title">新建分组</div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-modal-body">
+      <div class="pf-form-row">
+        <label class="req">分组名</label>
+        <div>
+          <input class="pf-input mono" id="newgroup-name" placeholder="例：team-alpha">
+          <div class="pf-desc">仅字母/数字/-/_；创建即对勾选成员站点生效（deployment 重打组 tag）。</div>
+        </div>
+      </div>
+      <div class="pf-form-row">
+        <label class="req">成员站点</label>
+        <div>
+          <div class="pf-desc" style="margin-bottom:8px">勾选该分组包含的 provider（站点），至少一个；之后可在「站点与公钥」页增删。</div>
+          <div id="ng-checks"></div>
+        </div>
+      </div>
+    </div>
+    <div class="pf-modal-foot">
+      <button class="pf-btn" data-close>取消</button>
+      <button class="pf-btn primary" id="btn-newgroup-ok">创建</button>
+    </div>
+  </div>
+
+  <!-- 改名弹窗 -->
+  <div class="pf-modal" id="modal-rename" style="width:420px">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title">分组改名 · <span id="rename-from" class="mono"></span></div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-modal-body">
+      <div class="pf-form-row">
+        <label class="req">新分组名</label>
+        <div>
+          <input class="pf-input mono" id="rename-to" placeholder="新名称">
+          <div class="pf-desc">将同步更新：全部成员站点的 deployment 组 tag、已绑定该分组的 Key、onboardd 站点注册表。</div>
+        </div>
+      </div>
+    </div>
+    <div class="pf-modal-foot">
+      <button class="pf-btn" data-close>取消</button>
+      <button class="pf-btn primary" id="btn-rename-ok">确认改名</button>
+    </div>
+  </div>
+
+</template>
+<script src="assets/portal.js"></script>
+<script>
+(function () {
+  'use strict';
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+  function render(d) {
+    document.getElementById('groups-extra').textContent = '共 ' + d.groups.length + ' 个分组';
+    document.getElementById('groups-tbody').innerHTML = d.groups.map(function (g) {
+      var members = g.sites.length
+        ? g.sites.map(function (s) { return '<span class="pf-chip">' + esc(s) + '</span>'; }).join(' ')
+        : '<span class="pf-desc">（无成员站点）</span>';
+      var desc = g.system ? '系统组：等同于全部在线 provider，新接入站点自动并入' : '自定义分组';
+      var actions = g.system ? '<button class="pf-link" disabled>不可删除</button>'
+        : '<button class="pf-link js-rename-group" data-group="' + esc(g.name) + '">改名</button> ' +
+          '<button class="pf-link danger js-delete-group" data-group="' + esc(g.name) + '">删除</button>';
+      return '<tr data-group-row="' + esc(g.name) + '">' +
+        '<td><span class="pf-chip">' + esc(g.name) + '</span></td>' +
+        '<td class="pf-desc">' + desc + '</td>' +
+        '<td>' + members + '</td>' +
+        '<td class="num">' + g.keys + '</td>' +
+        '<td><span class="pf-chip ' + (g.system ? 'ok' : 'ok') + '">' + (g.system ? '系统组' : '启用') + '</span></td>' +
+        '<td>' + actions + '</td>' +
+      '</tr>';
+    }).join('');
+    bindActions();
+    return d;
+  }
+
+  function load(then) {
+    window.pfApi('GET', '/groups').then(function (d) { render(d); if (then) then(d); })
+      .catch(function (e) { window.pfErr(e.error || '分组加载失败'); });
+  }
+
+  function bindActions() {
+    document.querySelectorAll('.js-delete-group').forEach(function (btn) {
+      btn.onclick = function () {
+        var name = btn.dataset.group;
+        if (!confirm('删除分组「' + name + '」？成员站点的组 tag 将被移除（不影响 default 路由）。有 Key 绑定时会被拒绝。')) return;
+        window.pfApi('POST', '/groups/delete', { name: name }).then(function () {
+          window.pfToast('分组「' + name + '」已删除');
+          load();
+        }).catch(function (e) { window.pfErr(e.error || '删除失败'); });
+      };
+    });
+    document.querySelectorAll('.js-rename-group').forEach(function (btn) {
+      btn.onclick = function () {
+        document.getElementById('rename-from').textContent = btn.dataset.group;
+        document.getElementById('rename-to').value = '';
+        window.pfModal('modal-rename');
+      };
+    });
+  }
+
+  window.pfReady.then(function () {
+    load(function (d) {
+      document.getElementById('ng-checks').innerHTML = d.sites.map(function (s) {
+        return '<label style="display:block;margin:6px 0"><input type="checkbox" class="ng-cb" value="' + esc(s.name) + '"> <span class="mono">' + esc(s.name) + '</span> · ' + esc(s.wg_ip) + '</label>';
+      }).join('') || '<div class="pf-desc">暂无可选站点，请先接入站点</div>';
+    });
+
+    document.getElementById('btn-newgroup-ok').addEventListener('click', function () {
+      var name = document.getElementById('newgroup-name').value.trim();
+      var sites = [];
+      document.querySelectorAll('.ng-cb').forEach(function (cb) { if (cb.checked) sites.push(cb.value); });
+      if (!name) { window.pfErr('请填写分组名'); return; }
+      if (!sites.length) { window.pfErr('至少勾选一个成员站点'); return; }
+      window.pfApi('POST', '/groups/create', { name: name, sites: sites }).then(function () {
+        window.pfModalClose();
+        window.pfToast('分组「' + name + '」已创建并生效');
+        load(function (d) {
+          document.getElementById('ng-checks').innerHTML = d.sites.map(function (s) {
+            return '<label style="display:block;margin:6px 0"><input type="checkbox" class="ng-cb" value="' + esc(s.name) + '"> <span class="mono">' + esc(s.name) + '</span> · ' + esc(s.wg_ip) + '</label>';
+          }).join('');
+        });
+      }).catch(function (e) { window.pfErr(e.error || '创建失败'); });
+    });
+
+    document.getElementById('btn-rename-ok').addEventListener('click', function () {
+      var from = document.getElementById('rename-from').textContent;
+      var to = document.getElementById('rename-to').value.trim();
+      if (!to) { window.pfErr('请填写新分组名'); return; }
+      window.pfApi('POST', '/groups/rename', { from: from, to: to }).then(function (d) {
+        window.pfModalClose();
+        window.pfToast('已改名 ' + from + ' → ' + to + '（同步 ' + (d.keys_rebound || 0) + ' 把 Key）');
+        load();
+      }).catch(function (e) { window.pfErr(e.error || '改名失败'); });
+    });
+  });
+})();
+</script>
+</body>
+</html>

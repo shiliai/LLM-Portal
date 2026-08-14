@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MCP 管理 · 远程模型网关</title>
+<link rel="stylesheet" href="assets/portal.css">
+</head>
+<body data-page="mcp">
+<template id="page">
+
+  <div class="pf-page-head">
+    <div class="pf-desc">客户端以 <span class="mono">/mcp</span> + 与 API 相同的 Key 注册网关 MCP（Streamable HTTP）；网关聚合内建视觉工具与已注册外部 MCP 工具，用户的 Key 只用于网关鉴权与记账，永不发往任何上游（US-P4/C5）。</div>
+    <button class="pf-btn primary" data-modal="modal-newmcp">注册外部 MCP</button>
+  </div>
+
+  <!-- 内建工具 -->
+  <div class="pf-card">
+    <div class="pf-card-head">
+      <div class="pf-card-title">内建工具</div>
+      <div class="pf-card-extra"><span class="pf-chip info">网关托管</span></div>
+    </div>
+    <div class="pf-dep-item" style="padding:10px 0">
+      <div class="pf-dep-main">
+        <strong class="mono" id="builtin-sig">analyze_image(image_url, question)</strong>
+        <span class="pf-chip gray" id="builtin-model">—</span>
+      </div>
+      <span class="pf-chip ok"><span class="pf-dot ok"></span>可用</span>
+    </div>
+    <div class="pf-kv" style="margin-top:10px">
+      <div class="pf-kv-k">凭据边界</div><div class="pf-kv-v">网关以调用者自己的 Key 回调回环 <span class="mono">/v1/chat/completions</span>；私有上游无鉴权，出站不带任何 Key（C5）。</div>
+      <div class="pf-kv-k">本地图片</div><div class="pf-kv-v">先经 <span class="mono">POST /mcp/upload</span>（同一 Key）换取限时临时 URL，再调用工具；toolcall 参数只含路径/URL 短字符串，base64 转换发生在 mcp-hub 进程内。</div>
+      <div class="pf-kv-k">用量归属</div><div class="pf-kv-v">模型消耗计入调用者自己的 Key，与 API 通道共用同一账本（与 US-P10 口径一致）。</div>
+      <div class="pf-kv-k">客户端兼容</div><div class="pf-kv-v">契约 = Streamable HTTP + 标准 <span class="mono">Authorization: Bearer</span>（与 API 同一把 Key）+ 小写下划线工具名；Claude Code / Hermes / DeepSeek Harness / Pi（先装 pi-mcp-adapter 扩展）四类客户端均可接入，接入示例见 runbook。</div>
+    </div>
+  </div>
+
+  <!-- 外部 MCP 注册表 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head">
+      <div class="pf-card-title">外部 MCP 注册（US-P12）</div>
+      <div class="pf-card-extra" id="mcp-extra">加载中…</div>
+    </div>
+    <table class="pf-table">
+      <thead>
+        <tr><th>名称</th><th>URL</th><th>凭据</th><th>工具前缀</th><th>操作</th></tr>
+      </thead>
+      <tbody id="mcp-rows"></tbody>
+    </table>
+  </div>
+  <div class="pf-desc">凭据文件权限 0600、不入库；注册/移除后自动重启 mcp-hub 生效（<strong>进行中的工具调用会被中断</strong>，请避开使用高峰）；凭据失效或服务不可达时调用返回可判读的 MCP 结构化错误（透传上游状态码与摘要）。</div>
+
+  <!-- tools/list 预览 -->
+  <div class="pf-card">
+    <div class="pf-card-head">
+      <div class="pf-card-title">聚合 tools/list 预览</div>
+      <div class="pf-card-extra"><button class="pf-link" id="btn-refresh-tools">刷新预览</button></div>
+    </div>
+    <div class="pf-code"><pre id="tools-preview">（点「刷新预览」实连各外部 MCP 拉取工具清单）</pre></div>
+  </div>
+
+  <!-- 按 Key 调用计数 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head"><div class="pf-card-title" id="usage-title">按 Key 调用计数（今日）</div></div>
+    <table class="pf-table">
+      <thead>
+        <tr><th>Key</th><th>工具明细</th><th class="num">合计</th></tr>
+      </thead>
+      <tbody id="mcp-usage-rows"></tbody>
+    </table>
+  </div>
+
+  <!-- 上传接口说明 -->
+  <div class="pf-card">
+    <div class="pf-card-head"><div class="pf-card-title">本地图片上传接口</div></div>
+    <div class="pf-kv" style="margin-bottom:12px">
+      <div class="pf-kv-k">入口</div><div class="pf-kv-v mono">POST /mcp/upload</div>
+      <div class="pf-kv-k">鉴权</div><div class="pf-kv-v">与 API/MCP 同一把 Key；无效 Key 拒绝</div>
+      <div class="pf-kv-k">有效期</div><div class="pf-kv-v">临时 URL 随机不可猜路径，30 分钟 TTL 自动清理</div>
+      <div class="pf-kv-k">限制</div><div class="pf-kv-v">类型 jpg / png / webp / gif；大小 ≤ 10MB；超限或类型非法返回 413 / 400</div>
+    </div>
+    <div class="pf-code"><pre>curl -X POST /mcp/upload \
+  -H "Authorization: Bearer sk-…（你的 Key）" \
+  -F "file=@screenshot.png"
+
+# 响应
+{ "url": "https://<域名>/mcp/files/<随机token>.png", "expires_in": 1800 }</pre></div>
+  </div>
+
+  <!-- 注册外部 MCP 弹窗 -->
+  <div class="pf-modal" id="modal-newmcp">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title">注册外部 MCP</div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-modal-body">
+      <div class="pf-form-row">
+        <label class="req">名称</label>
+        <div><input class="pf-input" id="mcp-name" placeholder="例：zhipu"></div>
+      </div>
+      <div class="pf-form-row">
+        <label class="req">URL</label>
+        <div><input class="pf-input mono" id="mcp-url" placeholder="https://…"></div>
+      </div>
+      <div class="pf-form-row">
+        <label>API Key</label>
+        <div>
+          <input class="pf-input" id="mcp-apikey" type="password" placeholder="该外部服务的访问凭据（无鉴权可留空）" autocomplete="off">
+          <div class="pf-desc">保存后不再回显（仅尾 4 位）；文件权限 0600，不入库。</div>
+        </div>
+      </div>
+      <div class="pf-form-row">
+        <label class="req">工具前缀</label>
+        <div>
+          <input class="pf-input mono" id="mcp-prefix" placeholder="例：zhipu_">
+          <div class="pf-desc">聚合 tools/list 时用前缀防止命名冲突；限小写字母/数字/下划线（<span class="mono">[a-z0-9_]</span>）。</div>
+        </div>
+      </div>
+    </div>
+    <div class="pf-modal-foot">
+      <button class="pf-btn" data-close>取消</button>
+      <button class="pf-btn primary" id="btn-create-mcp">保存并重载</button>
+    </div>
+  </div>
+
+</template>
+<script src="assets/portal.js"></script>
+<script>
+(function () {
+  'use strict';
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function fmtN(n) { return Number(n || 0).toLocaleString('zh-CN'); }
+
+  function renderMcp(d) {
+    document.getElementById('builtin-sig').textContent = d.builtin.tool;
+    document.getElementById('builtin-model').textContent = 'standing on ' + d.builtin.model;
+    document.getElementById('mcp-extra').textContent = '共 ' + d.external.length + ' 个';
+    document.getElementById('mcp-rows').innerHTML = d.external.map(function (e) {
+      return '<tr>' +
+        '<td>' + esc(e.name) + '</td>' +
+        '<td class="mono">' + esc(e.url) + '</td>' +
+        '<td><span class="pf-chip ok">已保存</span> <span class="pf-key">' + esc(e.api_key_last4) + '</span></td>' +
+        '<td class="mono">' + esc(e.prefix) + '</td>' +
+        '<td><button class="pf-link danger js-mcp-remove" data-name="' + esc(e.name) + '">移除</button></td>' +
+      '</tr>';
+    }).join('') || '<tr><td colspan="5" class="pf-desc" style="padding:10px">暂未注册外部 MCP（US-P12：注册后用户无需自备外部 Key）</td></tr>';
+    document.querySelectorAll('.js-mcp-remove').forEach(function (btn) {
+      btn.onclick = function () {
+        if (!confirm('移除外部 MCP「' + btn.dataset.name + '」？将重启 mcp-hub 生效，进行中的工具调用会被中断。')) return;
+        window.pfApi('POST', '/mcp/remove', { name: btn.dataset.name }).then(function () {
+          window.pfToast('已移除并重启 mcp-hub');
+          load();
+        }).catch(function (e) { window.pfErr(e.error || '移除失败'); });
+      };
+    });
+  }
+
+  function renderUsage(d) {
+    document.getElementById('mcp-usage-rows').innerHTML = d.keys.map(function (k) {
+      var tools = Object.keys(k.tools || {}).map(function (t) {
+        return '<span class="pf-chip">' + esc(t) + ' × ' + fmtN(k.tools[t]) + '</span>';
+      }).join(' ');
+      return '<tr>' +
+        '<td>' + esc(k.alias) + '</td>' +
+        '<td>' + (tools || '<span class="pf-desc">—</span>') + '</td>' +
+        '<td class="num" style="font-weight:600">' + fmtN(k.total) + '</td>' +
+      '</tr>';
+    }).join('') || '<tr><td colspan="3" class="pf-desc" style="padding:10px">今日暂无 MCP 工具调用</td></tr>';
+  }
+
+  function load() {
+    window.pfApi('GET', '/mcp').then(renderMcp).catch(function (e) { window.pfErr(e.error || 'MCP 注册加载失败'); });
+    window.pfApi('GET', '/mcp/usage?days=1').then(renderUsage).catch(function () { /* 计数为空不报错 */ });
+  }
+
+  window.pfReady.then(function () {
+    load();
+    document.getElementById('btn-refresh-tools').addEventListener('click', function () {
+      document.getElementById('tools-preview').textContent = '拉取中…';
+      window.pfApi('GET', '/mcp/tools').then(function (d) {
+        document.getElementById('tools-preview').textContent = JSON.stringify(d, null, 2);
+      }).catch(function (e) { window.pfErr(e.error || '预览失败'); });
+    });
+    document.getElementById('btn-create-mcp').addEventListener('click', function () {
+      var body = {
+        name: document.getElementById('mcp-name').value.trim(),
+        url: document.getElementById('mcp-url').value.trim(),
+        api_key: document.getElementById('mcp-apikey').value.trim(),
+        prefix: document.getElementById('mcp-prefix').value.trim()
+      };
+      if (!body.name || !body.url || !body.prefix) { window.pfErr('名称、URL、前缀必填'); return; }
+      if (!confirm('保存将重启 mcp-hub 生效，进行中的工具调用会被中断。继续？')) return;
+      window.pfApi('POST', '/mcp/register', body).then(function (d) {
+        window.pfModalClose();
+        window.pfToast('已注册' + (d.restart === 'ok' ? '，mcp-hub 已重启生效' : '（重启失败，请检查服务）'));
+        load();
+      }).catch(function (e) { window.pfErr(e.error || '注册失败'); });
+    });
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>用户 Key · 远程模型网关</title>
+<link rel="stylesheet" href="assets/portal.css">
+</head>
+<body data-page="keys">
+<template id="page">
+
+  <!-- 页头 -->
+  <div class="pf-page-head">
+    <div class="pf-desc">用户 Key 是客户端调用网关（API 与 MCP 共用同一把）的唯一凭据；由管理员创建、分发、禁用，本期不开放用户自助注册（C3）。</div>
+    <button class="pf-btn primary" data-modal="modal-newkey" id="btn-open-newkey">新建密钥</button>
+  </div>
+
+  <!-- Key 列表 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head">
+      <div class="pf-card-title">Key 列表</div>
+      <div class="pf-card-extra" id="keys-extra">加载中…</div>
+    </div>
+    <table class="pf-table">
+      <thead>
+        <tr><th>备注名</th><th>Key（尾4位）</th><th>分组</th><th>模型范围</th><th>创建时间</th><th>状态</th><th>操作</th></tr>
+      </thead>
+      <tbody id="keys-tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="pf-desc">调用日志与用量口径中，Key 仅记尾 4 位；禁用立即生效，历史用量保留（见「用量总览」）。</div>
+
+  <!-- 新建密钥弹窗（两态：表单 → 仅显示一次） -->
+  <div class="pf-modal" id="modal-newkey">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title" id="newkey-title">新建密钥</div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-modal-body">
+      <div id="newkey-form">
+        <div class="pf-form-row">
+          <label class="req">备注名</label>
+          <div>
+            <input class="pf-input" id="newkey-alias" placeholder="例：小明的笔记本">
+            <div class="pf-desc">用于在列表与日志中识别该 Key，不作为鉴权信息。</div>
+          </div>
+        </div>
+        <div class="pf-form-row">
+          <label>provider 分组</label>
+          <div>
+            <select class="pf-select" id="newkey-group"></select>
+            <div class="pf-desc">决定该 Key 的请求只在组内站点上分流与故障转移（与模型白名单正交）；未绑组走 default。分组在「分组」页管理。</div>
+          </div>
+        </div>
+        <div class="pf-form-row">
+          <label>模型范围</label>
+          <div>
+            <input class="pf-input" id="newkey-models" placeholder="留空 = 全部模型（默认）；或填白名单，逗号分隔">
+            <div class="pf-desc">默认可调用全部对外模型名与 MCP 工具；白名单为管理员手动能力（LiteLLM 原生），对 API 与视觉 MCP 同时生效。</div>
+          </div>
+        </div>
+      </div>
+      <div id="newkey-result" style="display:none">
+        <div class="pf-banner">密钥全文仅此一次展示，关闭后只能看到尾 4 位。</div>
+        <div class="pf-code"><pre id="newkey-full"></pre></div>
+        <div class="pf-desc">请立即复制并妥善保存；网关不存储明文，丢失后只能禁用重发。</div>
+      </div>
+    </div>
+    <div class="pf-modal-foot">
+      <button class="pf-btn" id="newkey-cancel" data-close>取消</button>
+      <button class="pf-btn primary" id="btn-genkey">生成密钥</button>
+      <button class="pf-btn primary" id="btn-key-saved" style="display:none">我已保存</button>
+    </div>
+  </div>
+
+</template>
+<script src="assets/portal.js"></script>
+<script>
+(function () {
+  'use strict';
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+  function render(keys) {
+    var enabled = keys.filter(function (k) { return !k.blocked; }).length;
+    document.getElementById('keys-extra').textContent = '共 ' + keys.length + ' 把 · ' + enabled + ' 把启用';
+    document.getElementById('keys-tbody').innerHTML = keys.map(function (k) {
+      var scope = k.models && k.models.length
+        ? '<span class="pf-chip warn">白名单：' + esc(k.models.join(', ')) + '</span>'
+        : '<span class="pf-chip">全部模型</span>';
+      var statusChip = k.blocked ? '<span class="pf-chip gray">已禁用</span>' : '<span class="pf-chip ok">启用</span>';
+      var toggle = k.blocked
+        ? '<button class="pf-link js-toggle-key" data-token="' + esc(k.token) + '" data-blocked="1">启用</button>'
+        : '<button class="pf-link danger js-toggle-key" data-token="' + esc(k.token) + '" data-blocked="0">禁用</button>';
+      return '<tr' + (k.blocked ? ' class="pf-row-muted"' : '') + '>' +
+        '<td>' + esc(k.alias) + '</td>' +
+        '<td><span class="pf-key">sk-…' + esc(k.key_last4) + '</span></td>' +
+        '<td><span class="pf-chip">' + esc(k.group) + '</span></td>' +
+        '<td>' + scope + '</td>' +
+        '<td class="mono">' + esc((k.created_at || '').slice(0, 10)) + '</td>' +
+        '<td>' + statusChip + '</td>' +
+        '<td>' + toggle + ' <button class="pf-link danger js-delete-key" data-token="' + esc(k.token) + '" data-alias="' + esc(k.alias) + '">删除</button></td>' +
+      '</tr>';
+    }).join('') || '<tr><td colspan="7" class="pf-desc" style="padding:10px">暂无 Key</td></tr>';
+    bindActions();
+  }
+
+  function load() {
+    window.pfApi('GET', '/keys').then(function (d) { render(d.keys); })
+      .catch(function (e) { window.pfErr(e.error || 'Key 加载失败'); });
+  }
+
+  function bindActions() {
+    document.querySelectorAll('.js-toggle-key').forEach(function (btn) {
+      btn.onclick = function () {
+        var blocking = btn.dataset.blocked === '0';
+        window.pfApi('POST', blocking ? '/keys/block' : '/keys/unblock', { key: btn.dataset.token }).then(function () {
+          window.pfToast(blocking ? '已禁用，立即生效' : '已启用');
+          load();
+        }).catch(function (e) { window.pfErr(e.error || '操作失败'); });
+      };
+    });
+    document.querySelectorAll('.js-delete-key').forEach(function (btn) {
+      btn.onclick = function () {
+        if (!confirm('删除 Key「' + btn.dataset.alias + '」？该 Key 立即失效且不可恢复（历史用量保留）。')) return;
+        window.pfApi('POST', '/keys/delete', { key: btn.dataset.token }).then(function () {
+          window.pfToast('Key 已删除');
+          load();
+        }).catch(function (e) { window.pfErr(e.error || '删除失败'); });
+      };
+    });
+  }
+
+  window.pfReady.then(function () {
+    load();
+    window.pfApi('GET', '/groups').then(function (d) {
+      document.getElementById('newkey-group').innerHTML = d.groups.map(function (g) {
+        return '<option value="' + esc(g.name) + '">' + esc(g.name) + (g.system ? '（全部站点）' : '（成员：' + esc(g.sites.join(', ') || '无') + '）') + '</option>';
+      }).join('');
+    });
+
+    function state(showResult) {
+      document.getElementById('newkey-form').style.display = showResult ? 'none' : '';
+      document.getElementById('newkey-cancel').style.display = showResult ? 'none' : '';
+      document.getElementById('btn-genkey').style.display = showResult ? 'none' : '';
+      document.getElementById('newkey-result').style.display = showResult ? '' : 'none';
+      document.getElementById('btn-key-saved').style.display = showResult ? '' : 'none';
+      document.getElementById('newkey-title').textContent = showResult ? '密钥已生成（仅显示一次）' : '新建密钥';
+    }
+    document.getElementById('btn-open-newkey').addEventListener('click', function () { state(false); });
+    document.getElementById('btn-genkey').addEventListener('click', function () {
+      var alias = document.getElementById('newkey-alias').value.trim();
+      var group = document.getElementById('newkey-group').value || 'default';
+      var models = document.getElementById('newkey-models').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+      window.pfApi('POST', '/keys/create', { alias: alias, group: group, models: models }).then(function (d) {
+        document.getElementById('newkey-full').textContent = d.key;
+        state(true);
+      }).catch(function (e) { window.pfErr(e.error || '生成失败'); });
+    });
+    document.getElementById('btn-key-saved').addEventListener('click', function () {
+      window.pfModalClose(); window.pfToast('新密钥已创建并启用'); state(false); load();
+    });
+  });
+})();
+</script>
+</body>
+</html>

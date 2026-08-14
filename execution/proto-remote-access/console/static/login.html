@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>登录 · 远程模型网关</title>
+<link rel="stylesheet" href="assets/portal.css">
+<style>
+  /* 页面级布局（无壳居中）：仅排版尺寸，颜色全部复用 portal.css 令牌 */
+  .lg-page {
+    min-height: 100vh; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; padding: 24px;
+  }
+  .lg-card {
+    width: 380px; max-width: 100%;
+    background: #fff; border: 1px solid #f0f0f0; border-radius: 6px;
+    padding: 36px 32px 26px;
+  }
+  .lg-logo {
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    margin-bottom: 6px;
+  }
+  .lg-logo .pf-logo-mark { width: 36px; height: 36px; border-radius: 8px; }
+  .lg-title { font-size: 19px; font-weight: 600; letter-spacing: .2px; }
+  .lg-sub { text-align: center; font-size: 12.5px; color: #8c8c8c; margin-bottom: 24px; }
+  .lg-label {
+    display: block; font-size: 12.5px; color: #1f1f1f; margin-bottom: 6px;
+  }
+  .lg-card .pf-input { height: 34px; width: 100%; }
+  .lg-btn { width: 100%; height: 34px; margin-top: 18px; font-size: 13px; border: 0; cursor: pointer; }
+  .lg-note { text-align: center; margin-top: 16px; }
+  .lg-foot { margin-top: 24px; font-size: 12px; color: #8c8c8c; text-align: center; }
+  .lg-surface {
+    margin-top: 18px; display: flex; align-items: center; justify-content: center;
+    gap: 10px; font-size: 11.5px; color: #8c8c8c;
+  }
+  .lg-err { text-align: center; font-size: 12.5px; color: #c0392b; min-height: 18px; margin-top: 10px; }
+</style>
+</head>
+<body>
+
+<div class="lg-page">
+  <div class="lg-card">
+    <div class="lg-logo">
+      <span class="pf-logo-mark"><svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8.8 1.6 3.2 9h3.6l-.8 5.4L11.6 7H8z"/></svg></span>
+      <span class="lg-title">远程模型网关</span>
+    </div>
+    <div class="lg-sub">管理控制台 · 凭据登录</div>
+
+    <label class="lg-label" for="lg-pwd">Master Key 或 用户 Key</label>
+    <input class="pf-input mono" id="lg-pwd" type="password" placeholder="管理员填 Master Key；用户填自己的 sk- Key" autocomplete="current-password">
+
+    <button class="pf-btn primary lg-btn" id="lg-go" type="button">登 录</button>
+    <div class="lg-err" id="lg-err"></div>
+
+    <div class="pf-desc lg-note">Master Key 进入全部管理页；用户 Key 仅见「我的用量」。Master Key 不作为客户端调用凭据。</div>
+
+    <div class="lg-surface">
+      <span class="pf-dot ok"></span>公网仅开放 443/tcp · 51820/udp
+    </div>
+  </div>
+
+  <div class="lg-foot">远程模型网关 · 局域网私有推理模型的统一公网入口</div>
+</div>
+
+<script src="assets/portal.js"></script>
+<script>
+(function () {
+  'use strict';
+  var input = document.getElementById('lg-pwd');
+  var btn = document.getElementById('lg-go');
+  var errBox = document.getElementById('lg-err');
+
+  async function go() {
+    var key = input.value.trim();
+    if (!key) { errBox.textContent = '请输入 Key'; return; }
+    btn.disabled = true; btn.textContent = '登录中…'; errBox.textContent = '';
+    try {
+      var r = await fetch('/console/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        body: JSON.stringify({ key: key })
+      });
+      var body = null;
+      try { body = await r.json(); } catch (e) {}
+      if (!r.ok) throw (body && body.error) || ('登录失败 (' + r.status + ')');
+      location.href = r.role === 'admin' ? '/console/' : '/console/my-usage.html';
+    } catch (e) {
+      errBox.textContent = String(e);
+      btn.disabled = false; btn.textContent = '登 录';
+      input.select();
+    }
+  }
+  btn.addEventListener('click', go);
+  input.addEventListener('keydown', function (e) { if (e.key === 'Enter') go(); });
+  input.focus();
+})();
+</script>
+</body>
+</html>
