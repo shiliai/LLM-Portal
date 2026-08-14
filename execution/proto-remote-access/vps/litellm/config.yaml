@@ -1,25 +1,11 @@
 # LiteLLM Proxy 配置（private-llm 网关）
-# 站点 deployment 由 onboardd（/model/new）动态注册入库（STORE_MODEL_IN_DB=True），
-# 此处只放静态别名与全局路由/安全设置。
-model_list:
-  # 别名（US-P11）：Claude Code 默认模型名 → deepseek 直连上游
-  # 注意：deployment 不打 "default" tag（1.96.2 会把 default tag 当 tag 无匹配时的兜底池，
-  # 与基线「组内无部署→报错」冲突）；default 组 = 隐式全量池，由 group_routing.py 实现
-  - model_name: claude-opus-5
-    litellm_params:
-      model: openai/deepseek-v4-flash-0731
-      api_base: http://10.77.0.11:8890/v1
-      api_key: "none"            # 字面量占位：上游无鉴权；用户 Key 永不外发（C5）
-      connect_timeout: 5         # 隧道断开时连接级快速失败（US-P1 失败路径）
-      timeout: 600               # 整请求超时（长流式生成）
-  # 别名：基线文档口径的 qwen 名 → 实际上游 fp8 模型
-  - model_name: qwen3.6-35b-a3
-    litellm_params:
-      model: openai/qwen3.6-35b-fp8
-      api_base: http://10.77.0.11:8004/v1
-      api_key: "none"
-      connect_timeout: 5
-      timeout: 600
+# r6：模型/别名 deployment 全部动态注册入库（onboardd 站点注册 + consoled 别名克隆，STORE_MODEL_IN_DB=True），
+# 此处只保留引擎级设置骨架——config.yaml 属部署期配置（设计 §6 职责边界），日常管理走控制台 /console/。
+# 2026-08-14 迁移记录：静态别名 claude-opus-5、qwen3.6-35b-a3 已迁为 DB 条目（参数不变），
+# 由 consoled「模型与别名」页作为唯一事实来源管理。
+# 注意：deployment 不打 "default" tag（1.96.2 会把 default tag 当 tag 无匹配时的兜底池，
+# 与基线「组内无部署→报错」冲突）；default 组 = 隐式全量池，由 group_routing.py 实现
+model_list: []
 
 router_settings:
   routing_strategy: least-busy    # 按在途请求数分流（US-P6）

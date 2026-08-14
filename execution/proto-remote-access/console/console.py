@@ -288,10 +288,12 @@ def dep_of_site(dep: dict, wg_ip: str) -> bool:
 
 
 async def key_list_full() -> list[dict]:
-    _, body = await ll_json("GET", "/key/list", params={"return_full_object": "true", "size": 200})
+    """全量 Key（1.96.2 上限 size=100；MVP 规模足够，超出再加分页）。"""
+    _, body = await ll_json("GET", "/key/list", params={"return_full_object": "true", "size": 100})
     if isinstance(body, dict):
-        return body.get("keys") or []
-    return body or []
+        keys = body.get("keys") or []
+        return [k for k in keys if isinstance(k, dict)]
+    return [k for k in (body or []) if isinstance(k, dict)]
 
 
 async def retag_site(wg_ip: str, new_groups: list[str]) -> list[str]:
@@ -809,6 +811,14 @@ async def api_keys_delete(request: Request) -> Response:
     return JSONResponse(rbody if isinstance(rbody, dict) else {"error": str(rbody)[:300]}, status_code=code)
 
 
+async def api_keys_block(request: Request) -> Response:
+    return await api_keys_toggle(request, True)
+
+
+async def api_keys_unblock(request: Request) -> Response:
+    return await api_keys_toggle(request, False)
+
+
 # ---------------------------------------------------------------- 用户自查（user 角色）
 
 async def api_my(request: Request) -> Response:
@@ -1018,8 +1028,8 @@ api_routes = [
     Route("/console/api/models/alias", api_models_alias, methods=["POST"]),
     Route("/console/api/keys", api_keys, methods=["GET"]),
     Route("/console/api/keys/create", api_keys_create, methods=["POST"]),
-    Route("/console/api/keys/block", lambda r: api_keys_toggle(r, True), methods=["POST"]),
-    Route("/console/api/keys/unblock", lambda r: api_keys_toggle(r, False), methods=["POST"]),
+    Route("/console/api/keys/block", api_keys_block, methods=["POST"]),
+    Route("/console/api/keys/unblock", api_keys_unblock, methods=["POST"]),
     Route("/console/api/keys/delete", api_keys_delete, methods=["POST"]),
     Route("/console/api/my", api_my, methods=["GET"]),
     Route("/console/api/mcp", api_mcp, methods=["GET"]),
