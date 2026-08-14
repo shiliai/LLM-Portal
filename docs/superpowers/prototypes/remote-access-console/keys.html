@@ -23,12 +23,13 @@
     </div>
     <table class="pf-table">
       <thead>
-        <tr><th>备注名</th><th>Key（尾4位）</th><th>创建时间</th><th>状态</th><th>操作</th></tr>
+        <tr><th>备注名</th><th>Key（尾4位）</th><th>模型范围</th><th>创建时间</th><th>状态</th><th>操作</th></tr>
       </thead>
       <tbody>
         <tr>
           <td>默认管理员测试</td>
           <td><span class="pf-key">sk-gw-…a1b2</span></td>
+          <td><span class="pf-chip">全部模型</span></td>
           <td class="mono">2026-06-02</td>
           <td><span class="pf-chip ok">启用</span></td>
           <td>
@@ -38,6 +39,7 @@
         <tr>
           <td>chris-laptop</td>
           <td><span class="pf-key">sk-gw-…9f3e</span></td>
+          <td><span class="pf-chip">全部模型</span></td>
           <td class="mono">2026-07-10</td>
           <td><span class="pf-chip ok">启用</span></td>
           <td>
@@ -47,6 +49,7 @@
         <tr class="pf-row-muted">
           <td>家人共用</td>
           <td><span class="pf-key">sk-gw-…77c0</span></td>
+          <td><span class="pf-chip warn">白名单：qwen3.6-35b-a3</span></td>
           <td class="mono">2026-07-22</td>
           <td><span class="pf-chip gray">已禁用（2026-08-05）</span></td>
           <td>
@@ -75,8 +78,11 @@
           </div>
         </div>
         <div class="pf-form-row">
-          <label></label>
-          <div class="pf-desc">该 Key 可调用全部对外模型名与网关 MCP 端点；本期不支持按 Key 限制可用模型（下一阶段功能）。</div>
+          <label>模型范围</label>
+          <div>
+            <input class="pf-input" id="newkey-models" placeholder="留空 = 全部模型（默认）；或填白名单，逗号分隔">
+            <div class="pf-desc">默认可调用全部对外模型名与 MCP 工具；白名单为管理员手动能力（LiteLLM 原生），对 API 与视觉 MCP 同时生效。「用户申请模型开通」审批流为下一阶段。</div>
+          </div>
         </div>
       </div>
       <div id="newkey-result" style="display:none">
@@ -117,7 +123,7 @@ document.addEventListener('DOMContentLoaded', function () {
     btn.addEventListener('click', function () {
       var tr = btn.closest('tr');
       var enabling = btn.dataset.state === 'disabled';
-      var statusCell = tr.querySelector('td:nth-child(4)');
+      var statusCell = tr.querySelector('td:nth-child(5)');
       if (enabling) {
         statusCell.innerHTML = '<span class="pf-chip ok">启用</span>';
         tr.classList.remove('pf-row-muted');
