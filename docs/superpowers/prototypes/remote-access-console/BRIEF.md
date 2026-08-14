@@ -76,6 +76,8 @@ docs/superpowers/prototypes/remote-access-console/
 | lab-2f | 10.77.0.12 | `rT9mK2pL5nQ8…5nPqx=` | 1 分钟前 | deepseek-v4-flash-0731:8890 | 在线 |
 | old-site | 10.77.0.9 | `zA1bC4dE5fG9…A1bCd=` | 27 天前 | 无（已摘除） | 已吊销（2026-07-18），全页面灰化 |
 
+**provider 分组归属（对应设计 §3.1/§3.5，US-P13）**：hq-office ∈ `{default, home}`，lab-2f ∈ `{default}`，old-site 已吊销不属任何组。故 `home` 组 = 仅 hq-office——`家人共用` Key 绑 home 组时，其请求只落 hq-office（lab-2f 即使挂同名模型也不被选中）；`default` 组 = 全部在线站点。
+
 ### 5.2 模型与别名（models.html / index.html / usage.html / my-usage.html）
 
 | 对外模型名 | 类型 | Deployment | 路由策略 |
@@ -87,13 +89,13 @@ docs/superpowers/prototypes/remote-access-console/
 
 ### 5.3 用户 Key（keys.html / usage.html / my-usage.html / mcp.html）
 
-| 备注名 | Key 尾 4 位 | 模型范围 | 创建时间 | 状态 |
-|---|---|---|---|---|
-| 默认管理员测试 | a1b2 | 全部模型（默认） | 2026-06-02 | 启用 |
-| chris-laptop | 9f3e | 全部模型（默认） | 2026-07-10 | 启用 |
-| 家人共用 | 77c0 | 白名单：仅 qwen3.6-35b-a3（管理员手动设定示例） | 2026-07-22 | 已禁用（2026-08-05），今日用量恒为 0 |
+| 备注名 | Key 尾 4 位 | 分组 | 模型范围 | 创建时间 | 状态 |
+|---|---|---|---|---|---|
+| 默认管理员测试 | a1b2 | default | 全部模型（默认） | 2026-06-02 | 启用 |
+| chris-laptop | 9f3e | default | 全部模型（默认） | 2026-07-10 | 启用 |
+| 家人共用 | 77c0 | home | 白名单：仅 qwen3.6-35b-a3（管理员手动设定示例） | 2026-07-22 | 已禁用（2026-08-05），今日用量恒为 0 |
 
-**Key 绑定口径（对应设计文档 §3.5）**：Key 即身份（本期无独立账号实体）；默认全部模型可用，白名单为管理员手动能力（LiteLLM 原生 `models` 字段），对 API 与视觉 MCP 同时生效；「用户申请模型开通」审批流为下一阶段。
+**Key 绑定口径（对应设计文档 §3.5）**：Key 即身份（本期无独立账号实体）。两个正交维度——**分组**（决定请求只在组内站点/provider 上分流，未绑走 default；分组归属由站点接入 `site-add --group` 设定）与**模型范围**（默认全部，白名单为管理员手动能力，LiteLLM 原生 `models` 字段）——共同裁剪一把 Key 可达的 deployment：可用模型 = 组内 provider 部署的模型 ∩ 模型白名单。两者对 API 与视觉 MCP 同时生效；「用户申请模型开通」审批流为下一阶段。
 
 ### 5.4 用量数字（自洽，务必跨页对账）
 
