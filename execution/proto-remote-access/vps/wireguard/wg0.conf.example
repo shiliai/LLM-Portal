@@ -1,0 +1,12 @@
+# VPS 侧 WireGuard 接口模板（/etc/wireguard/wg0.conf，权限 0600）
+# deploy.sh 生成实值；[Peer] 段由 onboardd 在站点注册时追加
+[Interface]
+Address = 10.77.0.1/24
+ListenPort = 51820
+PrivateKey = <VPS_PRIVATE_KEY>
+
+# --- peers 由 onboardd 维护（site-add 注册时生成） ---
+# [Peer]
+# # site-a
+# PublicKey = <站点公钥>
+# AllowedIPs = 10.77.0.11/32

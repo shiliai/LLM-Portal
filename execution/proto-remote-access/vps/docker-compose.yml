@@ -1,0 +1,46 @@
+# LiteLLM Proxy + Postgres（private-llm 网关）
+# litellm 仅发布到 127.0.0.1:4000（mcp-hub/onboardd 回环访问）；
+# 对外由 nginx-sub2api 容器经共享 docker 网络按容器名 litellm 反代（见 nginx/private-llm.conf）。
+name: private-llm
+
+services:
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: litellm
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4000:4000"
+    volumes:
+      - ./litellm:/app/proxy:ro
+    command: ["--config", "/app/proxy/config.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      # 用容器名而非服务名：litellm 同时挂在共享网络，裸名 postgres 会解析到
+      # 其他 compose 项目的同名服务（实测被解析到 sub2api 的 postgres）
+      DATABASE_URL: postgresql://litellm:${POSTGRES_PASSWORD}@private-llm-postgres:5432/litellm
+      STORE_MODEL_IN_DB: "True"
+    networks:
+      - default
+      - shared
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:18-alpine
+    container_name: private-llm-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: litellm
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+
+networks:
+  # nginx-sub2api 容器所在的 compose 网络（deploy.sh 自动探测并注入 NGINX_SHARED_NETWORK）
+  shared:
+    external: true
+    name: ${NGINX_SHARED_NETWORK:-docker_default}

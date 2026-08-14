@@ -1,0 +1,39 @@
+# LiteLLM Proxy 配置（private-llm 网关）
+# 站点 deployment 由 onboardd（/model/new）动态注册入库（STORE_MODEL_IN_DB=True），
+# 此处只放静态别名与全局路由/安全设置。
+model_list:
+  # 别名（US-P11）：Claude Code 默认模型名 → deepseek 直连上游
+  # 注意：deployment 不打 "default" tag（1.96.2 会把 default tag 当 tag 无匹配时的兜底池，
+  # 与基线「组内无部署→报错」冲突）；default 组 = 隐式全量池，由 group_routing.py 实现
+  - model_name: claude-opus-5
+    litellm_params:
+      model: openai/deepseek-v4-flash-0731
+      api_base: http://10.77.0.11:8890/v1
+      api_key: "none"            # 字面量占位：上游无鉴权；用户 Key 永不外发（C5）
+      connect_timeout: 5         # 隧道断开时连接级快速失败（US-P1 失败路径）
+      timeout: 600               # 整请求超时（长流式生成）
+  # 别名：基线文档口径的 qwen 名 → 实际上游 fp8 模型
+  - model_name: qwen3.6-35b-a3
+    litellm_params:
+      model: openai/qwen3.6-35b-fp8
+      api_base: http://10.77.0.11:8004/v1
+      api_key: "none"
+      connect_timeout: 5
+      timeout: 600
+
+router_settings:
+  routing_strategy: least-busy    # 按在途请求数分流（US-P6）
+  enable_tag_filtering: true      # 分组过滤（US-P13）
+  num_retries: 1                  # 单站点失败重试到其他健康 deployment
+  timeout: 600
+  cooldown_time: 60               # 故障 deployment 冷却 60s（熔断）
+  allowed_fails: 1
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  store_model_in_db: true
+
+litellm_settings:
+  drop_params: true               # 上游不认识的参数直接丢弃，提高客户端兼容性
+  callbacks: ["proxy.group_routing.group_routing_hook"]   # US-P13：网关侧注入 Key 分组 tag（模块级实例；每请求强制 enable_tag_filtering）
