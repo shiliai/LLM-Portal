@@ -31,6 +31,7 @@
 - VPS `private-llm.onlyservice.io`（43.167.173.46）：litellm（容器，127.0.0.1:4000）+ postgres（compose 内网）+ mcp-hub/onboardd（systemd）+ wg0（10.77.0.1/24）全量上线。
 - 站点 gb10（192.168.88.181，WG IP 10.77.0.11）：`deepseek-v4-flash-0731`（:8890）与 `qwen3.6-35b-fp8`（:8004）已注册进路由池；对外名共 4 个（含 `claude-opus-5`、`qwen3.6-35b-a3` 别名）。
 - 验收 T1~T13 绝大部分通过（双站点分流与外部 MCP 实凭据两项待后续），本地 pi 已直连网关调用。
+- **性能（2026-08-14 晚调优后）**：短请求网关开销 0.58s ≈ 2 RTT + LiteLLM 0.2s；8K/32K-token 热 prompt 增量 +1.1s/+2.1s（隧道丢包 43% 最差窗口实测）。调优 = 四端 BBR + wg MTU 1280 + TCP 缓冲（详见 runbook §1.5 与 issue #6）。
 
 ## 快速部署
 
