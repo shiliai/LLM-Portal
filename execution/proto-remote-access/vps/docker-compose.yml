@@ -8,6 +8,12 @@ services:
     image: ghcr.io/berriai/litellm:main-stable
     container_name: litellm
     restart: unless-stopped
+    # BBR：litellm→站点 vLLM 的内层 TCP 走 wg 隧道（跨境 ~25% 晚高峰丢包），
+    # CUBIC 会把随机丢包当拥塞退避成 ~4KB/s；BBR 对随机丢包鲁棒（sysctl 为 per-netns，须在容器上设）
+    sysctls:
+      net.ipv4.tcp_congestion_control: bbr
+      net.ipv4.tcp_rmem: 4096 87380 16000000
+      net.ipv4.tcp_wmem: 4096 65536 16000000
     ports:
       - "127.0.0.1:4000:4000"
     volumes:

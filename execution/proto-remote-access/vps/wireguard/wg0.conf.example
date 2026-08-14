@@ -1,8 +1,10 @@
 # VPS 侧 WireGuard 接口模板（/etc/wireguard/wg0.conf，权限 0600）
 # deploy.sh 生成实值；[Peer] 段由 onboardd 在站点注册时追加
+# MTU=1280：跨境 UDP 链路对大包丢弃率高（晚高峰实测 10-25% 丢包），1280 吞吐为默认 1420 的 3-6 倍
 [Interface]
 Address = 10.77.0.1/24
 ListenPort = 51820
+MTU = 1280
 PrivateKey = <VPS_PRIVATE_KEY>
 
 # --- peers 由 onboardd 维护（site-add 注册时生成） ---

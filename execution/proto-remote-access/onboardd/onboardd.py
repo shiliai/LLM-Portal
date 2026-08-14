@@ -135,6 +135,7 @@ async def register(request: Request) -> Response:
         "[Interface]\n"
         f"PrivateKey = <SITE_PRIVATE_KEY>  # 站点私钥仅在本机，install.sh 已写好\n"
         f"Address = {wg_ip}/24\n"
+        "MTU = 1280                    # 跨境链路大 UDP 包丢弃率高，1280 实测吞吐 3-6 倍于默认 1420\n"
         "[Peer]\n"
         f"PublicKey = {vps_public_key()}\n"
         f"Endpoint = {DOMAIN}:{WG_PORT}\n"
@@ -313,6 +314,7 @@ sed "s|<SITE_PRIVATE_KEY>|$(cat /tmp/pll.key)|" > /etc/wireguard/wg0.conf <<'EOF
 [Interface]
 PrivateKey = <SITE_PRIVATE_KEY>
 Address = __WG_IP__/24
+MTU = 1280
 
 [Peer]
 PublicKey = __VPS_PUB__
@@ -325,6 +327,16 @@ sed -i "s|__WG_IP__|$WG_IP|; s|__VPS_PUB__|__VPS_PUBLIC_KEY__|; s|__ENDPOINT_WG_
 echo "-- enabling wg-quick@wg0 (auto-start & self-healing)"
 if systemctl is-active --quiet wg-quick@wg0; then systemctl restart wg-quick@wg0; else systemctl enable --now wg-quick@wg0; fi
 sleep 2
+
+echo "-- tuning tunnel transport (BBR, robust to cross-border random loss)"
+modprobe tcp_bbr 2>/dev/null || true
+cat > /etc/sysctl.d/99-private-llm-tunnel.conf <<'SYSCTL'
+net.ipv4.tcp_congestion_control = bbr
+net.core.default_qdisc = fq
+net.core.rmem_max = 7500000
+net.core.wmem_max = 7500000
+SYSCTL
+sysctl --system >/dev/null
 
 echo "-- self-check"
 OK=1

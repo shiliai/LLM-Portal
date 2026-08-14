@@ -19,7 +19,8 @@
 2. **qwen 实际模型名 `qwen3.6-35b-fp8`**（llama.cpp 实报）；基线口径名 `qwen3.6-35b-a3` 作别名并存。
 3. **US-P13 分组 tag 语义按 LiteLLM 1.96.2 实测校准**：① `enable_tag_filtering` 路由器级配置实测未生效，钩子改为每请求强制注入 `enable_tag_filtering=True`；② 带 `default` tag 的 deployment 会被实现当作「tag 无匹配时的兜底池」，与基线「组内无部署→报错」冲突——deployment 一律**不打 default tag**（default 组 = 隐式全量池），绑组 Key 由钩子注入组 tag、未绑组 Key 由钩子清空 tags（顺带清除客户端伪造的 `x-litellm-tags`）。Key 的分组仍存 `metadata.group`（default 视同未绑）。
 4. **wstunnel 过渡通道已移除**：部署当日因云安全组未放行 51820/udp 临时用 wstunnel（UDP-over-WS 走 443）打通，后被腾讯云主机安全标记为 Risktool（Linux.Risktool.Wstunell.Agow），按安全策略双端移除（服务/二进制/nginx 路径/uffw 规则全部清除），恢复设计原方案的直连 WG UDP。
-5. **网关主页 + API 面收敛**（2026-08-14 评审意见「根路径是 Swagger，所有 API 都暴露了」）：根路径 `/` 由 mcp-hub 托管静态主页 `mcp-hub/homepage.html`（对外脸面：BASE URL、模型清单、快速开始、MCP 用法，带在线状态灯）；`/openapi.json`、`/redoc`、`/health` 在 nginx 层对公网返回 404（`/health/liveliness` 保留供主页状态灯；Admin UI `/ui` 不受影响，验证过）。
+5. **隧道传输调优（2026-08-14 晚，TFT 优化）**：跨境 wg 隧道晚高峰实测 10~25% 丢包，内层 CUBIC 把随机丢包当拥塞，40KB 请求要 8-12s、400KB 要 80-97s（等效 ~4KB/s）。修复 = **两端 BBR**（VPS/site-a 宿主 + litellm 容器 netns，compose `sysctls`）+ **wg MTU 1280**（大 UDP 包丢弃率高）+ TCP 缓冲调大。效果：隧道 100KB 最优 1.06s（原 ~20s）。已落入 deploy.sh / install.sh 模板 / wg0.conf 模板。网关自身 size 无关开销（短请求 keep-alive）≈0.6s ≈ 2 RTT + LiteLLM ~0.2s。大 prompt（CC 20-47K token ≈ 100-250KB）端到端受两段跨境链路（客户端→VPS 上行 230-380KB/s、VPS→站点隧道）晚高峰物理带宽约束。
+6. **网关主页 + API 面收敛**（2026-08-14 评审意见「根路径是 Swagger，所有 API 都暴露了」）：根路径 `/` 由 mcp-hub 托管静态主页 `mcp-hub/homepage.html`（对外脸面：BASE URL、模型清单、快速开始、MCP 用法，带在线状态灯）；`/openapi.json`、`/redoc`、`/health` 在 nginx 层对公网返回 404（`/health/liveliness` 保留供主页状态灯；Admin UI `/ui` 不受影响，验证过）。
 
 ## 2. VPS 部署（一次性）
 
