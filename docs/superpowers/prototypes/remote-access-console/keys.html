@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>用户 Key · 远程模型网关</title>
+<link rel="stylesheet" href="assets/portal.css">
+</head>
+<body data-page="keys">
+<template id="page">
+
+  <!-- 页头 -->
+  <div class="pf-page-head">
+    <div class="pf-desc">用户 Key 是客户端调用网关（API 与 MCP 共用同一把）的唯一凭据；由管理员创建、分发、禁用，本期不开放用户自助注册（C3）。</div>
+    <button class="pf-btn primary" data-modal="modal-newkey" id="btn-open-newkey">新建密钥</button>
+  </div>
+
+  <!-- Key 列表 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head">
+      <div class="pf-card-title">Key 列表</div>
+      <div class="pf-card-extra">共 3 把 · 2 把启用</div>
+    </div>
+    <table class="pf-table">
+      <thead>
+        <tr><th>备注名</th><th>Key（尾4位）</th><th>创建时间</th><th>状态</th><th>操作</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>默认管理员测试</td>
+          <td><span class="pf-key">sk-gw-…a1b2</span></td>
+          <td class="mono">2026-06-02</td>
+          <td><span class="pf-chip ok">启用</span></td>
+          <td>
+            <button class="pf-link danger js-toggle-key" data-state="enabled">禁用</button>
+          </td>
+        </tr>
+        <tr>
+          <td>chris-laptop</td>
+          <td><span class="pf-key">sk-gw-…9f3e</span></td>
+          <td class="mono">2026-07-10</td>
+          <td><span class="pf-chip ok">启用</span></td>
+          <td>
+            <button class="pf-link danger js-toggle-key" data-state="enabled">禁用</button>
+          </td>
+        </tr>
+        <tr class="pf-row-muted">
+          <td>家人共用</td>
+          <td><span class="pf-key">sk-gw-…77c0</span></td>
+          <td class="mono">2026-07-22</td>
+          <td><span class="pf-chip gray">已禁用（2026-08-05）</span></td>
+          <td>
+            <button class="pf-link js-toggle-key" data-state="disabled">启用</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="pf-desc">调用日志与用量口径中，Key 仅记尾 4 位；禁用立即生效，历史用量保留（见「用量总览」）。</div>
+
+  <!-- 新建密钥弹窗（两态：表单 → 仅显示一次） -->
+  <div class="pf-modal" id="modal-newkey">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title" id="newkey-title">新建密钥</div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-modal-body">
+      <div id="newkey-form">
+        <div class="pf-form-row">
+          <label class="req">备注名</label>
+          <div>
+            <input class="pf-input" id="newkey-alias" placeholder="例：小明的笔记本" value="小明的笔记本">
+            <div class="pf-desc">用于在列表与日志中识别该 Key，不作为鉴权信息。</div>
+          </div>
+        </div>
+        <div class="pf-form-row">
+          <label></label>
+          <div class="pf-desc">该 Key 可调用全部对外模型名与网关 MCP 端点；本期不支持按 Key 限制可用模型（下一阶段功能）。</div>
+        </div>
+      </div>
+      <div id="newkey-result" style="display:none">
+        <div class="pf-banner">密钥全文仅此一次展示，关闭后只能看到尾 4 位。</div>
+        <div class="pf-code"><pre>sk-gw-p9K3mZxN4vR8wA6dF1sC5hT0jU2eB4gYq6f2c8</pre></div>
+        <div class="pf-desc">请立即复制并妥善保存；网关不存储明文，丢失后只能禁用重发。</div>
+      </div>
+    </div>
+    <div class="pf-modal-foot">
+      <button class="pf-btn" id="newkey-cancel" data-close>取消</button>
+      <button class="pf-btn primary" id="btn-genkey">生成密钥</button>
+      <button class="pf-btn primary" id="btn-key-saved" style="display:none">我已保存</button>
+    </div>
+  </div>
+
+</template>
+<script src="assets/portal.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+
+  /* ---------- 新建密钥：表单 → 仅显示一次 ---------- */
+  function state(showResult) {
+    document.getElementById('newkey-form').style.display   = showResult ? 'none' : '';
+    document.getElementById('newkey-cancel').style.display = showResult ? 'none' : '';
+    document.getElementById('btn-genkey').style.display    = showResult ? 'none' : '';
+    document.getElementById('newkey-result').style.display = showResult ? '' : 'none';
+    document.getElementById('btn-key-saved').style.display  = showResult ? '' : 'none';
+    document.getElementById('newkey-title').textContent     = showResult ? '密钥已生成（仅显示一次）' : '新建密钥';
+  }
+  document.getElementById('btn-open-newkey').addEventListener('click', function () { state(false); });
+  document.getElementById('btn-genkey').addEventListener('click', function () { state(true); });
+  document.getElementById('btn-key-saved').addEventListener('click', function () {
+    pfModalClose(); pfToast('新密钥已创建并启用'); state(false);
+  });
+
+  /* ---------- 禁用 / 启用切换 ---------- */
+  document.querySelectorAll('.js-toggle-key').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var tr = btn.closest('tr');
+      var enabling = btn.dataset.state === 'disabled';
+      var statusCell = tr.querySelector('td:nth-child(4)');
+      if (enabling) {
+        statusCell.innerHTML = '<span class="pf-chip ok">启用</span>';
+        tr.classList.remove('pf-row-muted');
+        btn.dataset.state = 'enabled';
+        btn.textContent = '禁用';
+        btn.classList.add('danger');
+        pfToast('已启用');
+      } else {
+        statusCell.innerHTML = '<span class="pf-chip gray">已禁用（刚刚）</span>';
+        tr.classList.add('pf-row-muted');
+        btn.dataset.state = 'disabled';
+        btn.textContent = '启用';
+        btn.classList.remove('danger');
+        pfToast('已禁用，立即生效');
+      }
+    });
+  });
+});
+</script>
+</body>
+</html>
