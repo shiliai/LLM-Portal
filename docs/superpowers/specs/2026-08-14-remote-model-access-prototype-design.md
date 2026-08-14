@@ -15,9 +15,9 @@
 
 | 决策点 | 选型 | 被否方案与原因 |
 |---|---|---|
-| API 网关 | **LiteLLM Proxy**（MIT）：原生双协议入口（OpenAI `/v1/chat/completions` + Anthropic `/v1/messages`，含流式 SSE 与 tool_use↔tool_calls 转换，满足 US-P3）；`model_name` 与 `litellm_params.model` 解耦即别名映射（US-P11）；Router `least-busy` 策略 + 健康检查冷却（逐字满足 US-P6「按在途请求数/延迟分流」）；虚拟 Key + Postgres + Admin UI + `/key/info`（US-P9/P10、C3） | **new-api**：负载均衡为加权随机，不满足冻结故事 US-P6 的「按在途请求数/延迟分流」原文；AGPL-3.0 与下一阶段改造路径冲突（详见 `planning/02-working/new_api_analysis.md`）。降级为「不改源码整机部署」的备选 |
+| API 网关 | **LiteLLM Proxy**（MIT）：原生双协议入口（OpenAI `/v1/chat/completions` + Anthropic `/v1/messages`，含流式 SSE 与 tool_use↔tool_calls 转换，满足 US-P3）；`model_name` 与 `litellm_params.model` 解耦即别名映射（US-P11）；Router `least-busy` 策略 + 健康检查冷却（逐字满足 US-P6「按在途请求数/延迟分流」）；虚拟 Key + Postgres + Admin UI + `/key/info`（US-P9/P10、C3）；**版本锁定** `ghcr.io/berriai/litellm:main-stable`（spike 实测版 1.96.2，US-P3 关键路径 PASS，见 §12.2） | **new-api**：负载均衡为加权随机，不满足冻结故事 US-P6 的「按在途请求数/延迟分流」原文；AGPL-3.0 与下一阶段改造路径冲突（详见 `planning/02-working/new_api_analysis.md`）。降级为「不改源码整机部署」的备选 |
 | 内网穿透 | **WireGuard**：每站点密钥对即站点身份，公钥可列出/吊销（US-P7/P8 的「公钥管理」只有 WG 天然支持）；内核态、断线自愈（US-P5）；未注册公钥的 UDP 探测被静默丢弃（C2） | **frp**：共享 token 鉴权，无逐站点公钥身份，无法满足 US-P8 吊销语义 |
-| 视觉 MCP | **自写 mcp-hub**（Python + fastmcp，约 300 行）：Streamable HTTP 挂 `/mcp`，形态同智谱 vision-mcp-server（US-P4 逐字要求）；同时承担外部 MCP 代理（US-P12） | 现成 MCP 网关（如 mcp-proxy 类项目）：无「内建视觉工具 + 上传换临时 URL + 按调用者 Key 记账」的组合能力，改造成本高于自写 |
+| 视觉 MCP | **自写 mcp-hub**（Python + fastmcp，约 300 行）：Streamable HTTP 挂 `/mcp`，形态同智谱 vision-mcp-server（US-P4 逐字要求）；同时承担外部 MCP 代理（US-P12）；对外契约锁定「Streamable HTTP + 标准 Bearer + `[a-z0-9_]` 工具名」最小可移植集，覆盖 Claude Code / Hermes / DeepSeek Harness / Pi 四类客户端（US-P4，依据见 §3.3） | 现成 MCP 网关（如 mcp-proxy 类项目）：无「内建视觉工具 + 上传换临时 URL + 按调用者 Key 记账」的组合能力，改造成本高于自写 |
 | 反代/TLS | **Caddy**：自动证书（C1），`flush_interval -1` 放行 SSE 流式 | Nginx + certbot：可用但配置量更大，原型期不选 |
 
 ## 2. 架构总览
@@ -100,6 +100,7 @@ router_settings:
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY   # 仅管理用途
   database_url: os.environ/DATABASE_URL       # Postgres：虚拟 Key + 用量
+  reject_clientside_metadata_tags: true       # US-P13 加固：拒绝客户端自带路由 tag，分组只由网关侧钩子注入
 
 litellm_settings:
   drop_params: true               # 上游不认识的参数直接丢弃，提高客户端兼容性
@@ -111,7 +112,7 @@ litellm_settings:
 - **每站点限额**（US-P6「可为每站点设并发/速率上限」）：deployment 级 `rpm`/`tpm` 字段，由 onboardd 注册时可选传入。
 - **别名的多站点分流**：`site-add --model` 传什么对外名就注册什么 deployment；若希望别名（如 `claude-opus-5`）也跨站点分流，需在各站点显式以该别名注册（同一端口可注册多个对外名）。T6 演练前按此配置。
 - **分组即 tag（US-P13 的实现）**：分组不引入新存储——deployment 的 `litellm_params.tags` 列出其所属分组名（多对多），Key 建号时把分组名写入 Key `metadata.group`（一把 Key 一个组）；`enable_tag_filtering: true` 后，路由器按本请求的路由 tag 只在同 tag 的 deployment 中做 least-busy 分流与熔断，组内无该模型部署即返回可判读错误。未绑组 Key 走 `default` 组（全部 provider 的 deployment 都带 `default` tag）。
-  - **为什么需要一个 ~30 行的自写 pre-call 钩子**：免费版 `enable_tag_filtering` 按**请求自带的 tag** 过滤（客户端用 `x-litellm-tags` 头携带）；而「Key 自带的组自动作用于路由」属于 LiteLLM **Enterprise** 的 team-based tag routing，且 key 级 `allowed_tags` 尚在提案阶段未实现（[litellm#22966](https://github.com/BerriAI/litellm/issues/22966)）。为避免客户端自行伪造 tag 绕过分组授权，组标签必须在**网关侧、鉴权之后**注入——故加一个免费版自定义 logger（`async_pre_call_hook`）读取已鉴权 Key 的 `metadata.group`、写入本请求的路由 tag，使分组授权不可被客户端旁路；钩子读不到组时回落 `default`。此钩子是本期唯一为 US-P13 新增的自写代码（计入 §10 自写合计 ~700→~730）。
+  - **为什么需要一个 ~30 行的自写 pre-call 钩子**：免费版 `enable_tag_filtering` 按**请求自带的 tag** 过滤（客户端用 `x-litellm-tags` 头携带）；而「Key 自带的组自动作用于路由」属于 LiteLLM **Enterprise** 的 team-based tag routing，且 key 级 `allowed_tags` 尚在提案阶段未实现（[litellm#22966](https://github.com/BerriAI/litellm/issues/22966)）。为避免客户端自行伪造 tag 绕过分组授权，组标签必须在**网关侧、鉴权之后**注入——故加一个免费版自定义 logger（`async_pre_call_hook`）读取已鉴权 Key 的 `metadata.group`、写入本请求的路由 tag，使分组授权不可被客户端旁路；钩子读不到组时回落 `default`。此钩子是本期唯一为 US-P13 新增的自写代码（计入 §10 自写合计 ~700→~730）。双保险：`general_settings.reject_clientside_metadata_tags: true` 在 HTTP 边界直接拒绝客户端携带的 metadata tags，钩子侧再**无条件覆写**本请求路由 tag——伪造的 `x-litellm-tags` 既进不来、也盖不掉网关注入的组 tag。
 
 ### 3.2 Caddyfile（单入口路径分发）
 
@@ -146,6 +147,15 @@ litellm_settings:
 1. 客户端带用户虚拟 Key 连 `/mcp`；mcp-hub 调 LiteLLM `/key/info` 验真伪与可用状态——用户 Key 的旅程到此为止，**永不发往任何上游**。
 2. `analyze_image` 内部：mcp-hub 以**调用者自己的 Key** 回调回环 LiteLLM `/v1/chat/completions`（model=`qwen3.6-35b-a3`，图片 URL 由 mcp-hub 进程内取回并转 base64 塞入消息体）——token 用量自然记在调用者 Key 上（US-P4 用量归属条款），LiteLLM 出站到无鉴权私有 qwen 时不带任何 Key。
 3. 外部 MCP 工具（US-P12）：mcp-hub 用**网关注册时保存的该服务凭据**向外部 MCP 转发；调用次数记入 SQLite（`key_hash, tool, ts`），token 不保证可得（基线原文如此）。
+
+**多客户端可移植性（US-P4，不只服务 Claude Code）**：`/mcp` 对外契约锁定最小可移植集——**Streamable HTTP 传输 + 标准 `Authorization: Bearer`（用户虚拟 Key）+ identifier-safe 工具名（`[a-z0-9_]`）**。一手调研（`planning/02-working/mcp_client_compatibility.md`、`deepseek_harness_mcp.md`）证实四类客户端全部原生可用：
+
+- **Claude Code**：`.mcp.json` `headers` 配 Bearer；推荐 `headersHelper`（保证工具调用 POST 也带头），规避偶发 Bearer→OAuth 误判（anthropics/claude-code#47424）；
+- **Hermes Agent**：`headers` 可配（`${VAR}` 内插），OAuth 2.1/mTLS 亦可用；
+- **DeepSeek Harness**（官方 `deepseek-ai/deepseek-harness`）：`cordis.yml` 插件 `headers` 注 Bearer（该 harness 无 OAuth 能力，恰需标准 Bearer）；`mcp__<server>__<tool>` 命名与字符集归一化天然兼容；
+- **Pi**（`badlogic/pi-mono`）：先 `pi install npm:pi-mcp-adapter` 装扩展，再按 url 型 server 配 Bearer。
+
+外部 MCP 工具前缀字符集同步限 `[a-z0-9_]`（如 `zhipu_`，细化 US-P12 防冲突）。实现约束：mcp-hub 用独立 `FastMCP()` 实例 + middleware 读请求头鉴权（**勿用** `FastMCP.from_fastapi`——会剥掉 authorization 头，PrefectHQ/fastmcp#2817）。若 D2 实测复现 #47424，再追加 MCP OAuth 2.1 元数据端点兜底（实现量小，本期不做、预留）。四类客户端接入配置示例进 runbook（§10）。
 
 外部 MCP 注册为 mcp-hub 的配置文件条目（`name / url / api_key / 前缀`），管理员编辑后重载生效；凭据文件权限 0600、不入库。
 
@@ -206,7 +216,7 @@ site-revoke beijing
 
 **流 2 — 带图直选 qwen（US-P2）**：同流 1，model=qwen3.6-35b-a3，消息体含 `image_url`（公网 URL 或 base64 内联均可，由客户端自备），LiteLLM 原样透传给 OpenAI 兼容的 qwen 上游。
 
-**流 3 — Claude Code 主对话（US-P3 + US-P11）**：Claude Code 配 `ANTHROPIC_BASE_URL=https://<你的域名>` + 虚拟 Key，默认模型名 `claude-opus-5` → LiteLLM `/v1/messages` 入口做 Anthropic→OpenAI 请求转换（含 system、tools、流式事件、tool_use↔tool_calls 双向映射）→ 别名解析到 deepseek → 响应逆向转换回 Anthropic 事件流。
+**流 3 — Claude Code 主对话（US-P3 + US-P11）**：Claude Code 配 `ANTHROPIC_BASE_URL=https://<你的域名>` + 虚拟 Key，默认模型名 `claude-opus-5` → LiteLLM `/v1/messages` 入口做 Anthropic→OpenAI 请求转换（含 system、tools、流式事件、tool_use↔tool_calls 双向映射）→ 别名解析到 deepseek → 响应逆向转换回 Anthropic 事件流。关键疑点已实测消解：LiteLLM 1.96.2 上流式 + tool_use 的 `input_json_delta` 完整、真实 Claude Code 2.1.220 端到端无重试循环（issue #4 spike，PASS，环境同 §9）；Claude Code 长会话的内联 `role:"system"`（telemetry）被 LiteLLM 静默丢弃——不 400、不重试、功能无损（issue #2 调研），本期接受，遗留观察见 §12.2。
 
 **流 4 — 视觉工具（US-P4，两步式覆盖本地图）**：
 - 图已有 URL：agent 调 `analyze_image(url, 问题)` → mcp-hub 取图转 base64 → 以调用者 Key 回调 LiteLLM(qwen) → 返回文字结果。
@@ -221,6 +231,7 @@ site-revoke beijing
 | 无/错虚拟 Key（API 或 MCP 或上传） | 401 拒绝 | US-P1 边界、US-P4 边界、C1 |
 | 未注册模型名 | 400/404「模型不存在」，不误路由 | US-P11 边界 |
 | Key 的分组内无请求模型的部署 | 可判读错误，不误路由到组外 provider | US-P13 边界 |
+| 客户端携带路由 tag（伪造分组） | `reject_clientside_metadata_tags` 边界拒绝；路由 tag 只由网关钩子注入 | US-P13 加固 |
 | 单站点宕/隧道断 | 5s 超时 → 重试健康 deployment → 该 deployment 冷却 60s | US-P6 |
 | 全部站点不可用 | 快速返回可判读 503，不无限挂起 | US-P1 失败路径、US-P6 |
 | 上传超限/类型非法 | 413 / 400，明确报错 | US-P4 边界 |
@@ -265,7 +276,7 @@ site-revoke beijing
 
 ## 9. 部署形态与实施顺序
 
-**VPS**：`docker compose`（LiteLLM + Postgres + Caddy）+ host systemd（`wg-quick@wg0`、onboardd、mcp-hub——后两者需执行 `wg` 命令/访问 WG 网络，host 运行免容器提权）。
+**VPS**：`docker compose`（LiteLLM + Postgres + Caddy；LiteLLM 镜像锁 `ghcr.io/berriai/litellm:main-stable` 的当前 digest——spike 验证版 1.96.2，Anthropic 入口路径历史上有版本回归，升级须重跑 T3）+ host systemd（`wg-quick@wg0`、onboardd、mcp-hub——后两者需执行 `wg` 命令/访问 WG 网络，host 运行免容器提权）。
 **站点**：仅 `install.sh`（装 wireguard-tools + 写配置 + systemd 自启），零其他依赖。
 
 **实施顺序（4 个里程碑）：**
@@ -273,7 +284,7 @@ site-revoke beijing
 | 里程碑 | 内容 | 打通故事 |
 |---|---|---|
 | D1 | 手工配 WG（首站点）+ LiteLLM + Caddy 上线 | US-P1/P2/P11（+US-P5 的 wg-quick 部分） |
-| D2 | Claude Code 联调 + mcp-hub 内建视觉与上传 | US-P3/P4 |
+| D2 | Claude Code 联调（含 spike 遗留：多轮 tool_result、`</think>` 透传、Responses API 开关行为）+ mcp-hub 内建视觉与上传 + 另一 harness（Hermes / DeepSeek Harness 任一）连 `/mcp` 冒烟 | US-P3/P4 |
 | D3 | onboardd + site-add/site-revoke + 外部 MCP 代理 | US-P7/P8/P12 |
 | D4 | 双站点分流演练 + 分组过滤（US-P13：分组页建组、站点页调成员、Key 绑组、客户端伪造 tag 无法越组）+ 全量验收 T1~T13 + runbook | US-P5/P6/P9/P10/P13 收口 |
 
@@ -300,7 +311,7 @@ execution/proto-remote-access/
 ├── site-tools/
 │   ├── site-add.sh  site-revoke.sh  site-list.sh   # 合计 ~150 行
 │   └── install.sh.tpl              # ~100 行
-└── docs/runbook.md                 # 部署步骤 + T1~T13 验收记录表
+└── docs/runbook.md                 # 部署步骤 + T1~T13 验收记录表 + 四客户端接入示例（Claude Code headersHelper / Hermes headers / dsh cordis.yml / pi-mcp-adapter 前置）
 ```
 
 ## 11. 故事覆盖映射（设计 playback，drift 0）
@@ -308,8 +319,8 @@ execution/proto-remote-access/
 | 故事/约束 | 承接设计章节 |
 |---|---|
 | US-P1/P2 | §3.1、§4 流1/流2、§5 |
-| US-P3 | §4 流3（LiteLLM `/v1/messages` 协议转换） |
-| US-P4 | §3.3、§4 流4（形态 A + 上传两步 + 凭据条款） |
+| US-P3 | §4 流3（LiteLLM `/v1/messages` 协议转换；spike 实测 PASS——issue #4） |
+| US-P4 | §3.3、§4 流4（形态 A + 上传两步 + 凭据条款 + 四客户端可移植集） |
 | US-P5 | §3.4 install.sh 第4步（wg-quick 自启 + PersistentKeepalive） |
 | US-P6 | §3.1 router_settings + 同名多 deployment |
 | US-P7 | §3.4 site-add/install.sh/onboardd |
@@ -323,10 +334,11 @@ execution/proto-remote-access/
 
 ## 12. 未决风险
 
-1. **上游 vLLM 工具调用解析质量**：deepseek 的 tool-call parser 与 Claude Code 高频工具调用的兼容性需 D2 实测；若解析不稳，回退方案是换 parser 或升级 vLLM（不影响架构）。
-2. **LiteLLM Anthropic 入口的边角兼容**：Claude Code 的部分扩展头/参数可能被 `drop_params` 吞掉——D2 联调时按报错逐项放行。
+1. **上游 vLLM 工具调用解析质量**：deepseek 的 tool-call parser 与 Claude Code 高频工具调用的兼容性需 D2 实测（spike 已在真实环境验证单轮工具调用解析正常——issue #4 测试 1/4，风险收窄到长程高频场景）；若解析不稳，回退方案是换 parser 或升级 vLLM（不影响架构）。
+2. **LiteLLM Anthropic 入口（原最大风险，已实测消解）**：US-P3 关键路径——流式 + tool_use 的 `input_json_delta` 完整性、真实 Claude Code 端到端无重试——已在 LiteLLM 1.96.2（`main-stable`）实测 **PASS**（issue #4，环境与 §9 部署形态一致）；历史 bug（#25561 等）未复现。遗留三项 D2 观察：① 多轮 tool_result 回传（#36540 路径，spike 只测了单轮）；② deepseek `</think>` reasoning 标签按普通文本透传（Claude Code 当前不报错）；③ 1.96.2 默认走 Responses API，`use_responses_api: false` 的生效行为两轮实测观察不一致，联调时确认并固定一种。版本回归风险以「锁 digest + 升级须重跑 T3」缓解。另：Claude Code 长会话内联 `role:"system"`（telemetry）被 LiteLLM 静默丢弃——不 400、不重试、功能无损（issue #2 调研），本期接受；生产化如需完整保留，按 claude-code-router [PR #1446](https://github.com/musistudio/claude-code-router/pull/1446) 的 ingress normalizer 方案补齐。
 3. **least-busy 策略在低并发下近似轮询**：属预期行为，不影响 US-P6 验收口径。
-4. **US-P13 分组路由依赖一个自写钩子**：免费版 LiteLLM 的 `enable_tag_filtering` 按请求 tag 过滤、不按 Key 自带分组过滤（team-based tag routing 属 Enterprise）；本设计以 ~30 行 pre-call 钩子在网关侧注入组 tag 补齐，钩子须在 D4 双站点演练中验证「客户端伪造 `x-litellm-tags` 无法越组」。若上游免费版后续补齐 key 级 `allowed_tags`（见 litellm#22966），可移除钩子、回归纯配置。
+4. **US-P13 分组路由依赖一个自写钩子**：免费版 LiteLLM 的 `enable_tag_filtering` 按请求 tag 过滤、不按 Key 自带分组过滤（team-based tag routing 属 Enterprise）；本设计以 ~30 行 pre-call 钩子在网关侧注入组 tag 补齐，并已加双保险——`general_settings.reject_clientside_metadata_tags: true` 在 HTTP 边界拒绝客户端携带的任何路由 tag、钩子**无条件覆写**本请求 tag。D4 双站点演练须验证「客户端伪造 `x-litellm-tags` 无法越组」。若上游免费版后续补齐 key 级 `allowed_tags`（见 litellm#22966），可移除钩子、回归纯配置。
+5. **MCP 多客户端怪癖（US-P4）**：① Claude Code 偶发忽略静态 Bearer 转而发起 OAuth 发现（anthropics/claude-code#47424）——主要缓解是 runbook 指定 `headersHelper`；若 D2 复现，再加 MCP OAuth 2.1 元数据端点兜底（§3.3，预留）。② Pi 无原生 MCP，须先 `pi install npm:pi-mcp-adapter`（runbook 前置说明）。③ DeepSeek Harness 处于 developer preview、官方预告会有 breaking changes——接入示例以官方 README 为准，runbook 注明。
 
 ## 13. 参考资料（设计输入）
 
@@ -334,3 +346,5 @@ execution/proto-remote-access/
 - `planning/02-working/new_api_analysis.md`（new-api 被否依据：AGPL + 加权随机 LB）
 - `planning/02-working/vps_provider_registration.md`（单入口拓扑、SSE 反代要点、SSRF 边界思想）
 - LiteLLM Tag Routing 文档 + [litellm#22966](https://github.com/BerriAI/litellm/issues/22966)（US-P13 实现依据：免费版 deployment `tags` + `enable_tag_filtering` 按请求 tag 过滤；Key 自带分组自动作用于路由属 Enterprise team-based tag routing，故加自写 pre-call 钩子补齐）
+- `planning/02-working/mcp_client_compatibility.md` 与 `planning/02-working/deepseek_harness_mcp.md`（US-P4 四客户端可移植矩阵与一手来源）
+- US-P3 spike 结论：本仓库 issue #4（PASS：LiteLLM 1.96.2 流式+工具调用实测）与 issue #2 调研（内联 system 静默丢弃，不阻塞）
