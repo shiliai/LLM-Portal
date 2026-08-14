@@ -26,6 +26,8 @@
       icon: icon('<rect x="1.8" y="1.8" width="5.2" height="5.2" rx="1"/><rect x="9" y="1.8" width="5.2" height="5.2" rx="1"/><rect x="1.8" y="9" width="5.2" height="5.2" rx="1"/><rect x="9" y="9" width="5.2" height="5.2" rx="1"/>') },
     { key: 'sites', title: '站点与公钥', file: 'sites.html',
       icon: icon('<circle cx="4.6" cy="4.6" r="2.4"/><circle cx="11.4" cy="11.4" r="2.4"/><path d="M6.4 6.4l3.2 3.2"/><path d="M2.4 11.4h2.8M11.4 1.8v2.8"/>') },
+    { key: 'groups', title: '分组', file: 'groups.html',
+      icon: icon('<rect x="1.8" y="3.4" width="7.4" height="7.4" rx="1.2"/><rect x="6.8" y="6" width="7.4" height="7.4" rx="1.2"/>') },
     { key: 'models', title: '模型与别名', file: 'models.html',
       icon: icon('<path d="M1.8 4.5h3.4l5 7h4"/><path d="M1.8 11.5h3.4M10.2 4.5h4"/><path d="M12.4 2.7l1.8 1.8-1.8 1.8M12.4 9.7l1.8 1.8-1.8 1.8"/>') },
     { key: 'keys', title: '用户 Key', file: 'keys.html',
