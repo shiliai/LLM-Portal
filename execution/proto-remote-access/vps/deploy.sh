@@ -64,14 +64,17 @@ SHARED_NET=$(docker inspect nginx-sub2api --format '{{range $k, $v := .NetworkSe
 [ -n "$SHARED_NET" ] || { echo "cannot detect nginx-sub2api network"; exit 1; }
 HOST_GW=$(docker network inspect "$SHARED_NET" --format '{{(index .IPAM.Config 0).Gateway}}')
 SHARED_SUBNET=$(docker network inspect "$SHARED_NET" --format '{{(index .IPAM.Config 0).Subnet}}')
-# nginx 容器反代到宿主机上的 onboardd/mcp-hub：仅放行共享网段（公网仍被 INPUT DROP 拦截）
+# nginx 容器反代到宿主机上的 onboardd/mcp-hub/consoled：仅放行共享网段（公网仍被 INPUT DROP 拦截）
 ufw allow from "$SHARED_SUBNET" to any port 8100 proto tcp comment 'private-llm onboardd (docker net only)' >/dev/null
 ufw allow from "$SHARED_SUBNET" to any port 8200 proto tcp comment 'private-llm mcp-hub (docker net only)' >/dev/null
+ufw allow from "$SHARED_SUBNET" to any port 8300 proto tcp comment 'private-llm consoled (docker net only)' >/dev/null
 sed -e "s|{{HOST_GATEWAY}}|${HOST_GW}|g" -e "s|{{LITELLM_UPSTREAM}}|litellm:4000|g" \
     nginx/private-llm.conf > "$STATE_DIR/nginx-private-llm.rendered.conf"
 cp "$NGINX_CONF_DIR/nginx.conf" "$NGINX_CONF_DIR/nginx.conf.backup-$(date +%Y%m%d-%H%M%S)"
-# 幂等：先移除旧块再追加
-sed -i '/# BEGIN private-llm/,/# END private-llm/d' "$NGINX_CONF_DIR/nginx.conf"
+# 幂等：先移除旧块再追加。注意必须保留 inode 原地写（cat > / >>）——此文件被单文件 bind-mount 进
+# nginx 容器，sed -i 会换 inode，容器内仍是旧内容、reload 也不生效（2026-08-14 实测踩坑，需重启容器才恢复）
+awk '/# BEGIN private-llm/,/# END private-llm/{next}1' "$NGINX_CONF_DIR/nginx.conf" > /tmp/pll-nginx-stripped.conf
+cat /tmp/pll-nginx-stripped.conf > "$NGINX_CONF_DIR/nginx.conf"
 { echo "# BEGIN private-llm (managed by private-llm deploy.sh)"; cat "$STATE_DIR/nginx-private-llm.rendered.conf"; echo "# END private-llm"; } >> "$NGINX_CONF_DIR/nginx.conf"
 if ! docker exec nginx-sub2api nginx -t 2>/dev/null; then
   echo "!! nginx config test failed; rendering diagnostics:"; docker exec nginx-sub2api nginx -t || true
@@ -87,9 +90,9 @@ NGINX_SHARED_NETWORK="$SHARED_NET" docker compose up -d
 sleep 5
 docker compose ps
 
-echo "== [5/8] systemd services (mcp-hub, onboardd)"
+echo "== [5/8] systemd services (mcp-hub, onboardd, console)"
 apt-get install -y -qq python3-venv >/dev/null 2>&1 || true
-for svc in mcp-hub onboardd; do
+for svc in mcp-hub onboardd console; do
   [ -d "$APP_DIR/$svc" ] || mkdir -p "$APP_DIR/$svc"
   cp -r "../$svc/." "$APP_DIR/$svc/"
   python3 -m venv "$APP_DIR/venvs/$svc"
@@ -107,10 +110,16 @@ cat > "$ETC_DIR/mcp-hub.env" <<EOF
 PUBLIC_BASE=https://$DOMAIN
 MCP_VISION_MODEL=${MCP_VISION_MODEL:-qwen3.6-35b-fp8}
 EOF
+cat > "$ETC_DIR/console.env" <<EOF
+DOMAIN=$DOMAIN
+LITELLM_MASTER_KEY=$LITELLM_MASTER_KEY
+ONBOARD_ADMIN_TOKEN=$ONBOARD_ADMIN_TOKEN
+MCP_VISION_MODEL=${MCP_VISION_MODEL:-qwen3.6-35b-fp8}
+EOF
 umask "$UMASK_OLD"
 systemctl daemon-reload
-systemctl enable --now mcp-hub onboardd
-systemctl restart mcp-hub onboardd
+systemctl enable --now mcp-hub onboardd console
+systemctl restart mcp-hub onboardd console
 
 echo "== [6/8] admin CLI (site-add / site-revoke / site-list)"
 for tool in site-add site-revoke site-list; do
@@ -120,10 +129,24 @@ done
 [ -f "$ETC_DIR/external-mcp.json" ] || echo '[]' > "$ETC_DIR/external-mcp.json"
 
 echo "== [7/8] smoke"
+sleep 2  # 等刚 restart 的服务完成 bind
 echo "-- litellm health:"; curl -sf -m 5 http://127.0.0.1:4000/health/liveliness && echo || echo "!! litellm not up (docker compose logs litellm)"
-echo "-- onboardd:"; curl -sf -m 5 -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:8100/onboard/install?token=x" | sed 's/^/   (expect 403): /'
-echo "-- mcp-hub:"; curl -sf -m 5 -o /dev/null -w '%{http_code}\n' -H 'authorization: Bearer invalid' http://127.0.0.1:8200/mcp/usage | sed 's/^/   (expect 401): /'
+echo "-- onboardd:"; curl -s -m 5 -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:8100/onboard/install?token=x" | sed 's/^/   (expect 403): /'
+echo "-- mcp-hub:"; curl -s -m 5 -o /dev/null -w '%{http_code}\n' -H 'authorization: Bearer invalid' http://127.0.0.1:8200/mcp/usage | sed 's/^/   (expect 401): /'
+echo "-- consoled:"; curl -s -m 5 -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8300/console/api/me | sed 's/^/   (expect 401): /'
 echo "-- https entrypoint:"; curl -sf -m 10 -o /dev/null -w '%{http_code}\n' "https://$DOMAIN/health/liveliness" | sed 's/^/   (expect 200): /'
+echo "== [7b/8] 暴露面收敛检查（r6 allowlist）"
+for path in /ui /login /sso /openapi.json /key/generate /onboard/admin/list /spend/logs /team/list; do
+  code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "https://$DOMAIN$path")
+  [ "$code" = "404" ] || echo "!! $path 未收敛（$code，应 404）"
+done
+for path in /v1/models /key/info; do
+  code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "https://$DOMAIN$path")
+  [ "$code" = "401" ] || echo "!! $path 应保留但未带 Key 应 401（实际 $code）"
+done
+code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "https://$DOMAIN/console/")
+{ [ "$code" = "200" ] || [ "$code" = "307" ]; } || echo "!! /console/ 应可达（实际 $code）"
+echo "   收敛检查完成（无 !! 即全过）"
 
 echo "== [8/8] done"
 echo "next: site-add <name> --model <model>:<port> ...   # 然后把输出的命令拷到站点机器执行"

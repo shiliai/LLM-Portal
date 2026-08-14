@@ -1,17 +1,18 @@
 # Runbook：private-llm 网关部署与运维
 
 > 交付物：`execution/proto-remote-access/`（设计文档 §10）
-> 设计：`docs/superpowers/specs/2026-08-14-remote-model-access-prototype-design.md`（proto-r5）
+> 设计：`docs/superpowers/specs/2026-08-14-remote-model-access-prototype-design.md`（proto-r6）
 
 ## 1. 拓扑与端口
 
 | 组件 | 位置 | 端口 | 说明 |
 |---|---|---|---|
-| nginx（既有 `nginx-sub2api` 容器） | 公网 | 443/tcp | 单入口：`/` → mcp-hub 托管的网关主页（隐藏 LiteLLM Swagger）；`/v1`、`/ui` → litellm；`/mcp*` → mcp-hub:8200；`/onboard/*` → onboardd:8100；SSE 不缓冲；`/openapi.json`、`/redoc`、`/health` 对公网 404（API 面收敛，本机仍可直查 127.0.0.1:4000） |
-| LiteLLM Proxy（容器） | 回环 | 127.0.0.1:4000 | 双协议 API（`/v1/chat/completions` + `/v1/messages`）、别名、least-busy 分流、虚拟 Key、Admin UI `/ui` |
+| nginx（既有 `nginx-sub2api` 容器） | 公网 | 443/tcp | 单入口（r6 allowlist）：`/`→主页、`/v1/*`+`= /key/info`+`= /health/liveliness`→litellm、`/mcp*`→mcp-hub:8200、`/onboard/install\|register\|confirm`→onboardd:8100、`/console`→consoled:8300；**其余一律 404**（LiteLLM `/ui`/`/login`/全部管理 API、`/onboard/admin/*` 不对公网）；SSE 不缓冲；本机仍可直查 127.0.0.1:4000 |
+| LiteLLM Proxy（容器） | 回环 | 127.0.0.1:4000 | 双协议 API（`/v1/chat/completions` + `/v1/messages`）、别名、least-busy 分流、虚拟 Key、用量记账——r6 起退居底层引擎，管理面经控制台 |
 | Postgres（容器） | compose 内 | 无主机端口 | LiteLLM Key/用量/deployment 存储（`STORE_MODEL_IN_DB=True`） |
-| mcp-hub（host systemd） | 0.0.0.0:8200 | ufw 拦公网 | `/mcp`（Streamable HTTP）+ `/mcp/upload` + `/mcp/files/*` + `/mcp/usage` |
-| onboardd（host systemd, root） | 0.0.0.1:8100→0.0.0.0:8100 | ufw 拦公网 | 站点注册：install/register/confirm + admin API |
+| mcp-hub（host systemd） | 0.0.0.0:8200 | ufw 拦公网 | `/mcp`（Streamable HTTP）+ `/mcp/upload` + `/mcp/files/*` + `/mcp/usage` + 主页托管 |
+| onboardd（host systemd, root） | 0.0.0.0:8100 | ufw 拦公网 | 站点注册：install/register/confirm + admin API（admin/* 仅本机，公网 404） |
+| **consoled（host systemd, root）** | 0.0.0.0:8300 | ufw 拦公网 | **管理控制台后端（r6）**：`/console/` 9 页 + `/console/api/*`；会话双角色（master=管理员 8 页 / 用户 Key=仅我的用量）；聚合 LiteLLM 管理 API（回环）+ onboardd + wg show + mcp-hub 状态 |
 | WireGuard wg0（host 内核） | 公网 | 51820/udp | 10.77.0.1/24，站点从 .11 递增；未注册公钥内核静默丢弃 |
 
 与设计的差异（环境适配，其余逐字落地）：
@@ -21,7 +22,10 @@
 4. **wstunnel 过渡通道已移除**：部署当日因云安全组未放行 51820/udp 临时用 wstunnel（UDP-over-WS 走 443）打通，后被腾讯云主机安全标记为 Risktool（Linux.Risktool.Wstunell.Agow），按安全策略双端移除（服务/二进制/nginx 路径/uffw 规则全部清除），恢复设计原方案的直连 WG UDP。
 5. **隧道传输调优（2026-08-14 晚，TFT 优化，issue #6）**：跨境 wg 隧道晚高峰实测 10~43% 丢包，内层 CUBIC 把随机丢包当拥塞，40KB 请求要 8-12s、400KB 要 80-97s（等效 ~4KB/s）。修复 = **四端 BBR**（VPS 宿主、site-a 宿主、litellm 容器 netns 经 compose `sysctls`、客户端工作站）+ **wg MTU 1280**（两端 wg0.conf 持久化；大 UDP 包丢弃率高，吞吐 3-6 倍于默认 1420）+ TCP 缓冲调大（容器 `tcp_rmem/wmem` 16MB，宿主 `rmem/wmem_max` 7.5MB）。已落入 deploy.sh / install.sh 模板 / wg0.conf 模板。
    **效果（当晚 23:45 实测，隧道丢包 43% 的最差窗口）**：隧道 100KB ~20s→1.06s（最优）；短请求 keep-alive 开销 0.58s ≈ 2 RTT + LiteLLM ~0.2s（达标）；8K-token（79KB）热请求增量 **+1.11s**；32K-token（318KB）增量 **+2.09s**（低于 3s 物理约束判定线，高于 0.7s 理想线）。**结论**：网关自身开销已达「≈1-2 RTT」目标；大 prompt 残余增量由跨境链路丢包/带宽决定（错峰显著更好）。基准脚本固化 `docs/bench-gateway.py`（部署机 `~/private-llm-bench/bench.py` 同源）。注意：`tcp_congestion_control` 为 per-netns，客户端工作站也须单独开启 BBR。
-6. **网关主页 + API 面收敛**（2026-08-14 评审意见「根路径是 Swagger，所有 API 都暴露了」）：根路径 `/` 由 mcp-hub 托管静态主页 `mcp-hub/homepage.html`（对外脸面：BASE URL、模型清单、快速开始、MCP 用法，带在线状态灯）；`/openapi.json`、`/redoc`、`/health` 在 nginx 层对公网返回 404（`/health/liveliness` 保留供主页状态灯；Admin UI `/ui` 不受影响，验证过）。
+6. **网关主页 + API 面收敛**（2026-08-14 评审意见「根路径是 Swagger，所有 API 都暴露了」）：根路径 `/` 由 mcp-hub 托管静态主页 `mcp-hub/homepage.html`（对外脸面：BASE URL、模型清单、快速开始、MCP 用法，带在线状态灯）；`/openapi.json`、`/redoc`、`/health` 在 nginx 层对公网返回 404（`/health/liveliness` 保留供主页状态灯）。
+7. **r6 自写控制台 + LiteLLM 退居底层 + 全量收敛**（2026-08-14 晚，proto-r6/US-P14）：新增 consoled:8300（`/console/` 9 页，双角色登录：master key=管理员 8 页 / 用户虚拟 Key=仅「我的用量」；会话在内存，consoled 重启即全员下线）；nginx 改 allowlist（见拓扑表，LiteLLM `/ui`、`/login`、全部管理 API、`/onboard/admin/*` 公网 404，应急通道 `ssh -L 4000:127.0.0.1:4000`）；静态别名 claude-opus-5、qwen3.6-35b-a3 一次性迁移为 DB deployment（config.yaml 只剩设置骨架，T3/T11 复验过）；分组改写 = 对站点 deployment 先 `/model/new`（带新 tags）再 `/model/delete`（实测 tags 经 /model/new 写入、/model/info 完整回显；不依赖 `/model/update` 的 tags 透传）。
+   **部署坑（重要）**：nginx.conf 被单文件 bind-mount 进 nginx-sub2api 容器，`sed -i` 会换 inode → 容器内仍是旧内容、reload 无效（2026-08-14 实测：改完 reload 行为不变，需重启容器才恢复）；deploy.sh 已改为 `cat >` 原地写（保留 inode），此后 reload 即生效。
+   **LiteLLM 1.96.2 管理面实测语义**（consoled 依赖）：`/key/list` 需 `return_full_object=true` 且 `size≤100`（超限 422）；禁用字段是 `blocked`（`/key/block`/`/key/unblock`，payload `{"key":"<sha256哈希>"}`，与 `/key/delete` 的 `{"keys":[…]}` 形状不同）；blocked Key 在鉴权层直接 401（API 与 mcp-hub 的 `/key/info` 验真同步生效，无需额外代码）；`/key/info` 自查不返回 blocked 字段；`/spend/logs` 的 `api_key`/`start_date` 过滤参数实测不可靠 → consoled 全量拉取本地聚合；错误行 = `status=="failure"`（鉴权失败 401 不入日志，控制台错误表已注明口径）。
 
 ## 2. VPS 部署（一次性）
 
@@ -42,13 +46,13 @@ deploy.sh 幂等；nginx 改动带备份与 `nginx -t` 失败自动回滚（不�
 ### 建用户 Key（C3：管理员创建分发）
 
 ```bash
+# 首选：控制台 https://<域名>/console/ →「用户 Key」页（master key 登录，一次性展示全文）
+# CLI 等价（默认组）：
 source /root/../etc/private-llm/onboardd.env 2>/dev/null || source ~/LLM-Portal/vps/.env
-# 默认组（全部 provider）
 curl -s http://127.0.0.1:4000/key/generate -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H 'content-type: application/json' \
   -d '{"key_alias":"pi-local","metadata":{"group":"default"}}'
-# 绑定分组（US-P13）：先建带 tag 的 deployment 分组，再把 Key 的 metadata.group 设为组名
-# Admin UI：https://<域名>/ui （master key 登录）可视化完成同样的操作
+# 绑定分组（US-P13）：先把站点划入分组（控制台「分组」页或站点页），再把 Key 的 metadata.group 设为组名
 ```
 
 ## 3. 站点接入（US-P7/P8）
@@ -97,25 +101,29 @@ install.sh 在站点侧：装 wireguard-tools → `wg genkey`（私钥不出机�
 | T11 | US-P11 | `/v1/models` 见全部对外名；未知名→400/404 | ✅ 4 个对外名（deepseek/qwen 直选 + claude-opus-5/qwen3.6-35b-a3 别名） |
 | T12 | US-P12 | 外部 MCP 注册后 tools/list 前缀工具可用 | ◐ 框架就绪（配置文件 + 占位符过滤 + 前缀代理）；智谱真实凭据待录入验证 |
 | T13 | US-P13 | Key 绑组仅组内路由；伪造 tag 无法越组；组内无部署→可判读错误 | ✅ 六项矩阵全过：home Key→组外模型 401 可判读、组内 200、伪造 x-litellm-tags 双向无效、未绑组全量 |
+| T14 | US-P9 修订/P14 | 控制台全流程（2026-08-14 晚实测） | ✅ 登录三态（master→admin / 用户 Key→user / 错 Key 401，连错 5 次 60s 内 429）；user 访问管理 API 全 403、/my 数据真实（今日 133 次 + 分模型）；Key 建/禁/解禁/删全链路（blocked→chat 401、mcp 401，删除→401）；分组 create/rename/delete 的 retag 实效（/model/info tags 逐条核对）；站点 token 下发（900s + 安装命令）；别名创建（/v1/models 可见 + 调用 200）；MCP 注册/移除（配置 0600 + restart + 凭据只显尾 4 位 + 不可达服务优雅降级） |
+| T15 | US-P14 | 暴露面收敛回归（2026-08-14 晚实测） | ✅ 管理面 404 矩阵：/ui、/login、/sso、/openapi.json、/redoc、/health、/key/generate、/key/block、/key/update、/key/list、/model/new、/model/info、/team/list、/global/spend、/spend/logs、/onboard/admin/*、任意未知名全 404；保留面正常：/（主页 200）、/v1/models（带 Key 200）、SSE 流式 chat、/v1/messages（CC 协议 200）、/key/info、/health/liveliness、/mcp（无 Key 401）、/onboard/install（坏 token 403）、/console/（200）；site-add/list CLI 走本机 8100 不受影响；deploy.sh 冒烟含收敛自检 |
 
 **部署当日实测补充**：本地 pi CLI（badlogic/pi-mono 0.84.1）以 `private-llm` provider（baseUrl `https://llm-portal.example.com/v1`）直调 deepseek 与 qwen 均通过——US 的「本地 pi 直接调用网关模型」目标达成。
 
 ## 6. 日常运维
 
 ```bash
+# 日常管理（r6 起唯一入口）：https://<域名>/console/（master key 登录）
+#   站点/分组/模型别名/用户 Key/用量/外部 MCP 全部在控制台完成；LiteLLM 引擎级配置走下面 SSH
 # 日志
-journalctl -u mcp-hub -u onboardd -f
+journalctl -u console -u mcp-hub -u onboardd -f
 docker logs -f litellm
-# 模型/Key 管理：https://<域名>/ui（master key）
-# 重启组件
-sudo systemctl restart mcp-hub onboardd
-cd ~/LLM-Portal/vps && sudo ./deploy.sh   # 幂等升级
+# 重启组件（consoled 重启会清会话=全员重新登录；mcp-hub 重启会中断进行中的 MCP 调用）
+sudo systemctl restart console mcp-hub onboardd
+cd ~/LLM-Portal/vps && sudo ./deploy.sh   # 幂等升级（含收敛自检；nginx 配置为原地写，reload 即生效）
+# LiteLLM 应急通道（管理 API/UI 已公网 404）：ssh -L 4000:127.0.0.1:4000 your-vps → http://localhost:4000/ui
 # 证书：certbot 每日 cron 自动续期（已并入 renew.sh）
 ```
 
 ## 7. 密钥与安全（C1/C2/C5）
 
-- master key / postgres 密码 / onboard admin token：`vps/.env`（VPS 上 0600，不入库）+ `/etc/private-llm/*.env`。
+- master key / postgres 密码 / onboard admin token：`vps/.env`（VPS 上 0600，不入库）+ `/etc/private-llm/*.env`（onboardd/mcp-hub/console）。r6 起公网不再有任何接受 master key 的端点（控制台登录在 consoled 内部完成，LiteLLM 管理面仅回环）。
 - WG 私钥：VPS `/var/lib/private-llm/wireguard-private.key`（0600）与 `/etc/wireguard/wg0.conf`（0600）；站点私钥仅站点本机。
 - 用户 Key 永不出网关：mcp-hub 只用它调 `/key/info` 与回环 LiteLLM；上游无鉴权直连不带 Key。
 - 公网面：443/tcp（nginx）、51820/udp（WG）、SSH；其余全部 ufw DROP + 仅回环/compose 网内监听。
