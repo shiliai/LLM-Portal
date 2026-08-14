@@ -136,7 +136,7 @@ docs/superpowers/prototypes/remote-access-console/
 - **keys.html（US-P9/C3）**：Key 列表 + 启用/禁用即时切换；「新建密钥」两态弹窗（表单 → 一次性展示假 `sk-gw-…` 全文）。
 - **usage.html（US-P9）**：Key/模型筛选工具栏（真实 `<select>` change 事件过滤表格行 + 空态行）；用量明细表（含 tfoot 合计）；按 Key 占比条形图；近期错误表。
 - **my-usage.html（US-P10）**：顶部 `.pf-banner.info` 明示「只能查看自己 Key 的用量」（模拟身份 chris-laptop）；API 用量明细 + MCP 用量明细两张表，数字与 §5.4/§5.5 对账。
-- **mcp.html（US-P4/US-P12）**：内建工具卡 `analyze_image`（standing on qwen3.6-35b-a3，说明凭据边界与本地图片上传前置步骤）；外部 MCP 注册表（zhipu 示例）+「注册外部 MCP」弹窗；聚合 `tools/list` 预览（`.pf-code` JSON）；按 Key 调用计数表；`POST /mcp/upload` 接口说明卡（30 分钟 TTL、≤10MB、jpg/png/webp/gif、`.pf-code` curl 示例）。
+- **mcp.html（US-P4/US-P12）**：内建工具卡 `analyze_image`（standing on qwen3.6-35b-a3，说明凭据边界、本地图片上传前置步骤与「客户端兼容」——Claude Code / Hermes / DeepSeek Harness / Pi 四类客户端、统一 Bearer）；外部 MCP 注册表（zhipu 示例）+「注册外部 MCP」弹窗（工具前缀限 `[a-z0-9_]`）；聚合 `tools/list` 预览（`.pf-code` JSON）；按 Key 调用计数表；`POST /mcp/upload` 接口说明卡（30 分钟 TTL、≤10MB、jpg/png/webp/gif、`.pf-code` curl 示例）。
 
 ## 7. 一致性红线
 

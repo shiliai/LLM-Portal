@@ -31,6 +31,7 @@
       <div class="pf-kv-k">凭据边界</div><div class="pf-kv-v">网关以调用者自己的 Key 回调回环 <span class="mono">/v1/chat/completions</span>（model=qwen3.6-35b-a3）；私有 qwen 无鉴权上游，出站不带任何 Key（C5）。</div>
       <div class="pf-kv-k">本地图片</div><div class="pf-kv-v">先经 <span class="mono">POST /mcp/upload</span>（同一 Key）换取限时临时 URL，再调用工具；toolcall 参数只含路径/URL 短字符串，base64 转换发生在 mcp-hub 进程内。</div>
       <div class="pf-kv-k">用量归属</div><div class="pf-kv-v">模型消耗计入调用者自己的 Key，与 API 通道共用同一账本（与 US-P10 口径一致）。</div>
+      <div class="pf-kv-k">客户端兼容</div><div class="pf-kv-v">契约 = Streamable HTTP + 标准 <span class="mono">Authorization: Bearer</span>（与 API 同一把 Key）+ 小写下划线工具名；Claude Code / Hermes / DeepSeek Harness / Pi（先装 pi-mcp-adapter 扩展）四类客户端均可接入，接入示例见 runbook。</div>
     </div>
   </div>
 
@@ -152,7 +153,7 @@
         <label class="req">工具前缀</label>
         <div>
           <input class="pf-input mono" placeholder="例：zhipu_">
-          <div class="pf-desc">聚合 tools/list 时用前缀防止与内建工具或其他外部 MCP 命名冲突。</div>
+          <div class="pf-desc">聚合 tools/list 时用前缀防止与内建工具或其他外部 MCP 命名冲突；前缀限小写字母/数字/下划线（`[a-z0-9_]`），保证各客户端侧工具名合法。</div>
         </div>
       </div>
     </div>
