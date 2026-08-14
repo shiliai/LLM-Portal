@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>private-llm · 私有模型网关</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%231e40af'/><text x='50' y='68' font-size='52' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='bold'>P</text></svg>">
+<style>
+  :root{
+    --blue-900:#172554; --blue-800:#1e3a8a; --blue-700:#1d4ed8; --blue-600:#2563eb;
+    --blue-50:#eff6ff; --slate-900:#0f172a; --slate-600:#475569; --slate-400:#94a3b8;
+    --line:#e2e8f0; --ok:#059669; --bad:#dc2626; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;color:var(--slate-900);background:#f8fafc;line-height:1.6}
+  .topbar{background:linear-gradient(135deg,var(--blue-900),var(--blue-700));color:#fff;padding:0 24px}
+  .topbar-in{max-width:960px;margin:0 auto;display:flex;align-items:center;gap:12px;height:60px}
+  .logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px}
+  .logo .mark{width:30px;height:30px;border-radius:8px;background:rgba(255,255,255,.16);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:16px}
+  .logo small{font-weight:400;opacity:.75;font-size:12px}
+  .spacer{flex:1}
+  .status{display:flex;align-items:center;gap:7px;font-size:13px;background:rgba(255,255,255,.12);padding:5px 12px;border-radius:999px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--slate-400)}
+  .dot.on{background:#4ade80;box-shadow:0 0 0 3px rgba(74,222,128,.25)}
+  .dot.off{background:#f87171}
+  main{max-width:960px;margin:0 auto;padding:36px 24px 56px}
+  .hero h1{font-size:28px;letter-spacing:-.5px;margin-bottom:8px}
+  .hero p{color:var(--slate-600);max-width:640px}
+  .baseurl{margin:22px 0 6px;background:var(--slate-900);color:#e2e8f0;border-radius:12px;padding:14px 18px;font-family:var(--mono);font-size:14px;display:flex;align-items:center;gap:10px;overflow-x:auto}
+  .baseurl .tag{background:var(--blue-600);color:#fff;font-family:inherit;font-size:11px;padding:2px 8px;border-radius:6px;white-space:nowrap}
+  .hint{font-size:12.5px;color:var(--slate-400);margin-bottom:28px}
+  h2{font-size:16px;margin:34px 0 14px;display:flex;align-items:center;gap:8px}
+  h2::before{content:"";width:4px;height:16px;background:var(--blue-600);border-radius:2px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:12px}
+  .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .card .name{font-family:var(--mono);font-size:13.5px;font-weight:600;color:var(--blue-800);word-break:break-all}
+  .card .desc{font-size:12.5px;color:var(--slate-600);margin-top:6px}
+  .pill{display:inline-block;font-size:11px;padding:1px 8px;border-radius:999px;background:var(--blue-50);color:var(--blue-700);margin-top:8px}
+  .pill.alias{background:#f5f3ff;color:#6d28d9}
+  pre{background:var(--slate-900);color:#e2e8f0;border-radius:12px;padding:16px 18px;font-family:var(--mono);font-size:12.5px;overflow-x:auto;line-height:1.7}
+  pre .c{color:#64748b}
+  pre .k{color:#7dd3fc}
+  pre .s{color:#86efac}
+  .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+  .note{font-size:12.5px;color:var(--slate-400);margin-top:10px}
+  footer{border-top:1px solid var(--line);margin-top:44px;padding-top:18px;font-size:13px;color:var(--slate-400);display:flex;gap:18px;flex-wrap:wrap}
+  footer a{color:var(--blue-700);text-decoration:none}
+  footer a:hover{text-decoration:underline}
+  @media (max-width:560px){.hero h1{font-size:22px}}
+</style>
+</head>
+<body>
+<div class="topbar"><div class="topbar-in">
+  <div class="logo"><span class="mark">P</span>private-llm<small>私有模型网关</small></div>
+  <div class="spacer"></div>
+  <div class="status"><span class="dot" id="dot"></span><span id="stext">检查中…</span></div>
+</div></div>
+
+<main>
+  <div class="hero">
+    <h1>随时随地访问局域网里的私有大模型</h1>
+    <p>统一公网入口 · OpenAI / Anthropic 双协议 · WireGuard 加密隧道 · 虚拟 Key 鉴权与用量统计。客户端只需一个地址和一把 Key。</p>
+  </div>
+  <div class="baseurl"><span class="tag">BASE URL</span>https://llm-portal.example.com/v1</div>
+  <div class="hint">API Key 由管理员发放（&lt;sk-…&gt;）；同一把 Key 通吃 API 与 MCP，用量自动记账。</div>
+
+  <h2>对外模型</h2>
+  <div class="grid">
+    <div class="card"><div class="name">deepseek-v4-flash-0731</div><div class="desc">文本推理 · 1M 上下文（vLLM）</div><span class="pill">直选</span></div>
+    <div class="card"><div class="name">qwen3.6-35b-fp8</div><div class="desc">多模态识图 · 262K 上下文</div><span class="pill">直选 · 视觉</span></div>
+    <div class="card"><div class="name">claude-opus-5</div><div class="desc">Claude Code 默认名 → deepseek</div><span class="pill alias">别名</span></div>
+    <div class="card"><div class="name">qwen3.6-35b-a3</div><div class="desc">兼容旧称 → qwen3.6-35b-fp8</div><span class="pill alias">别名</span></div>
+  </div>
+
+  <h2>快速开始</h2>
+  <div class="cols">
+    <div>
+      <pre><span class="c"># 流式对话（任意 OpenAI 兼容客户端）</span>
+curl https://llm-portal.example.com/v1/chat/completions \
+  -H <span class="s">"Authorization: Bearer sk-…"</span> \
+  -H <span class="s">"Content-Type: application/json"</span> \
+  -d <span class="k">'{"model":"deepseek-v4-flash-0731",
+       "stream":true,
+       "messages":[{"role":"user","content":"你好"}]}'</span></pre>
+    </div>
+    <div>
+      <pre><span class="c"># Claude Code（Anthropic 协议自动转换）</span>
+export ANTHROPIC_BASE_URL=https://llm-portal.example.com
+export ANTHROPIC_AUTH_TOKEN=sk-…
+<span class="c"># 默认模型名 claude-opus-5 已映射到 deepseek</span>
+
+<span class="c"># pi CLI（已内置 private-llm provider）</span>
+pi --provider private-llm --model qwen3.6-35b-fp8</pre>
+    </div>
+  </div>
+
+  <h2>MCP 视觉工具（同一把 Key）</h2>
+  <pre><span class="c"># MCP 端点：Streamable HTTP + Bearer</span>
+https://llm-portal.example.com/mcp
+<span class="c"># 内建工具 analyze_image(image_url, question)——token 记在调用者 Key 上</span>
+<span class="c"># 本地图片两步式：先上传换 30 分钟临时 URL，再调用工具</span>
+curl -X POST https://llm-portal.example.com/mcp/upload \
+  -H <span class="s">"Authorization: Bearer sk-…"</span> -F <span class="s">file=@shot.png</span>
+<span class="c"># 用量自查</span>
+curl https://llm-portal.example.com/mcp/usage -H <span class="s">"Authorization: Bearer sk-…"</span></pre>
+  <div class="note">MCP 无原生支持的客户端（如 pi）先安装适配器：<code>pi install npm:pi-mcp-adapter</code></div>
+
+  <footer>
+    <span>© private-llm gateway · proto-remote-access MVP</span>
+    <a href="/ui/">管理控制台 /ui</a>
+    <a href="https://github.com/shiliai/LLM-Portal">GitHub</a>
+  </footer>
+</main>
+
+<script>
+(async () => {
+  const dot = document.getElementById('dot'), text = document.getElementById('stext');
+  const check = async () => {
+    try {
+      const r = await fetch('/health/liveliness', {cache: 'no-store'});
+      const ok = r.ok;
+      dot.className = 'dot ' + (ok ? 'on' : 'off');
+      text.textContent = ok ? '服务在线' : '服务异常';
+    } catch (e) {
+      dot.className = 'dot off'; text.textContent = '服务离线';
+    }
+  };
+  check(); setInterval(check, 30000);
+})();
+</script>
+</body>
+</html>
