@@ -145,7 +145,7 @@ for path in /v1/models /key/info; do
   [ "$code" = "401" ] || echo "!! $path 应保留但未带 Key 应 401（实际 $code）"
 done
 code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "https://$DOMAIN/console/")
-{ [ "$code" = "200" ] || [ "$code" = "307" ]; } || echo "!! /console/ 应可达（实际 $code）"
+{ [ "$code" = "200" ] || [ "$code" = "302" ] || [ "$code" = "307" ]; } || echo "!! /console/ 应可达（实际 $code）"
 echo "   收敛检查完成（无 !! 即全过）"
 
 echo "== [8/8] done"

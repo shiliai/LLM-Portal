@@ -50,9 +50,8 @@ import httpx
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, RedirectResponse, Response
-from starlette.routing import Mount, Route
-from starlette.staticfiles import StaticFiles
+from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from starlette.routing import Route
 
 LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://127.0.0.1:4000")
 ONBOARD_URL = os.environ.get("ONBOARDD_URL", "http://127.0.0.1:8100")
@@ -1010,6 +1009,24 @@ async def console_redirect(request: Request) -> Response:
     return RedirectResponse("/console/", status_code=307)
 
 
+# 未登录可取的静态资源（登录页本体 + 样式 + 图标）；其余页面源码一律会话门禁，
+# 避免内部拓扑/组件名/策略文案经公开 URL 外泄（安全收敛，对应评审意见「对外尽量少暴露内部信息」）
+PUBLIC_STATIC = {"login.html", "assets/portal.css", "favicon.ico"}
+
+
+async def console_static(request: Request) -> Response:
+    rel = request.path_params.get("rest", "").lstrip("/")
+    if rel == "":
+        rel = "index.html"
+    if rel not in PUBLIC_STATIC and session_of(request) is None:
+        return RedirectResponse("/console/login.html", status_code=302)
+    target = (STATIC_DIR / rel).resolve()
+    root = STATIC_DIR.resolve()
+    if root not in target.parents or not target.is_file():
+        return jerr("not found", 404)
+    return FileResponse(target)
+
+
 api_routes = [
     Route("/console/api/login", api_login, methods=["POST"]),
     Route("/console/api/logout", api_logout, methods=["POST"]),
@@ -1041,7 +1058,7 @@ api_routes = [
 
 app = Starlette(routes=api_routes + [
     Route("/console", console_redirect),
-    Mount("/console", StaticFiles(directory=str(STATIC_DIR), html=True), name="console"),
+    Route("/console/{rest:path}", console_static, methods=["GET", "HEAD"]),
 ])
 
 if __name__ == "__main__":
