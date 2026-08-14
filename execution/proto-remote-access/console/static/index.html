@@ -54,7 +54,7 @@
           <span class="pf-surface-icon">443</span>
           <div>
             <div class="pf-surface-title">443/tcp · HTTPS 入口</div>
-            <div class="pf-desc">唯一入口：API / MCP / 站点接入 / 控制台，自动证书</div>
+            <div class="pf-desc">唯一公网入口（API / MCP / 站点接入 / 控制台）</div>
           </div>
         </div>
         <span class="pf-chip ok">开放</span>
@@ -64,13 +64,13 @@
           <span class="pf-surface-icon" style="font-size:10px">51820</span>
           <div>
             <div class="pf-surface-title">51820/udp · WireGuard</div>
-            <div class="pf-desc">未注册公钥的探测包内核静默丢弃</div>
+            <div class="pf-desc">站点隧道；仅已注册密钥的站点可建联</div>
           </div>
         </div>
         <span class="pf-chip ok">开放</span>
       </div>
       <div class="pf-desc" style="border-top:1px solid #f0f0f0;padding-top:10px;margin-top:2px">
-        LiteLLM、Postgres、mcp-hub、onboardd、consoled 均不接受公网直连；LiteLLM 管理 API 与 Admin UI 公网 404（r6 收敛）；模型服务端口不暴露公网。
+        内部组件均不直接对外；攻击面与收敛策略详见 runbook（部署仓库）。
       </div>
     </div>
   </div>
