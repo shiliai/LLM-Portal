@@ -28,12 +28,23 @@ if [ ! -f /etc/wireguard/wg0.conf ]; then
 [Interface]
 Address = ${WG_VPS_IP}/24
 ListenPort = ${WG_PORT}
+MTU = 1280
 PrivateKey = $(cat "$STATE_DIR/wireguard-private.key")
 EOF
   chmod 600 /etc/wireguard/wg0.conf
 fi
 systemctl enable --now wg-quick@wg0 >/dev/null 2>&1 || systemctl restart wg-quick@wg0
 ufw allow ${WG_PORT}/udp comment 'private-llm wireguard' >/dev/null
+# 跨境隧道传输调优（实测晚高峰 10-25% 丢包，CUBIC 吞吐坍塌至 ~4KB/s）：
+# BBR 对随机丢包鲁棒；wg MTU=1280 避开大 UDP 包高丢弃率（3-6 倍吞吐）
+modprobe tcp_bbr 2>/dev/null || true
+cat > /etc/sysctl.d/99-private-llm-tunnel.conf <<EOF
+net.ipv4.tcp_congestion_control = bbr
+net.core.default_qdisc = fq
+net.core.rmem_max = 7500000
+net.core.wmem_max = 7500000
+EOF
+sysctl --system >/dev/null 2>&1 || true
 
 echo "== [2/8] letsencrypt certificate ($DOMAIN)"
 NGINX_CONF_DIR=/home/chriswang/docker/nginx
