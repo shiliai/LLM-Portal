@@ -5,9 +5,10 @@
   POST /onboard/register {token, pubkey}     验 token → wg 加 peer → 返回站点 wg0.conf
   POST /onboard/confirm  {token, ok, results} 自检全绿 → LiteLLM /model/new 注册 deployment
 
-本机管理（site-add/site-revoke/site-list 调用，需 x-admin-token）：
+本机管理（site-add/site-revoke/site-list/consoled 调用，需 x-admin-token）：
   POST /onboard/admin/tokens {site, models, groups}   签发一次性 token（15min）
   POST /onboard/admin/revoke {site}                   吊销：wg 摘 peer + LiteLLM 摘 deployment
+  POST /onboard/admin/groups {site, groups}           r6：站点分组同步（LiteLLM retag 由 consoled 负责）
   GET  /onboard/admin/list                            站点清单
 
 状态存 SQLite；wg 命令直接操作 wg0（systemd 以 root 运行），peer 持久化回写 /etc/wireguard/wg0.conf。
@@ -259,6 +260,23 @@ async def admin_list(request: Request) -> Response:
     return JSONResponse({"sites": [dict(row) for row in rows]})
 
 
+async def admin_groups(request: Request) -> Response:
+    """r6：控制台调整站点分组后同步注册表（LiteLLM 侧 retag 由 consoled 完成）。"""
+    if not require_admin(request):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    body = await request.json()
+    site, groups = body.get("site", ""), body.get("groups", [])
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,32}", site or ""):
+        return JSONResponse({"error": "bad site name"}, status_code=400)
+    if not isinstance(groups, list) or any(not re.fullmatch(r"[a-zA-Z0-9_-]{1,32}", g or "") for g in groups):
+        return JSONResponse({"error": "bad groups"}, status_code=400)
+    with db() as conn:
+        cur = conn.execute("UPDATE sites SET groups=? WHERE name=?", (json.dumps(groups), site))
+        if cur.rowcount == 0:
+            return JSONResponse({"error": f"unknown site {site}"}, status_code=404)
+    return JSONResponse({"ok": True, "site": site, "groups": groups})
+
+
 # ---------------------------------------------------------------- wg0.conf 持久化辅助
 
 PEER_BLOCK = "# peer {name}\n[Peer]\nPublicKey = {pubkey}\nAllowedIPs = {ip}/32\n"
@@ -366,6 +384,7 @@ app = Starlette(routes=[
     Route("/onboard/confirm", confirm, methods=["POST"]),
     Route("/onboard/admin/tokens", admin_token, methods=["POST"]),
     Route("/onboard/admin/revoke", admin_revoke, methods=["POST"]),
+    Route("/onboard/admin/groups", admin_groups, methods=["POST"]),
     Route("/onboard/admin/list", admin_list, methods=["GET"]),
 ])
 

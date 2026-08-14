@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>用量总览 · 远程模型网关</title>
+<link rel="stylesheet" href="assets/portal.css">
+</head>
+<body data-page="usage">
+<template id="page">
+
+  <div class="pf-page-head">
+    <div class="pf-desc">管理员用量视图汇总全部 Key 的请求数与 token 消耗（取上游 usage 字段，不含计费），可按 Key / 模型筛选（US-P9）。</div>
+  </div>
+
+  <!-- 筛选栏 -->
+  <div class="pf-card">
+    <div class="pf-toolbar">
+      <select class="pf-select" id="filter-key"><option value="">全部 Key</option></select>
+      <select class="pf-select" id="filter-model"><option value="">全部模型</option></select>
+      <select class="pf-select" id="filter-days">
+        <option value="1">今天</option>
+        <option value="7">最近 7 天</option>
+        <option value="30">最近 30 天</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- 明细表 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head">
+      <div class="pf-card-title" id="usage-title">用量明细</div>
+      <div class="pf-card-extra" id="usage-extra">加载中…</div>
+    </div>
+    <table class="pf-table" id="usage-table">
+      <thead>
+        <tr><th>Key</th><th>模型</th><th class="num">请求数</th><th class="num">输入 Token</th><th class="num">输出 Token</th></tr>
+      </thead>
+      <tbody id="usage-rows"></tbody>
+      <tfoot>
+        <tr>
+          <td colspan="2" style="font-weight:600">合计</td>
+          <td class="num" style="font-weight:600" id="sum-req">0</td>
+          <td class="num" style="font-weight:600" id="sum-in">0</td>
+          <td class="num" style="font-weight:600" id="sum-out">0</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+
+  <!-- 按 Key 请求占比（纯 CSS 条形图） -->
+  <div class="pf-card">
+    <div class="pf-card-head"><div class="pf-card-title" id="bar-title">按 Key 的请求占比</div></div>
+    <div id="key-bars"></div>
+  </div>
+
+  <!-- 近期错误 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head"><div class="pf-card-title">近期错误</div></div>
+    <table class="pf-table">
+      <thead>
+        <tr><th>时间</th><th>Key</th><th>请求模型</th><th>说明</th></tr>
+      </thead>
+      <tbody id="err-rows"></tbody>
+    </table>
+    <div class="pf-desc" style="padding:8px 12px">错误仅覆盖已入账请求（鉴权失败不产生日志行）。</div>
+  </div>
+
+</template>
+<script src="assets/portal.js"></script>
+<script>
+(function () {
+  'use strict';
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function fmtN(n) { return Number(n || 0).toLocaleString('zh-CN'); }
+  var ALL = [];
+
+  function applyFilter() {
+    var k = document.getElementById('filter-key').value;
+    var m = document.getElementById('filter-model').value;
+    var shown = ALL.filter(function (r) { return (!k || r.alias === k) && (!m || r.model === m); });
+    document.getElementById('usage-rows').innerHTML = shown.map(function (r) {
+      return '<tr>' +
+        '<td><span class="pf-key">…' + esc(r.key) + '</span> ' + esc(r.alias) + '</td>' +
+        '<td class="mono">' + esc(r.model) + '</td>' +
+        '<td class="num">' + fmtN(r.requests) + '</td>' +
+        '<td class="num">' + fmtN(r.prompt_tokens) + '</td>' +
+        '<td class="num">' + fmtN(r.completion_tokens) + '</td>' +
+      '</tr>';
+    }).join('') || '<tr><td colspan="5"><div class="pf-empty"><div class="pf-empty-icon">▢</div>没有符合筛选条件的用量记录</div></td></tr>';
+    document.getElementById('sum-req').textContent = fmtN(shown.reduce(function (n, r) { return n + r.requests; }, 0));
+    document.getElementById('sum-in').textContent = fmtN(shown.reduce(function (n, r) { return n + r.prompt_tokens; }, 0));
+    document.getElementById('sum-out').textContent = fmtN(shown.reduce(function (n, r) { return n + r.completion_tokens; }, 0));
+  }
+
+  function render(d, daysLabel) {
+    ALL = d.rows;
+    document.getElementById('usage-title').textContent = '用量明细（' + daysLabel + '）';
+    document.getElementById('usage-extra').textContent =
+      '合计 ' + fmtN(d.totals.requests) + ' 次 · 输入 ' + fmtN(d.totals.prompt_tokens) + ' · 输出 ' + fmtN(d.totals.completion_tokens);
+    var keys = [], models = [];
+    ALL.forEach(function (r) {
+      if (keys.indexOf(r.alias) < 0) keys.push(r.alias);
+      if (models.indexOf(r.model) < 0) models.push(r.model);
+    });
+    document.getElementById('filter-key').innerHTML = '<option value="">全部 Key</option>' +
+      keys.map(function (k) { return '<option value="' + esc(k) + '">' + esc(k) + '</option>'; }).join('');
+    document.getElementById('filter-model').innerHTML = '<option value="">全部模型</option>' +
+      models.map(function (m) { return '<option value="' + esc(m) + '">' + esc(m) + '</option>'; }).join('');
+    applyFilter();
+
+    var perKey = d.per_key || [];
+    var max = perKey.length ? perKey[0][1] : 1;
+    document.getElementById('bar-title').textContent = '按 Key 的请求占比（' + daysLabel + '）';
+    document.getElementById('key-bars').innerHTML = perKey.map(function (kv, i) {
+      var pct = max ? Math.round(kv[1] / max * 100) : 0;
+      return '<div class="pf-bar-item">' +
+        '<div class="pf-bar-label">' + esc(kv[0]) + '</div>' +
+        '<div class="pf-bar-track"><span class="pf-bar-fill' + (i % 2 ? ' violet' : '') + '" style="width:' + pct + '%"></span></div>' +
+        '<div class="pf-bar-value">' + fmtN(kv[1]) + ' 次</div>' +
+      '</div>';
+    }).join('') || '<div class="pf-desc" style="padding:10px 12px">所选时间范围暂无请求</div>';
+
+    document.getElementById('err-rows').innerHTML = d.errors.map(function (e) {
+      return '<tr>' +
+        '<td class="mono">' + esc((e.time || '').replace('T', ' ').slice(5)) + '</td>' +
+        '<td><span class="pf-key">' + esc(e.key) + '</span></td>' +
+        '<td class="mono">' + esc(e.model) + '</td>' +
+        '<td class="pf-desc">' + esc(e.detail) + '</td>' +
+      '</tr>';
+    }).join('') || '<tr><td colspan="4" class="pf-desc" style="padding:10px">所选时间范围无已入账错误</td></tr>';
+  }
+
+  window.pfReady.then(function () {
+    function load() {
+      var days = document.getElementById('filter-days').value;
+      var label = days === '1' ? '今天' : '最近 ' + days + ' 天';
+      window.pfApi('GET', '/usage?days=' + days).then(function (d) { render(d, label); })
+        .catch(function (e) { window.pfErr(e.error || '用量加载失败'); });
+    }
+    ['filter-key', 'filter-model'].forEach(function (id) {
+      document.getElementById(id).addEventListener('change', applyFilter);
+    });
+    document.getElementById('filter-days').addEventListener('change', load);
+    load();
+  });
+})();
+</script>
+</body>
+</html>
