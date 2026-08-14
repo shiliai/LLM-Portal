@@ -13,3 +13,7 @@ __pycache__/
 .venv/
 dist/
 build/
+
+# 浏览器自动化 / 渲染临时产物（本地，不入库）
+.playwright-mcp/
+.superpowers/
