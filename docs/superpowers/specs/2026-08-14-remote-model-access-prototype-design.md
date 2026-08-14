@@ -70,7 +70,7 @@ model_list:
     litellm_params:
       model: openai/deepseek-v4-flash-0731
       api_base: http://10.77.0.11:8890/v1
-      api_key: "none"            # 上游无鉴权，占位即可；用户 Key 永不外发（C5）
+      api_key: "none"            # 字面量占位（会以 Bearer none 发出、无鉴权上游忽略），非真实凭据；用户 Key 永不外发（C5）
   - model_name: qwen3.6-35b-a3
     litellm_params:
       model: openai/qwen3.6-35b-a3
@@ -104,6 +104,7 @@ litellm_settings:
 - **别名与直选并存**（US-P11 边界）：`deepseek-v4-flash-0731`、`qwen3.6-35b-a3`、`claude-opus-5` 都在 `model_list`，`/v1/models` 全部可见；未注册模型名 LiteLLM 返回 400/404 语义的「模型不存在」，不误路由。
 - **US-P6 的实现即配置**：同 `model_name` 多条 deployment + `least-busy` + `cooldown`，无需自写调度代码。
 - **每站点限额**（US-P6「可为每站点设并发/速率上限」）：deployment 级 `rpm`/`tpm` 字段，由 onboardd 注册时可选传入。
+- **别名的多站点分流**：`site-add --model` 传什么对外名就注册什么 deployment；若希望别名（如 `claude-opus-5`）也跨站点分流，需在各站点显式以该别名注册（同一端口可注册多个对外名）。T6 演练前按此配置。
 
 ### 3.2 Caddyfile（单入口路径分发）
 
@@ -269,7 +270,7 @@ execution/proto-remote-access/
 ├── mcp-hub/                        # ~300 行 Python（fastmcp）
 ├── onboardd/                       # ~150 行 Python
 ├── site-tools/
-│   ├── site-add.sh  site-revoke.sh # ~150 行
+│   ├── site-add.sh  site-revoke.sh  site-list.sh   # 合计 ~150 行
 │   └── install.sh.tpl              # ~100 行
 └── docs/runbook.md                 # 部署步骤 + T1~T12 验收记录表
 ```
