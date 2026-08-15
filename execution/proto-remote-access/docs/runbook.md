@@ -136,4 +136,5 @@ cd ~/LLM-Portal/vps && ./deploy.sh    # 幂等升级（compose build + up + 收�
 - **docker.sock 取舍（#7）**：console/onboardd 容器挂 `/var/run/docker.sock`（执行 wg peer 管理 / mcp-hub 重启），挂 sock 的容器 ≈ 宿主机 root——只给这两个管理面容器，且它们本身已是管理员权限面；其余容器（litellm/postgres/mcp-hub/wireguard）不挂。
 - WG 私钥：VPS `/var/lib/private-llm/wireguard-private.key`（0600）与 `/etc/wireguard/wg0.conf`（0600）；站点私钥仅站点本机。
 - 用户 Key 永不出网关：mcp-hub 只用它调 `/key/info` 与回环 LiteLLM；上游无鉴权直连不带 Key。
+- **Key 明文保险库（2026-08-15，管理员可再查）**：管理员需求「查看生成的 key，而非仅一次展示」——consoled 在创建时把明文 Fernet 加密存 `/var/lib/private-llm/console/keyvault.db`（密钥文件 `keyvault.key` 0600，独立于密文），`POST /console/api/keys/reveal`（仅管理员）解密取回；「使用」弹窗自动取回代入。**边界变化：网关成为密钥保管者**——VPS 失陷即密钥失陷（加密仅防离库拖走）；保险库启用前的旧 Key 只有哈希，reveal 404 提示重签；轮换保险库 = 删 `keyvault.key`（旧密文不可解，等同重签）。
 - 公网面：443/tcp（nginx）、51820/udp（WG）、SSH；其余容器仅 127.0.0.1 回环发布或 compose 内网互通，不监听公网。
