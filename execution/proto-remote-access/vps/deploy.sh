@@ -66,6 +66,11 @@ docker run --rm -v "$ETC_DIR":/e private-llm-wireguard \
   || echo "   note: 宿主机未启 BBR（一次性 sudo，见 runbook §2 前置）——跨境吞吐会显著劣化"
 
 echo "== [3/7] compose 构建 + 启动（6 服务；一个 compose file 管全部，升级 = 重跑本步骤）"
+# 探测 nginx-sub2api 所在网络并注入 compose（历史 .env 可能未写 NGINX_SHARED_NETWORK，
+# 旧版 deploy.sh 即为动态探测 + 行内传参；此处置于 up 之前，build 不依赖网络）
+SHARED_NET=$(docker inspect nginx-sub2api --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}' | head -1)
+[ -n "$SHARED_NET" ] || { echo "cannot detect nginx-sub2api network"; exit 1; }
+export NGINX_SHARED_NETWORK="$SHARED_NET"
 docker compose up -d --build
 sleep 3
 docker compose ps
@@ -84,16 +89,16 @@ if [ ! -f "$LE_DIR/fullchain.pem" ]; then
 fi
 
 echo "== [5/7] nginx site (into nginx-sub2api)"
-SHARED_NET=$(docker inspect nginx-sub2api --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}' | head -1)
-[ -n "$SHARED_NET" ] || { echo "cannot detect nginx-sub2api network"; exit 1; }
+# 中间产物走 mktemp：/var/lib/private-llm 与历史 /tmp 固定名文件均为旧 root 部署所建，docker 组用户不可写
+RENDERED=$(mktemp) && STRIPPED=$(mktemp) && trap 'rm -f "$RENDERED" "$STRIPPED"' EXIT
 sed -e "s|{{LITELLM_UPSTREAM}}|litellm:4000|g" \
-    nginx/private-llm.conf > "$STATE_DIR/nginx-private-llm.rendered.conf"
+    nginx/private-llm.conf > "$RENDERED"
 cp "$NGINX_CONF_DIR/nginx.conf" "$NGINX_CONF_DIR/nginx.conf.backup-$(date +%Y%m%d-%H%M%S)"
 # 幂等：先移除旧块再追加。注意必须保留 inode 原地写（cat > / >>）——此文件被单文件 bind-mount 进
 # nginx 容器，sed -i 会换 inode，容器内仍是旧内容、reload 也不生效（2026-08-14 实测踩坑，需重启容器才恢复）
-awk '/# BEGIN private-llm/,/# END private-llm/{next}1' "$NGINX_CONF_DIR/nginx.conf" > /tmp/pll-nginx-stripped.conf
-cat /tmp/pll-nginx-stripped.conf > "$NGINX_CONF_DIR/nginx.conf"
-{ echo "# BEGIN private-llm (managed by private-llm deploy.sh)"; cat "$STATE_DIR/nginx-private-llm.rendered.conf"; echo "# END private-llm"; } >> "$NGINX_CONF_DIR/nginx.conf"
+awk '/# BEGIN private-llm/,/# END private-llm/{next}1' "$NGINX_CONF_DIR/nginx.conf" > "$STRIPPED"
+cat "$STRIPPED" > "$NGINX_CONF_DIR/nginx.conf"
+{ echo "# BEGIN private-llm (managed by private-llm deploy.sh)"; cat "$RENDERED"; echo "# END private-llm"; } >> "$NGINX_CONF_DIR/nginx.conf"
 if ! docker exec nginx-sub2api nginx -t 2>/dev/null; then
   echo "!! nginx config test failed; rendering diagnostics:"; docker exec nginx-sub2api nginx -t || true
   # 回滚：删除刚追加的块
