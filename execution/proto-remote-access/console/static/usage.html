@@ -5,95 +5,108 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>用量总览 · 远程模型网关</title>
 <link rel="stylesheet" href="assets/portal.css">
+<style>
+  /* C 原型落地：Tab 条 + 趋势(指标卡/SVG 图) + 明细(聚合列/排序) */
+  .utab { border: none; background: none; padding: 11px 13px; font-size: 13px; font-family: inherit;
+    color: #595959; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .utab.active { color: #1677ff; font-weight: 500; border-bottom-color: #1677ff; }
+  .utabpane { display: none; padding: 14px 2px 6px; }
+  .utabpane.active { display: block; }
+  .ustat-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
+  @media (max-width: 1100px) { .ustat-grid { grid-template-columns: repeat(3, 1fr); } }
+  .ustat { background: #fff; border: 1px solid #f0f0f0; border-radius: 8px; padding: 13px 15px; }
+  .ustat-label { font-size: 12px; color: #8c8c8c; }
+  .ustat-value { font-size: 21px; font-weight: 600; margin-top: 4px; }
+  .ustat-sub { font-size: 11.5px; color: #bfbfbf; margin-top: 2px; }
+  .uchart { width: 100%; }
+  .tok-cell div { line-height: 1.55; white-space: nowrap; }
+  .lat-bar { height: 5px; width: 110px; border-radius: 3px; overflow: hidden; display: flex; margin-bottom: 4px; }
+  .sort-th { cursor: pointer; user-select: none; white-space: nowrap; }
+  .sort-th:hover { color: #1677ff; }
+  .sort-ind { color: #bfbfbf; font-size: 10px; margin-left: 2px; }
+</style>
 </head>
 <body data-page="usage">
 <template id="page">
 
   <div class="pf-page-head">
-    <div class="pf-desc">管理员用量视图汇总全部 Key 的请求数与 token 消耗（取上游 usage 字段，不含计费），可按 Key / 模型筛选（US-P9）。</div>
+    <div class="pf-desc">管理员用量视图：趋势总览与逐请求明细（时间按 Asia/Shanghai 显示；Token/延迟为聚合展示，点列头排序，↻ 只刷新数据）。</div>
   </div>
 
-  <!-- 筛选栏 -->
-  <div class="pf-card">
-    <div class="pf-toolbar">
-      <select class="pf-select" id="filter-key"><option value="">全部 Key</option></select>
-      <select class="pf-select" id="filter-model"><option value="">全部模型</option></select>
-      <select class="pf-select" id="filter-days">
+  <div class="pf-card" style="padding:0 14px">
+    <!-- Tab 条 + 刷新 + 时间范围 -->
+    <div class="pf-toolbar" style="border-bottom:1px solid #f0f0f0;padding:0;flex-wrap:nowrap">
+      <button class="utab active" data-tab="trend" type="button">趋势总览</button>
+      <button class="utab" data-tab="logs" type="button">请求明细</button>
+      <span style="flex:1"></span>
+      <button class="pf-btn sm" id="btn-refresh" type="button" title="只刷新数据，不刷新页面">↻ 刷新</button>
+      <select class="pf-select" id="filter-days" style="margin:8px 0">
         <option value="1">今天</option>
         <option value="7">最近 7 天</option>
         <option value="30">最近 30 天</option>
       </select>
     </div>
-  </div>
 
-  <!-- 明细表 -->
-  <div class="pf-card flush">
-    <div class="pf-card-head">
-      <div class="pf-card-title" id="usage-title">用量明细</div>
-      <div class="pf-card-extra" id="usage-extra">加载中…</div>
+    <!-- Tab: 趋势总览 -->
+    <div class="utabpane active" data-tab="trend">
+      <div class="ustat-grid" id="stat-grid"></div>
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:14px;margin-top:14px" id="trend-grid">
+        <div>
+          <div class="pf-card">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px">
+              <div class="pf-card-title">请求量与 Token 消耗</div>
+              <div class="pf-desc">
+                <span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#bcd9ff;margin:0 4px 0 10px"></span>请求数
+                <span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#1677ff;margin:0 4px 0 10px"></span>输入
+                <span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:#722ed1;margin:0 4px 0 10px"></span>输入+输出
+              </div>
+            </div>
+            <div id="trend-chart"></div>
+          </div>
+          <div class="pf-card">
+            <div class="pf-card-title" style="margin-bottom:8px">平均 TFT（&gt;1.5s 标橙、&gt;3s 标红）</div>
+            <div id="tft-chart"></div>
+          </div>
+        </div>
+        <div class="pf-card">
+          <div class="pf-card-title" style="margin-bottom:8px">模型请求分布</div>
+          <div id="model-bars"></div>
+          <div class="pf-card-title" style="margin:14px 0 8px">Key 请求占比</div>
+          <div id="key-bars"></div>
+        </div>
+      </div>
+      <!-- 近期错误保留在趋势页底部 -->
+      <div class="pf-card flush" style="margin-top:14px">
+        <div class="pf-card-head"><div class="pf-card-title">近期错误</div></div>
+        <table class="pf-table">
+          <thead><tr><th>时间</th><th>Key</th><th>请求模型</th><th>说明</th></tr></thead>
+          <tbody id="err-rows"></tbody>
+        </table>
+        <div class="pf-desc" style="padding:8px 12px">错误仅覆盖已入账请求（鉴权失败不产生日志行）。</div>
+      </div>
     </div>
-    <table class="pf-table" id="usage-table">
-      <thead>
-        <tr><th>Key</th><th>模型</th><th class="num">请求数</th><th class="num">输入 Token</th><th class="num">缓存读取</th><th class="num">输出 Token</th><th class="num">总 Token</th><th class="num">平均延迟</th></tr>
-      </thead>
-      <tbody id="usage-rows"></tbody>
-      <tfoot>
-        <tr>
-          <td colspan="2" style="font-weight:600">合计</td>
-          <td class="num" style="font-weight:600" id="sum-req">0</td>
-          <td class="num" style="font-weight:600" id="sum-in">0</td>
-          <td class="num" style="font-weight:600" id="sum-cache">0</td>
-          <td class="num" style="font-weight:600" id="sum-out">0</td>
-          <td class="num" style="font-weight:600" id="sum-total">0</td>
-          <td class="num" style="font-weight:600" id="sum-lat">—</td>
-        </tr>
-      </tfoot>
-    </table>
-  </div>
 
-  <!-- 请求明细（逐次，参照 sub2api 日志视图） -->
-  <div class="pf-card flush">
-    <div class="pf-card-head">
-      <div class="pf-card-title" id="rl-title">请求明细</div>
-      <div class="pf-card-extra" id="rl-extra">加载中…</div>
+    <!-- Tab: 请求明细 -->
+    <div class="utabpane" data-tab="logs">
+      <div class="pf-toolbar" style="padding:2px 0 12px">
+        <select class="pf-select" id="rl-key"><option value="">全部 Key</option></select>
+        <select class="pf-select" id="rl-model"><option value="">全部模型</option></select>
+        <select class="pf-select" id="rl-status">
+          <option value="">全部状态</option><option value="ok">成功</option><option value="failure">失败</option>
+        </select>
+        <input class="pf-input" id="rl-search" style="width:220px" placeholder="搜索 request_id / 模型 / IP / 错误…">
+        <span style="flex:1"></span>
+        <button class="pf-btn sm" id="rl-prev" type="button">‹ 上一页</button>
+        <span class="pf-desc" id="rl-page" style="min-width:64px;text-align:center">—</span>
+        <button class="pf-btn sm" id="rl-next" type="button">下一页 ›</button>
+      </div>
+      <div class="pf-desc" id="rl-extra" style="padding:0 2px 8px">加载中…</div>
+      <table class="pf-table">
+        <thead id="rl-head"></thead>
+        <tbody id="rl-rows"></tbody>
+      </table>
+      <div class="pf-desc" style="padding:8px 2px">鉴权失败不产生日志行；明细最多保留最近 500 条；172.18.x 为网关（nginx）地址——真实客户端 IP 需上游支持 X-Forwarded-For（已知限制）。</div>
     </div>
-    <div class="pf-toolbar" style="padding:10px 12px 0">
-      <input class="pf-input" id="rl-search" placeholder="搜索模型 / request_id / 备注…">
-      <select class="pf-select" id="rl-status">
-        <option value="">全部状态</option>
-        <option value="ok">成功</option>
-        <option value="failure">失败</option>
-      </select>
-      <span style="flex:1"></span>
-      <button class="pf-btn sm" id="rl-prev" type="button">‹ 上一页</button>
-      <span class="pf-desc" id="rl-page" style="min-width:64px;text-align:center">—</span>
-      <button class="pf-btn sm" id="rl-next" type="button">下一页 ›</button>
-    </div>
-    <table class="pf-table">
-      <thead>
-        <tr><th>时间</th><th>Key</th><th>模型</th><th>类型</th><th class="num">输入</th><th class="num">缓存读</th><th class="num">输出</th><th class="num">总计</th><th class="num">延迟</th><th>状态</th><th>操作</th></tr>
-      </thead>
-      <tbody id="rl-rows"></tbody>
-    </table>
-    <div class="pf-desc" style="padding:8px 12px">鉴权失败不产生日志行（鉴权层直接 401）；明细最多保留最近 500 条。</div>
-  </div>
-
-  <!-- 按 Key 请求占比（纯 CSS 条形图） -->
-  <div class="pf-card">
-    <div class="pf-card-head"><div class="pf-card-title" id="bar-title">按 Key 的请求占比</div></div>
-    <div id="key-bars"></div>
-  </div>
-
-  <!-- 近期错误 -->
-  <div class="pf-card flush">
-    <div class="pf-card-head"><div class="pf-card-title">近期错误</div></div>
-    <table class="pf-table">
-      <thead>
-        <tr><th>时间</th><th>Key</th><th>请求模型</th><th>说明</th></tr>
-      </thead>
-      <tbody id="err-rows"></tbody>
-    </table>
-    <div class="pf-desc" style="padding:8px 12px">错误仅覆盖已入账请求（鉴权失败不产生日志行）。</div>
   </div>
 
   <!-- 请求详情抽屉 -->
@@ -104,6 +117,7 @@
     </div>
     <div class="pf-drawer-body">
       <div class="pf-kv" id="rl-detail"></div>
+      <div id="rl-lat" style="margin-top:14px"></div>
       <div id="rl-err" style="margin-top:14px"></div>
     </div>
   </div>
@@ -116,170 +130,278 @@
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function fmtN(n) { return Number(n || 0).toLocaleString('zh-CN'); }
-  var ALL = [];
+  function fmtMs(ms) { return !ms ? '—' : (ms >= 1000 ? (ms / 1000).toFixed(1) + ' s' : ms + ' ms'); }
+  function $(id) { return document.getElementById(id); }
+  function sevTft(ms) { return ms < 1000 ? '#389e0d' : (ms < 3000 ? '#d46b08' : '#cf1322'); }
+  function sevDur(ms) { return ms < 5000 ? '#389e0d' : (ms < 15000 ? '#d46b08' : '#cf1322'); }
 
-  function applyFilter() {
-    var k = document.getElementById('filter-key').value;
-    var m = document.getElementById('filter-model').value;
-    var shown = ALL.filter(function (r) { return (!k || r.alias === k) && (!m || r.model === m); });
-    document.getElementById('usage-rows').innerHTML = shown.map(function (r) {
-      return '<tr>' +
-        '<td><span class="pf-key">…' + esc(r.key) + '</span> ' + esc(r.alias) + '</td>' +
-        '<td class="mono">' + esc(r.model === '?' ? '（未解析）' : r.model) + '</td>' +
-        '<td class="num">' + fmtN(r.requests) + '</td>' +
-        '<td class="num">' + fmtN(r.prompt_tokens) + '</td>' +
-        '<td class="num">' + fmtN(r.cached_tokens) + '</td>' +
-        '<td class="num">' + fmtN(r.completion_tokens) + '</td>' +
-        '<td class="num" style="font-weight:600">' + fmtN(r.total_tokens) + '</td>' +
-        '<td class="num">' + (r.avg_ms >= 1000 ? (r.avg_ms / 1000).toFixed(1) + ' s' : r.avg_ms + ' ms') + '</td>' +
-      '</tr>';
-    }).join('') || '<tr><td colspan="8"><div class="pf-empty"><div class="pf-empty-icon">▢</div>没有符合筛选条件的用量记录</div></td></tr>';
-    document.getElementById('sum-req').textContent = fmtN(shown.reduce(function (n, r) { return n + r.requests; }, 0));
-    document.getElementById('sum-in').textContent = fmtN(shown.reduce(function (n, r) { return n + r.prompt_tokens; }, 0));
-    document.getElementById('sum-cache').textContent = fmtN(shown.reduce(function (n, r) { return n + r.cached_tokens; }, 0));
-    document.getElementById('sum-out').textContent = fmtN(shown.reduce(function (n, r) { return n + r.completion_tokens; }, 0));
-    document.getElementById('sum-total').textContent = fmtN(shown.reduce(function (n, r) { return n + r.total_tokens; }, 0));
-    var totReq = shown.reduce(function (n, r) { return n + r.requests; }, 0);
-    var totMs = shown.reduce(function (n, r) { return n + (r.duration_ms_sum || 0); }, 0);
-    var avg = totReq ? Math.round(totMs / totReq) : 0;
-    document.getElementById('sum-lat').textContent = totReq ? (avg >= 1000 ? (avg / 1000).toFixed(1) + ' s' : avg + ' ms') : '—';
+  /* ---------- Tab 切换(须在 pfReady 后绑定:页面内容来自 <template>,注入前查不到) ---------- */
+  function bindTabs() {
+    document.querySelectorAll('.utab').forEach(function (t) {
+      t.addEventListener('click', function () {
+        document.querySelectorAll('.utab').forEach(function (x) { x.classList.toggle('active', x === t); });
+        document.querySelectorAll('.utabpane').forEach(function (p) {
+          p.classList.toggle('active', p.dataset.tab === t.dataset.tab);
+        });
+      });
+    });
   }
 
-  function render(d, daysLabel) {
-    ALL = d.rows;
-    document.getElementById('usage-title').textContent = '用量明细（' + daysLabel + '）';
-    document.getElementById('usage-extra').textContent =
-      '合计 ' + fmtN(d.totals.requests) + ' 次 · 输入 ' + fmtN(d.totals.prompt_tokens) +
-      ' · 缓存读取 ' + fmtN(d.totals.cached_tokens) + ' · 输出 ' + fmtN(d.totals.completion_tokens) +
-      ' · 总计 ' + fmtN(d.totals.total_tokens);
-    var keys = [], models = [];
-    ALL.forEach(function (r) {
-      if (keys.indexOf(r.alias) < 0) keys.push(r.alias);
-      if (models.indexOf(r.model) < 0) models.push(r.model);
-    });
-    document.getElementById('filter-key').innerHTML = '<option value="">全部 Key</option>' +
-      keys.map(function (k) { return '<option value="' + esc(k) + '">' + esc(k) + '</option>'; }).join('');
-    document.getElementById('filter-model').innerHTML = '<option value="">全部模型</option>' +
-      models.map(function (m) { return '<option value="' + esc(m) + '">' + esc(m) + '</option>'; }).join('');
-    applyFilter();
+  /* ---------- 趋势 Tab ---------- */
+  function statCards(t) {
+    var okRate = t.requests ? ((1 - t.failures / t.requests) * 100).toFixed(1) : '—';
+    var cacheHit = t.prompt_tokens ? Math.round(t.cached_tokens / t.prompt_tokens * 100) : 0;
+    var cards = [
+      ['请求总数', fmtN(t.requests), '失败 ' + fmtN(t.failures) + ' · 成功率 ' + okRate + '%'],
+      ['输入 Token', fmtN(t.prompt_tokens), '缓存命中 ' + cacheHit + '%'],
+      ['缓存读取', fmtN(t.cached_tokens), '节省 ' + cacheHit + '% 输入推理'],
+      ['输出 Token', fmtN(t.completion_tokens), t.requests ? '平均输出 ' + fmtN(Math.round(t.completion_tokens / t.requests)) + '/次' : ''],
+      ['平均 TFT', fmtMs(t.avg_tft), '首 token 时延'],
+      ['平均总延迟', fmtMs(t.avg_ms), t.avg_ms > t.avg_tft ? '生成 ' + fmtMs(t.avg_ms - t.avg_tft) : '']
+    ];
+    $('stat-grid').innerHTML = cards.map(function (c) {
+      return '<div class="ustat"><div class="ustat-label">' + esc(c[0]) + '</div>' +
+        '<div class="ustat-value">' + esc(c[1]) + '</div><div class="ustat-sub">' + esc(c[2]) + '</div></div>';
+    }).join('');
+  }
 
-    var perKey = (d.per_key || []).filter(function (kv) { return kv[0] !== '已删除密钥'; });
-    var max = perKey.length ? perKey[0][1] : 1;
-    document.getElementById('bar-title').textContent = '按 Key 的请求占比（' + daysLabel + '）';
-    document.getElementById('key-bars').innerHTML = perKey.map(function (kv, i) {
-      var pct = max ? Math.round(kv[1] / max * 100) : 0;
-      return '<div class="pf-bar-item">' +
-        '<div class="pf-bar-label">' + esc(kv[0]) + '</div>' +
+  function svgTrend(hourly) {
+    var W = 860, H = 190, PL = 46, PB = 22, PT = 10;
+    var n = hourly.length || 1;
+    function x(i) { return PL + i * (W - PL - 8) / (n - 1); }
+    function y(v, mx) { return PT + (H - PT - PB) * (1 - (mx ? v / mx : 0)); }
+    var mxReq = Math.max.apply(null, hourly.map(function (h) { return h.reqs; }).concat([1])) * 1.15;
+    var mxTok = Math.max.apply(null, hourly.map(function (h) { return h.in + h.out; }).concat([1])) * 1.05;
+    var bw = (W - PL - 8) / n * 0.45;
+    var bars = hourly.map(function (h, i) {
+      return '<rect x="' + (x(i) - bw / 2).toFixed(1) + '" y="' + y(h.reqs, mxReq).toFixed(1) + '" width="' + bw.toFixed(1) +
+        '" height="' + (H - PB - y(h.reqs, mxReq)).toFixed(1) + '" rx="1.5" fill="#bcd9ff"/>';
+    }).join('');
+    function area(getter, color, op) {
+      var top = hourly.map(function (h, i) { return x(i).toFixed(1) + ',' + y(getter(h), mxTok).toFixed(1); });
+      var d = 'M' + top.join(' L') + ' L' + x(n - 1).toFixed(1) + ',' + (H - PB) + ' L' + PL + ',' + (H - PB) + ' Z';
+      return '<path d="' + d + '" fill="' + color + '" opacity="' + op + '"/>' +
+        '<path d="M' + top.join(' L') + '" fill="none" stroke="' + color + '" stroke-width="1.6"/>';
+    }
+    var step = n > 12 ? 4 : 1;
+    var labels = hourly.map(function (h, i) {
+      return i % step ? '' : '<text x="' + x(i).toFixed(1) + '" y="' + (H - 6) + '" font-size="10" fill="#8c8c8c" text-anchor="middle">' + esc(h.label) + '</text>';
+    }).join('');
+    var ylab = '<text x="6" y="' + (PT + 8) + '" font-size="10" fill="#8c8c8c">' + (mxTok >= 10000 ? Math.round(mxTok / 1000) + 'k' : Math.round(mxTok)) + '</text>';
+    return '<svg viewBox="0 0 ' + W + ' ' + H + '" class="uchart">' + bars +
+      area(function (h) { return h.in; }, '#1677ff', 0.14) +
+      area(function (h) { return h.in + h.out; }, '#722ed1', 0.10) + labels + ylab + '</svg>';
+  }
+
+  function svgTft(hourly) {
+    var W = 860, H = 150, PL = 46, PB = 30, PT = 10, n = hourly.length || 1;
+    var mx = Math.max.apply(null, hourly.map(function (h) { return h.avg_tft; }).concat([1])) * 1.1;
+    var slot = (W - PL - 8) / n;
+    function y(v) { return PT + (H - PT - PB) * (1 - v / mx); }
+    var bars = hourly.map(function (h, i) {
+      if (!h.avg_tft) return '';
+      return '<rect x="' + (PL + i * slot + slot * 0.2).toFixed(1) + '" y="' + y(h.avg_tft).toFixed(1) +
+        '" width="' + (slot * 0.6).toFixed(1) + '" height="' + (H - PB - y(h.avg_tft)).toFixed(1) +
+        '" rx="1.5" fill="' + (h.avg_tft > 3000 ? '#cf1322' : (h.avg_tft > 1500 ? '#faad14' : '#ffd591')) + '"/>';
+    }).join('');
+    var step = n > 12 ? 4 : 1;
+    var labels = hourly.map(function (h, i) {
+      return i % step ? '' : '<text x="' + (PL + i * slot + slot / 2).toFixed(1) + '" y="' + (H - 8) +
+        '" font-size="10" fill="#8c8c8c" text-anchor="middle">' + esc(h.label) + '</text>';
+    }).join('');
+    var ylab = '<text x="6" y="' + (PT + 8) + '" font-size="10" fill="#8c8c8c">' + Math.round(mx) + 'ms</text>';
+    return '<svg viewBox="0 0 ' + W + ' ' + H + '" class="uchart">' + bars + labels + ylab + '</svg>';
+  }
+
+  function barsHtml(pairs, fmtV) {
+    if (!pairs.length) return '<div class="pf-desc" style="padding:6px 0">所选时间范围暂无数据</div>';
+    var mx = pairs[0][1] || 1;
+    return pairs.map(function (kv, i) {
+      var pct = Math.round(kv[1] / mx * 100);
+      return '<div class="pf-bar-item"><div>' + esc(kv[0]) + '</div>' +
         '<div class="pf-bar-track"><span class="pf-bar-fill' + (i % 2 ? ' violet' : '') + '" style="width:' + pct + '%"></span></div>' +
-        '<div class="pf-bar-value">' + fmtN(kv[1]) + ' 次</div>' +
-      '</div>';
-    }).join('') || '<div class="pf-desc" style="padding:10px 12px">所选时间范围暂无请求</div>';
+        '<div class="num" style="text-align:right">' + fmtV(kv[1]) + '</div></div>';
+    }).join('');
+  }
 
-    document.getElementById('err-rows').innerHTML = d.errors.map(function (e) {
-      return '<tr>' +
-        '<td class="mono">' + esc((e.time || '').replace('T', ' ').slice(5)) + '</td>' +
-        '<td><span class="pf-key">' + esc(e.key) + '</span></td>' +
-        '<td class="mono">' + esc(e.model) + '</td>' +
-        '<td class="pf-desc">' + esc(e.detail) + '</td>' +
-      '</tr>';
+  function renderTrend(d, daysLabel) {
+    statCards(d.totals);
+    $('trend-chart').innerHTML = svgTrend(d.hourly || []);
+    $('tft-chart').innerHTML = svgTft(d.hourly || []);
+    var byModel = {};
+    (d.rows || []).forEach(function (r) { byModel[r.model] = (byModel[r.model] || 0) + r.requests; });
+    var models = Object.keys(byModel).map(function (m) { return [m, byModel[m]]; })
+      .sort(function (a, b) { return b[1] - a[1]; });
+    $('model-bars').innerHTML = barsHtml(models, fmtN);
+    $('key-bars').innerHTML = barsHtml((d.per_key || []).filter(function (kv) { return kv[0] !== '已删除密钥'; }),
+      function (v) { return fmtN(v) + ' 次'; });
+    $('err-rows').innerHTML = (d.errors || []).map(function (e) {
+      return '<tr><td class="mono">' + esc((e.time || '').replace('T', ' ').slice(5)) + '</td>' +
+        '<td><span class="pf-key">' + esc(e.key) + '</span></td><td class="mono">' + esc(e.model) + '</td>' +
+        '<td class="pf-desc">' + esc(e.detail) + '</td></tr>';
     }).join('') || '<tr><td colspan="4" class="pf-desc" style="padding:10px">所选时间范围无已入账错误</td></tr>';
   }
 
-  /* ---------- 请求明细（逐次） ---------- */
-  var RL = [], rlPage = 1, RL_PAGE_SIZE = 20;
+  /* ---------- 明细 Tab ---------- */
+  var RL = [], rlPage = 1, PAGE = 20;
+  var SORT = { col: 'ts', dir: -1 };
+  var COLS = [
+    ['ts', '时间'], ['alias', 'Key'], ['model', '模型'], ['call_type', '类型'],
+    ['tokens', 'Token'], ['latency', '延迟'], ['ip', 'IP'], ['status', '状态']
+  ];
+  function colVal(r, col) {
+    switch (col) {
+      case 'tokens': return r.prompt_tokens + r.completion_tokens + r.cached_tokens;
+      case 'latency': return r.duration_ms;
+      case 'status': return r.status === 'failure' ? 1 : 0;
+      default: return r[col] || '';
+    }
+  }
 
-  function rlFiltered() {
-    var q = document.getElementById('rl-search').value.trim().toLowerCase();
-    var st = document.getElementById('rl-status').value;
-    return RL.filter(function (r) {
-      if (st && r.status !== st) return false;
-      if (q && (r.model + ' ' + r.request_id + ' ' + r.alias + ' ' + (r.error || '')).toLowerCase().indexOf(q) < 0) return false;
-      return true;
+  function renderHead() {
+    $('rl-head').innerHTML = '<tr>' + COLS.map(function (c) {
+      var ind = SORT.col === c[0] ? (SORT.dir > 0 ? '▲' : '▼') : '↕';
+      return '<th class="sort-th" data-col="' + c[0] + '">' + c[1] + '<span class="sort-ind">' + ind + '</span></th>';
+    }).join('') + '<th>操作</th></tr>';
+    document.querySelectorAll('.sort-th').forEach(function (th) {
+      th.onclick = function () {
+        var col = th.dataset.col;
+        if (SORT.col === col) SORT.dir = -SORT.dir; else { SORT.col = col; SORT.dir = (col === 'ts') ? -1 : 1; }
+        rlPage = 1;
+        rlRender();
+      };
     });
   }
 
+  function rlFiltered() {
+    var k = $('rl-key').value, m = $('rl-model').value, st = $('rl-status').value;
+    var q = $('rl-search').value.trim().toLowerCase();
+    var list = RL.filter(function (r) {
+      if (k && r.alias !== k) return false;
+      if (m && r.model !== m) return false;
+      if (st && r.status !== st) return false;
+      if (q && (r.model + ' ' + r.request_id + ' ' + r.alias + ' ' + r.ip + ' ' + (r.error || '')).toLowerCase().indexOf(q) < 0) return false;
+      return true;
+    });
+    list.sort(function (a, b) {
+      var va = colVal(a, SORT.col), vb = colVal(b, SORT.col);
+      return (va < vb ? -1 : va > vb ? 1 : 0) * SORT.dir;
+    });
+    return list;
+  }
+
+  function tokCell(r) {
+    var cacheLine = r.cached_tokens
+      ? '<div><span style="color:#0958d9">▣</span> <span style="color:#0958d9">' + fmtN(r.cached_tokens) + '</span></div>'
+      : '<div style="color:#bfbfbf;font-size:11.5px">无缓存命中</div>';
+    return '<div><span style="color:#389e0d">↓</span> ' + fmtN(r.prompt_tokens) +
+      '<span style="color:#531dab;margin-left:7px">↑</span> ' + fmtN(r.completion_tokens) + '</div>' + cacheLine;
+  }
+
+  function latCell(r) {
+    if (!r.duration_ms) return '<span style="color:#bfbfbf">—</span>';
+    var tft = r.tft_ms || 0, tot = r.duration_ms;
+    var p1 = Math.min(100, Math.round(tft / tot * 100));
+    return '<div class="lat-bar"><span style="width:' + p1 + '%;background:' + sevTft(tft) + '"></span>' +
+      '<span style="width:' + (100 - p1) + '%;background:' + sevDur(tot - tft) + ';opacity:.75"></span></div>' +
+      '<div style="line-height:1.5;white-space:nowrap"><span style="color:#8c8c8c">首T</span> ' +
+      '<b style="color:' + sevTft(tft) + '">' + fmtMs(tft) + '</b>' +
+      '<span style="color:#8c8c8c;margin-left:5px">总</span> <b style="color:' + sevDur(tot) + '">' + fmtMs(tot) + '</b></div>';
+  }
+
   function rlRender() {
+    renderHead();
     var list = rlFiltered();
-    var pages = Math.max(1, Math.ceil(list.length / RL_PAGE_SIZE));
+    var pages = Math.max(1, Math.ceil(list.length / PAGE));
     if (rlPage > pages) rlPage = pages;
-    var slice = list.slice((rlPage - 1) * RL_PAGE_SIZE, rlPage * RL_PAGE_SIZE);
+    var slice = list.slice((rlPage - 1) * PAGE, rlPage * PAGE);
     var fails = RL.filter(function (r) { return r.status === 'failure'; }).length;
-    document.getElementById('rl-title').textContent = '请求明细';
-    document.getElementById('rl-extra').textContent =
-      '共 ' + fmtN(list.length) + ' 次' + (list.length !== RL.length ? '（总 ' + fmtN(RL.length) + '）' : '') +
-      (fails ? ' · 失败 ' + fails : '');
-    document.getElementById('rl-page').textContent = rlPage + ' / ' + pages;
-    document.getElementById('rl-prev').disabled = rlPage <= 1;
-    document.getElementById('rl-next').disabled = rlPage >= pages;
-    document.getElementById('rl-rows').innerHTML = slice.map(function (r, i) {
-      var idx = (rlPage - 1) * RL_PAGE_SIZE + i;
-      var tt = r.prompt_tokens + r.completion_tokens + r.cached_tokens;
-      return '<tr' + (r.status === 'failure' ? ' class="pf-row-muted"' : '') + '>' +
-        '<td class="mono">' + esc((r.ts || '').replace('T', ' ').slice(5)) + '</td>' +
-        '<td><span class="pf-key">' + esc(r.key) + '</span> ' + esc(r.alias) + '</td>' +
+    $('rl-extra').textContent = '匹配 ' + fmtN(list.length) + ' / 共 ' + fmtN(RL.length) + ' 次' +
+      (fails ? ' · 失败 ' + fails : '') + ' · 明细最多 500 条';
+    $('rl-page').textContent = rlPage + ' / ' + pages;
+    $('rl-prev').disabled = rlPage <= 1;
+    $('rl-next').disabled = rlPage >= pages;
+    $('rl-rows').innerHTML = slice.map(function (r) {
+      var ip = r.ip ? (r.ip.indexOf('172.18.') === 0 ? r.ip + '（经 nginx）' : r.ip) : '—';
+      return '<tr' + (r.status === 'failure' ? ' style="opacity:.62"' : '') + '>' +
+        '<td class="mono" style="white-space:nowrap">' + esc((r.ts || '').replace('T', ' ').slice(5)) + '</td>' +
+        '<td>' + esc(r.alias) + '</td>' +
         '<td class="mono">' + esc(r.model) + '</td>' +
         '<td>' + esc(r.call_type || '—') + '</td>' +
-        '<td class="num">' + fmtN(r.prompt_tokens) + '</td>' +
-        '<td class="num">' + fmtN(r.cached_tokens) + '</td>' +
-        '<td class="num">' + fmtN(r.completion_tokens) + '</td>' +
-        '<td class="num" style="font-weight:600">' + fmtN(tt) + '</td>' +
-        '<td class="num">' + (r.duration_ms >= 1000 ? (r.duration_ms / 1000).toFixed(1) + ' s' : r.duration_ms + ' ms') + '</td>' +
-        '<td>' + (r.status === 'failure'
-          ? '<span class="pf-chip err">失败</span>'
-          : '<span class="pf-chip ok">成功</span>') + '</td>' +
-        '<td><button class="pf-link js-rl-detail" data-i="' + idx + '">详情</button></td>' +
+        '<td class="tok-cell">' + tokCell(r) + '</td>' +
+        '<td>' + latCell(r) + '</td>' +
+        '<td class="mono" style="white-space:nowrap">' + esc(ip) + '</td>' +
+        '<td>' + (r.status === 'failure' ? '<span class="pf-chip err">失败</span>' : '<span class="pf-chip ok">成功</span>') + '</td>' +
+        '<td><button class="pf-link js-rl-detail" data-i="' + RL.indexOf(r) + '">详情</button></td>' +
       '</tr>';
-    }).join('') || '<tr><td colspan="11"><div class="pf-empty"><div class="pf-empty-icon">▢</div>没有符合条件的请求</div></td></tr>';
+    }).join('') || '<tr><td colspan="9"><div class="pf-empty"><div class="pf-empty-icon">▢</div>没有符合条件的请求</div></td></tr>';
     document.querySelectorAll('.js-rl-detail').forEach(function (btn) {
-      btn.onclick = function () { rlDetail(rlFiltered()[+btn.dataset.i]); };
+      btn.onclick = function () { rlDetail(RL[+btn.dataset.i]); };
     });
   }
 
   function rlDetail(r) {
-    var kv = document.getElementById('rl-detail');
-    kv.innerHTML =
-      '<div class="pf-kv-k">时间</div><div class="pf-kv-v mono">' + esc((r.ts || '').replace('T', ' ')) + '</div>' +
-      '<div class="pf-kv-k">Key</div><div class="pf-kv-v"><span class="pf-key">' + esc(r.key) + '</span> ' + esc(r.alias) + '</div>' +
+    var tt = r.prompt_tokens + r.completion_tokens + r.cached_tokens;
+    $('rl-detail').innerHTML =
+      '<div class="pf-kv-k">时间</div><div class="pf-kv-v mono">' + esc((r.ts || '').replace('T', ' ')) + '（+08）</div>' +
+      '<div class="pf-kv-k">Key</div><div class="pf-kv-v">' + esc(r.alias) + ' <span class="pf-key">' + esc(r.key) + '</span></div>' +
       '<div class="pf-kv-k">模型</div><div class="pf-kv-v mono">' + esc(r.model) + '</div>' +
       '<div class="pf-kv-k">调用类型</div><div class="pf-kv-v mono">' + esc(r.call_type || '—') + '</div>' +
       '<div class="pf-kv-k">状态</div><div class="pf-kv-v">' + (r.status === 'failure' ? '<span class="pf-chip err">失败</span>' : '<span class="pf-chip ok">成功</span>') + '</div>' +
-      '<div class="pf-kv-k">输入 Token</div><div class="pf-kv-v">' + fmtN(r.prompt_tokens) + '</div>' +
-      '<div class="pf-kv-k">缓存读取</div><div class="pf-kv-v">' + fmtN(r.cached_tokens) + '</div>' +
-      '<div class="pf-kv-k">输出 Token</div><div class="pf-kv-v">' + fmtN(r.completion_tokens) + '</div>' +
-      '<div class="pf-kv-k">总 Token</div><div class="pf-kv-v" style="font-weight:600">' + fmtN(r.prompt_tokens + r.completion_tokens + r.cached_tokens) + '</div>' +
-      '<div class="pf-kv-k">延迟</div><div class="pf-kv-v">' + (r.duration_ms >= 1000 ? (r.duration_ms / 1000).toFixed(1) + ' s' : r.duration_ms + ' ms') + '</div>' +
+      '<div class="pf-kv-k">输入 / 缓存读</div><div class="pf-kv-v">' + fmtN(r.prompt_tokens) + ' / ' + fmtN(r.cached_tokens) + '</div>' +
+      '<div class="pf-kv-k">输出 / 总计</div><div class="pf-kv-v">' + fmtN(r.completion_tokens) + ' / <b>' + fmtN(tt) + '</b></div>' +
+      '<div class="pf-kv-k">客户端 IP</div><div class="pf-kv-v mono">' + esc(r.ip || '—') + (r.ip && r.ip.indexOf('172.18.') === 0 ? '（网关）' : '') + '</div>' +
       '<div class="pf-kv-k">Request ID</div><div class="pf-kv-v mono" style="word-break:break-all">' + esc(r.request_id || '—') + '</div>' +
       '<div class="pf-kv-k">Session ID</div><div class="pf-kv-v mono" style="word-break:break-all">' + esc(r.session_id || '—') + '</div>';
-    document.getElementById('rl-err').innerHTML = r.error
-      ? '<div class="pf-banner">失败原因：' + esc(r.error) + '</div>' : '';
+    var gen = r.duration_ms - (r.tft_ms || 0);
+    $('rl-lat').innerHTML = (r.tft_ms && r.duration_ms)
+      ? '<div class="pf-desc" style="margin-bottom:6px">耗时分解</div>' +
+        '<div style="height:10px;width:100%;border-radius:5px;overflow:hidden;display:flex;background:#f5f5f5">' +
+        '<span style="width:' + Math.min(100, Math.round(r.tft_ms / r.duration_ms * 100)) + '%;background:' + sevTft(r.tft_ms) + '" title="排队/TFT ' + fmtMs(r.tft_ms) + '"></span>' +
+        '<span style="flex:1;background:' + sevDur(gen) + '" title="生成 ' + fmtMs(gen) + '"></span></div>' +
+        '<div class="pf-desc" style="margin-top:6px">排队/TFT ' + fmtMs(r.tft_ms) + ' · 生成 ' + fmtMs(gen) + ' · 总 ' + fmtMs(r.duration_ms) + '</div>'
+      : '';
+    $('rl-err').innerHTML = r.error ? '<div class="pf-banner">失败原因：' + esc(r.error) + '</div>' : '';
     window.pfDrawer('drawer-reqlog');
   }
 
-  function rlLoad(days) {
+  function rlFillFilters() {
+    var keys = [], models = [];
+    RL.forEach(function (r) {
+      if (keys.indexOf(r.alias) < 0) keys.push(r.alias);
+      if (models.indexOf(r.model) < 0) models.push(r.model);
+    });
+    var kv = $('rl-key').value, mv = $('rl-model').value;
+    $('rl-key').innerHTML = '<option value="">全部 Key</option>' + keys.map(function (k) {
+      return '<option value="' + esc(k) + '"' + (k === kv ? ' selected' : '') + '>' + esc(k) + '</option>'; }).join('');
+    $('rl-model').innerHTML = '<option value="">全部模型</option>' + models.map(function (m) {
+      return '<option value="' + esc(m) + '"' + (m === mv ? ' selected' : '') + '>' + esc(m) + '</option>'; }).join('');
+  }
+
+  function loadAll() {
+    var days = $('filter-days').value;
+    window.pfApi('GET', '/usage?days=' + days).then(function (d) {
+      renderTrend(d, days === '1' ? '今天' : '最近 ' + days + ' 天');
+    }).catch(function (e) { window.pfErr(e.error || '用量加载失败'); });
     window.pfApi('GET', '/usage/logs?days=' + days).then(function (d) {
       RL = d.logs || [];
       rlPage = 1;
+      rlFillFilters();
       rlRender();
     }).catch(function (e) { window.pfErr(e.error || '请求明细加载失败'); });
   }
 
   window.pfReady.then(function () {
-    function load() {
-      var days = document.getElementById('filter-days').value;
-      var label = days === '1' ? '今天' : '最近 ' + days + ' 天';
-      window.pfApi('GET', '/usage?days=' + days).then(function (d) { render(d, label); })
-        .catch(function (e) { window.pfErr(e.error || '用量加载失败'); });
-      rlLoad(days);
-    }
-    ['filter-key', 'filter-model'].forEach(function (id) {
-      document.getElementById(id).addEventListener('change', applyFilter);
+    bindTabs();
+    $('filter-days').addEventListener('change', loadAll);
+    $('btn-refresh').addEventListener('click', function () { loadAll(); window.pfToast('数据已刷新'); });
+    ['rl-key', 'rl-model', 'rl-status'].forEach(function (id) {
+      $(id).addEventListener('change', function () { rlPage = 1; rlRender(); });
     });
-    document.getElementById('filter-days').addEventListener('change', load);
-    document.getElementById('rl-search').addEventListener('input', function () { rlPage = 1; rlRender(); });
-    document.getElementById('rl-status').addEventListener('change', function () { rlPage = 1; rlRender(); });
-    document.getElementById('rl-prev').addEventListener('click', function () { if (rlPage > 1) { rlPage--; rlRender(); } });
-    document.getElementById('rl-next').addEventListener('click', function () { rlPage++; rlRender(); });
-    load();
+    $('rl-search').addEventListener('input', function () { rlPage = 1; rlRender(); });
+    $('rl-prev').addEventListener('click', function () { if (rlPage > 1) { rlPage--; rlRender(); } });
+    $('rl-next').addEventListener('click', function () { rlPage++; rlRender(); });
+    loadAll();
   });
 })();
 </script>

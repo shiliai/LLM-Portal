@@ -57,7 +57,7 @@ import struct
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -503,6 +503,29 @@ def logs_since(logs: list[dict], days: float) -> list[dict]:
     return out
 
 
+# 展示时区固定 Asia/Shanghai(+08)：LiteLLM 日志时间为 UTC；容器无 tzdata，用固定偏移零依赖
+_CST = timezone(timedelta(hours=8))
+
+
+def _aware_dt(iso: str) -> datetime | None:
+    try:
+        dt = datetime.fromisoformat((iso or "").replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def iso_to_cst(iso: str) -> str:
+    dt = _aware_dt(iso)
+    return dt.astimezone(_CST).strftime("%Y-%m-%dT%H:%M:%S") if dt else (iso or "")[:19]
+
+
+def row_tft_ms(row: dict) -> int:
+    """首 token 时延 = completionStartTime - startTime（生产实测 100% 可算）。"""
+    d1, d2 = _aware_dt(row.get("startTime") or ""), _aware_dt(row.get("completionStartTime") or "")
+    return max(0, int((d2 - d1).total_seconds() * 1000)) if (d1 and d2) else 0
+
+
 def wg_handshakes() -> dict[str, int]:
     """pubkey -> 距上次握手秒数（0=从未）。dump: interface 行 + peer 行。"""
     try:
@@ -676,6 +699,8 @@ async def api_usage(request: Request) -> Response:
         return ak == "litellm_proxy_master_key" or (len(ak) == 64 and all(c in "0123456789abcdef" for c in ak))
 
     rows_map: dict[tuple, dict] = {}
+    buckets: dict[str, dict] = {}          # 趋势图桶：小时(今天)/日期(多日)
+    tft_sum, tft_n, dur_sum = 0, 0, 0
     for r in logs_since(logs, days):
         ak, model = str(r.get("api_key") or ""), r.get("model_group") or r.get("model") or "?"
         if not ak_valid(ak):
@@ -685,8 +710,26 @@ async def api_usage(request: Request) -> Response:
         agg["requests"] += 1
         agg["prompt_tokens"] += int(r.get("prompt_tokens") or 0)
         agg["completion_tokens"] += int(r.get("completion_tokens") or 0)
-        agg["cached_tokens"] += row_cached(r)
-        agg["duration_ms_sum"] += int(r.get("request_duration_ms") or 0)
+        cached = row_cached(r)
+        agg["cached_tokens"] += cached
+        dur = int(r.get("request_duration_ms") or 0)
+        agg["duration_ms_sum"] += dur
+        dur_sum += dur
+        tft = row_tft_ms(r)
+        if tft:
+            tft_sum += tft
+            tft_n += 1
+        dt = _aware_dt(r.get("startTime") or "")
+        if dt:
+            bkey = dt.astimezone(_CST).strftime("%H:00" if days <= 1 else "%m-%d")
+            b = buckets.setdefault(bkey, {"reqs": 0, "in": 0, "out": 0, "cache": 0, "tft_sum": 0, "tft_n": 0})
+            b["reqs"] += 1
+            b["in"] += int(r.get("prompt_tokens") or 0)
+            b["out"] += int(r.get("completion_tokens") or 0)
+            b["cache"] += cached
+            if tft:
+                b["tft_sum"] += tft
+                b["tft_n"] += 1
     rows = [{"key": ak[-4:],
              "alias": alias_of.get(ak) or ("管理员（master key）" if ak == "litellm_proxy_master_key" else "已删除密钥"),
              "model": model,
@@ -694,7 +737,7 @@ async def api_usage(request: Request) -> Response:
              "avg_ms": round(a["duration_ms_sum"] / a["requests"]) if a["requests"] else 0, **a}
             for (ak, model), a in sorted(rows_map.items())]
     failures = [r for r in logs_since(logs, days) if r.get("status") == "failure"]
-    errors = [{"time": (r.get("startTime") or "")[:19], "key": key_last4(r),
+    errors = [{"time": iso_to_cst(r.get("startTime") or ""), "key": key_last4(r),
                "model": r.get("model_group") or r.get("model") or "?", "detail": err_text(r)}
               for r in failures[-10:]][::-1]
     per_key = {}
@@ -706,7 +749,21 @@ async def api_usage(request: Request) -> Response:
          "completion_tokens": sum(r["completion_tokens"] for r in rows),
          "cached_tokens": sum(r["cached_tokens"] for r in rows)}
     t["total_tokens"] = t["prompt_tokens"] + t["completion_tokens"] + t["cached_tokens"]
-    return JSONResponse({"rows": rows, "errors": errors, "totals": t,
+    t["avg_tft"] = round(tft_sum / tft_n) if tft_n else 0
+    t["avg_ms"] = round(dur_sum / t["requests"]) if t["requests"] else 0
+    t["failures"] = len(failures)
+    # 趋势桶（C 原型）：今天按 24 小时铺满，多日按日期铺满（空桶补零，前端直接画）
+    if days <= 1:
+        keys = [f"{h:02d}:00" for h in range(24)]
+    else:
+        base = datetime.now().astimezone(_CST)
+        keys = [(base - timedelta(days=i)).strftime("%m-%d") for i in range(int(days) - 1, -1, -1)]
+    hourly = []
+    for k in keys:
+        b = buckets.get(k) or {"reqs": 0, "in": 0, "out": 0, "cache": 0, "tft_sum": 0, "tft_n": 0}
+        hourly.append({"label": k, "reqs": b["reqs"], "in": b["in"], "out": b["out"],
+                       "cache": b["cache"], "avg_tft": round(b["tft_sum"] / b["tft_n"]) if b["tft_n"] else 0})
+    return JSONResponse({"rows": rows, "errors": errors, "totals": t, "hourly": hourly,
                          "per_key": sorted(per_key.items(), key=lambda kv: -kv[1])})
 
 
@@ -732,8 +789,9 @@ async def api_usage_logs(request: Request) -> Response:
         if not ak_valid(ak):
             continue
         failed = r.get("status") == "failure"
+        tft = row_tft_ms(r)
         out.append({
-            "ts": (r.get("startTime") or "")[:19],
+            "ts": iso_to_cst(r.get("startTime") or ""),
             "alias": alias_of.get(ak) or ("管理员（master key）" if ak == "litellm_proxy_master_key" else "已删除密钥"),
             "key": key_last4(r),
             "model": r.get("model_group") or r.get("model") or "?",
@@ -741,10 +799,12 @@ async def api_usage_logs(request: Request) -> Response:
             "prompt_tokens": int(r.get("prompt_tokens") or 0),
             "completion_tokens": int(r.get("completion_tokens") or 0),
             "cached_tokens": row_cached(r),
+            "tft_ms": tft,
             "duration_ms": int(r.get("request_duration_ms") or 0),
             "status": "failure" if failed else "ok",
             "request_id": r.get("request_id") or "",
             "session_id": r.get("session_id") or "",
+            "ip": str(r.get("requester_ip_address") or ""),
             "error": err_text(r) if failed else "",
         })
     out.sort(key=lambda r: r["ts"], reverse=True)

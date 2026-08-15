@@ -30,7 +30,7 @@ ROWS = [
     ("08-15 14:27:19", "pi-local", "…Rg2Q", "deepseek-v4-flash-0731", "acompletion", 22180, 16400, 2800, 1210, 9930, "112.10.88.23", "ok", ""),
     ("08-15 14:26:58", "home-only", "…Iag", "qwen3.6-35b-fp8", "acompletion", 640, 0, 88, 350, 890, "203.198.17.66", "ok", ""),
     ("08-15 14:26:12", "justink", "…bGvw", "claude-opus-5", "messages", 1180, 0, 160, 0, 0, "192.168.88.12", "failure", "Anthropic 协议转换：400 model_not_found"),
-    ("08-15 14:25:37", "pi-local", "…Rg2Q", "deepseek-v4-flash-0731", "acompletion", 3024, 1024, 410, 480, 2110, "112.10.88.23", "ok", ""),
+    ("08-15 14:25:37", "pi-local", "…Rg2Q", "deepseek-v4-flash-0731", "acompletion", 3024, 1024, 410, 480, 2110, "172.18.0.2", "ok", ""),
 ]
 
 def fmt(n):
@@ -175,20 +175,41 @@ def hbar_rows(data, violet_alt=True):
                    f'style="width:{pct}%"></span></div><div class="num" style="text-align:right">{fmt(v)}</div></div>')
     return "".join(out)
 
-def detail_rows(with_ip=True):
+def sev_tft(ms): return "#389e0d" if ms < 1000 else ("#d46b08" if ms < 3000 else "#cf1322")
+def sev_dur(ms): return "#389e0d" if ms < 5000 else ("#d46b08" if ms < 15000 else "#cf1322")
+
+def token_cell(pin, pcache, pout):
+    cache_line = (f'<div><span style="color:#0958d9">▣</span> <span style="color:#0958d9">{fmt(pcache)}</span></div>'
+                  if pcache else '<div style="color:#bfbfbf;font-size:11.5px">无缓存命中</div>')
+    return (f'<div style="line-height:1.6;white-space:nowrap"><span style="color:#389e0d">↓</span> {fmt(pin)}'
+            f'<span style="color:#531dab;margin-left:7px">↑</span> {fmt(pout)}</div>{cache_line}')
+
+def lat_cell(tft, tot):
+    if not tot:
+        return '<span style="color:#bfbfbf">—</span>'
+    tft_s = f"{tft}ms" if tft < 1000 else f"{tft/1000:.1f}s"
+    tot_s = f"{tot}ms" if tot < 1000 else f"{tot/1000:.1f}s"
+    p1 = tft / tot * 100
+    bar = (f'<div style="height:5px;width:110px;border-radius:3px;overflow:hidden;display:flex;margin-bottom:4px">'
+           f'<span style="width:{p1:.0f}%;background:{sev_tft(tft)}"></span>'
+           f'<span style="width:{100-p1:.0f}%;background:{sev_dur(tot-tft)};opacity:.75"></span></div>')
+    return (f'{bar}<div style="line-height:1.5;white-space:nowrap"><span style="color:#8c8c8c">首T</span> '
+            f'<b style="color:{sev_tft(tft)}">{tft_s}</b><span style="color:#8c8c8c;margin-left:5px">总</span> '
+            f'<b style="color:{sev_dur(tot)}">{tot_s}</b></div>')
+
+def detail_rows():
     out = []
     for (ts, alias, k4, model, ctype, pin, pcache, pout, tft, lat, ip, st, err) in ROWS:
         status = '<span class="pf-chip ok">成功</span>' if st == "ok" else '<span class="pf-chip err">失败</span>'
-        tft_s = f"{tft} ms" if tft < 1000 else f"{tft/1000:.1f} s"
-        lat_s = f"{lat} ms" if lat < 1000 else f"{lat/1000:.1f} s"
-        ipcell = f'<td class="mono">{ip}</td>' if with_ip else ""
-        fail_mut = ' style="color:#8c8c8c"' if st == "failure" else ""
+        ip_txt = ip if not ip.startswith("172.18.") else f'{ip} <span class="pf-desc">（经 nginx）</span>'
+        fail_mut = ' style="opacity:.62"' if st == "failure" else ""
         out.append(
             f'<tr{fail_mut}><td class="mono">{ts[6:]}</td>'
-            f'<td><span class="pf-key">{k4}</span> {alias}</td>'
+            f'<td>{alias}</td>'
             f'<td class="mono">{model}</td><td>{ctype}</td>'
-            f'<td class="num">{fmt(pin)}</td><td class="num">{fmt(pcache)}</td><td class="num">{fmt(pout)}</td>'
-            f'<td class="num">{tft_s if tft else "—"}</td><td class="num">{lat_s}</td>{ipcell}'
+            f'<td>{token_cell(pin, pcache, pout)}</td>'
+            f'<td>{lat_cell(tft, lat)}</td>'
+            f'<td class="mono" style="white-space:nowrap">{ip_txt}</td>'
             f'<td>{status}</td><td><button class="pf-link">详情</button></td></tr>')
     return "".join(out)
 
@@ -211,9 +232,10 @@ FILTER_BAR = '''<div class="pf-toolbar" style="padding:11px 14px">
   <button class="pf-btn sm">‹ 上一页</button><span class="pf-desc">1 / 46</span><button class="pf-btn sm">下一页 ›</button>
 </div>'''
 
-DETAIL_HEAD = ("<tr><th>时间</th><th>Key</th><th>模型</th><th>类型</th><th class='num'>输入</th>"
-               "<th class='num'>缓存读</th><th class='num'>输出</th><th class='num'>TFT</th>"
-               "<th class='num'>总延迟</th><th>IP</th><th>状态</th><th>操作</th></tr>")
+DETAIL_HEAD = ("<tr><th>时间 <span style='color:#bfbfbf'>↕</span></th><th>Key <span style='color:#bfbfbf'>↕</span></th>"
+               "<th>模型 <span style='color:#bfbfbf'>↕</span></th><th>类型 <span style='color:#bfbfbf'>↕</span></th>"
+               "<th>Token <span style='color:#bfbfbf'>↕</span></th><th>延迟 <span style='color:#bfbfbf'>↕</span></th>"
+               "<th>IP <span style='color:#bfbfbf'>↕</span></th><th>状态 <span style='color:#bfbfbf'>↕</span></th><th>操作</th></tr>")
 
 # ---------------- 原型 A:仪表盘优先 ----------------
 body_a = f'''<div class="pf-page-head"><div class="pf-desc">管理员用量视图：趋势、分布与请求明细一站式（原型 A · 仪表盘优先）。</div></div>
@@ -277,12 +299,14 @@ tft_bars = "".join(
     f'height="{TFT_H - TFT_B - y_tft(v):.1f}" rx="1.5" fill="{"#faad14" if v > 1500 else "#ffd591"}"/>'
     for i, v in enumerate(TFT))
 tft_svg = f'<svg viewBox="0 0 {W} {TFT_H}" style="width:100%">{tft_bars}{xlabels(baseline=TFT_H - 8)}</svg>'
-body_c = f'''<div class="pf-page-head"><div class="pf-desc">趋势与明细分 Tab（原型 C · 双视图）。</div></div>
+body_c = f'''<div class="pf-page-head"><div class="pf-desc">趋势与明细分 Tab（原型 C · 修订版）。时间按 Asia/Shanghai (+08) 显示；Token 与延迟为聚合展示；点列头排序。</div></div>
 <div class="pf-card" style="padding:0 14px">
 <div class="pf-toolbar" style="border-bottom:1px solid #f0f0f0;padding:0">
   <button class="pf-btn" style="border:none;border-bottom:2px solid #1677ff;border-radius:0;background:none;color:#1677ff;font-weight:500">趋势总览</button>
   <button class="pf-btn" style="border:none;border-radius:0;background:none;color:#595959">请求明细</button>
-  <span style="flex:1"></span><select class="pf-select" style="margin:8px 0"><option>今天</option><option>最近 7 天</option></select>
+  <span style="flex:1"></span>
+  <button class="pf-btn sm" title="只刷新数据,不刷新页面">↻ 刷新</button>
+  <select class="pf-select" style="margin:8px 0"><option>今天</option><option>最近 7 天</option></select>
 </div>
 <div style="padding:14px 2px">
 {STAT_CARDS.replace('margin-bottom: 14px', 'margin-bottom: 0')}
@@ -294,9 +318,18 @@ body_c = f'''<div class="pf-page-head"><div class="pf-desc">趋势与明细分 T
   <div class="pf-card-title" style="margin:14px 0 8px">Key 占比</div>{hbar_rows(KEYS)}</div>
 </div></div></div>
 <div class="pf-card flush" style="margin-top:14px"><div class="pf-card-head">
-<div class="pf-card-title">「请求明细」Tab 内容预览（同原型 B 主表）</div></div>
-{FILTER_BAR}
-<table class="pf-table"><thead>{DETAIL_HEAD}</thead><tbody>{detail_rows()}</tbody></table></div>'''
+<div class="pf-card-title">「请求明细」Tab 内容预览（聚合列 + 可排序 + 刷新）</div>
+<div class="pf-card-extra">共 1,601 次 · 失败 14 · 第 1/46 页</div></div>
+<div class="pf-toolbar" style="padding:11px 14px">
+  <select class="pf-select"><option>全部 Key</option><option>pi-local</option><option>justink</option></select>
+  <select class="pf-select"><option>全部模型</option><option>deepseek-v4-flash-0731</option></select>
+  <select class="pf-select"><option>全部状态</option><option>成功</option><option>失败</option></select>
+  <input class="pf-input" style="width:220px" placeholder="搜索 request_id / 模型 / IP…">
+  <span style="flex:1"></span>
+  <button class="pf-btn sm">‹ 上一页</button><span class="pf-desc">1 / 46</span><button class="pf-btn sm">下一页 ›</button>
+</div>
+<table class="pf-table"><thead>{DETAIL_HEAD}</thead><tbody>{detail_rows()}</tbody></table>
+<div class="pf-desc" style="padding:8px 14px">鉴权失败不产生日志行；172.18.x 为网关(nginx)地址——真实客户端 IP 需上游支持 X-Forwarded-For（已知限制）。</div></div>'''
 
 (OUT / "usage-proto-a.html").write_text(shell("用量总览", body_a, "原型 A · 仪表盘优先 — 供评审，非功能页面"))
 (OUT / "usage-proto-b.html").write_text(shell("用量总览", body_b, "原型 B · 日志优先（sub2api 风格）— 供评审，非功能页面"))
