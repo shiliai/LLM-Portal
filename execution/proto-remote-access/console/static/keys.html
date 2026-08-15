@@ -138,7 +138,7 @@
                placeholder="粘贴完整密钥（sk-…）以代入下方配置">
         <button class="pf-btn" id="btn-use-show" type="button" title="显示/隐藏明文">显示</button>
       </div>
-      <div class="pf-desc" style="margin-bottom:6px">系统不存储密钥明文（列表只显示尾 4 位）；粘贴仅在本页拼接配置，不回传服务端。</div>
+      <div class="pf-desc" style="margin-bottom:6px">系统不存储密钥明文（列表只显示尾 4 位）；本标签页内创建或粘贴过的密钥会被自动代入，关闭标签即清除。</div>
 
       <div class="pf-tabs">
         <button class="pf-tab active" data-tab="cc" type="button">Claude Code</button>
@@ -264,13 +264,13 @@
         : '<button class="pf-link danger js-toggle-key" data-token="' + esc(k.token) + '" data-blocked="0">禁用</button>';
       return '<tr' + (k.blocked ? ' class="pf-row-muted"' : '') + '>' +
         '<td>' + esc(k.alias) + '</td>' +
-        '<td><span class="pf-key">sk-…' + esc(k.key_last4) + '</span></td>' +
+        '<td><span class="pf-key">sk-…' + esc(keyTail(k.key_last4)) + '</span></td>' +
         '<td>' + groupSel + '</td>' +
         '<td>' + scope + '</td>' +
         '<td class="mono">' + esc((k.created_at || '').slice(0, 10)) + '</td>' +
         '<td>' + statusChip + '</td>' +
         '<td style="white-space:nowrap">' +
-          '<button class="pf-link js-use-key" data-token="' + esc(k.token) + '" data-alias="' + esc(k.alias) + '">使用</button>' +
+          '<button class="pf-link js-use-key" data-token="' + esc(k.token) + '" data-alias="' + esc(k.alias) + '" data-last4="' + esc(k.key_last4) + '">使用</button>' +
           '<button class="pf-link js-edit-key" data-token="' + esc(k.token) + '" data-alias="' + esc(k.alias) + '" data-models="' + esc((k.models || []).join(',')) + '">编辑</button>' +
           toggle +
           '<button class="pf-link danger js-delete-key" data-token="' + esc(k.token) + '" data-alias="' + esc(k.alias) + '">删除</button>' +
@@ -323,11 +323,29 @@
       };
     });
     document.querySelectorAll('.js-use-key').forEach(function (btn) {
-      btn.onclick = function () { openUse(btn.dataset.alias, ''); };
+      btn.onclick = function () { openUse(btn.dataset.alias, '', btn.dataset.last4); };
     });
   }
 
-  /* ---------- 使用密钥弹窗：配置片段生成 ---------- */
+  /* ---------- 使用密钥弹窗:配置片段生成 ---------- */
+  /* 密钥会话记忆（sessionStorage，按尾4位）：本标签页内创建/粘贴过的密钥直接代入
+     「使用」弹窗，免去每次粘贴；关闭标签即清除，不落盘不回传（系统不存明文的边界内） */
+  var KEY_CACHE = 'pll-usekey-cache';
+  function keyTail(s) { return String(s || '').replace(/^…+/, '').slice(-4); }   // key_last4 带「…」前缀，归一化
+  function rememberKey(keyStr) {
+    try {
+      var m = JSON.parse(sessionStorage.getItem(KEY_CACHE) || '{}');
+      m[keyTail(keyStr)] = keyStr;
+      var ks = Object.keys(m);
+      if (ks.length > 8) delete m[ks[0]];   // 上限防膨胀
+      sessionStorage.setItem(KEY_CACHE, JSON.stringify(m));
+    } catch (e) { /* 隐私模式等场景静默降级 */ }
+  }
+  function cachedKey(last4) {
+    try { return (JSON.parse(sessionStorage.getItem(KEY_CACHE) || '{}'))[keyTail(last4)] || ''; }
+    catch (e) { return ''; }
+  }
+
   function keyVal() { return $('use-key').value.trim() || 'sk-（在此粘贴你的完整密钥）'; }
 
   function fillUse() {
@@ -371,9 +389,11 @@
       '      "apiKey": ' + JSON.stringify(K) + '\n    }\n  }\n}';
   }
 
-  function openUse(alias, key) {
+  function openUse(alias, key, last4) {
     $('use-alias').textContent = alias || '';
-    $('use-key').value = key || '';
+    var k = key || (last4 ? cachedKey(last4) : '');
+    if (k) rememberKey(k);
+    $('use-key').value = k;
     $('use-key').type = 'password';
     $('btn-use-show').textContent = '显示';
     fillUse();
@@ -418,7 +438,11 @@
     $('f-group').addEventListener('input', render);
     $('f-status').addEventListener('input', render);
     $('btn-refresh').addEventListener('click', function () { load(); window.pfToast('已刷新'); });
-    $('use-key').addEventListener('input', fillUse);
+    $('use-key').addEventListener('input', function () {
+      var v = this.value.trim();
+      if (/^sk-[A-Za-z0-9_-]{16,}$/.test(v)) rememberKey(v);   // 会话内记住,下次直接代入
+      fillUse();
+    });
     $('btn-use-show').addEventListener('click', function () {
       var show = $('use-key').type === 'password';
       $('use-key').type = show ? 'text' : 'password';
