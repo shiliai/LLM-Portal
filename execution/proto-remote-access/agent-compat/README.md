@@ -9,19 +9,23 @@ model reasoning failures and stores no API credentials. The default model is
 
 | Layer | Cases | Pass condition |
 |---|---|---|
-| OpenAI-compatible API | non-stream text, streaming text, automatic and forced tool frames, non-stream tool call/result continuation | valid response framing, stable tool-call ID, correct final value |
-| Anthropic-compatible API | non-stream text, streaming text, automatic and forced tool frames, non-stream tool use/result, inline `system`, token count | valid Anthropic framing; inline-system behavior is reported explicitly |
+| OpenAI-compatible API | non-stream text, streaming text, automatic and forced tool frames, non-stream tool call/result continuation, multi-tool forced-choice rejection | valid response framing, stable tool-call ID, correct final value, stable 400 `forced_tool_choice_unsupported` for multi-tool `required` |
+| Anthropic-compatible API | non-stream text, streaming text, automatic and forced tool frames, non-stream tool use/result, inline `system` preservation, token count | valid Anthropic framing; inline system marker must survive (US-13 us13-v1 compat layer); `count_tokens` must count the marker; multi-tool `any` must yield a stable Anthropic-format 400 |
 | Real agent, first turn | inspect three files, calculate a candidate, call the verifier, consume structured feedback if rejected, write `result.json` | at least one tool call, verifier success, exact artifact |
 | Real agent, resumed turn | remember the first-turn result, inspect `adjustment.json`, calculate and verify the adjusted result, write `final_summary.json` | same session resumes, at least one new tool call, exact artifact |
 
-The inline-system case is diagnostic. LiteLLM 1.96.2 is known to drop inline
-`messages[].role=system` entries on this route. A 200 response proves crash
-compatibility, but marker loss is reported as a semantic warning rather than a
-full conformance pass.
+The inline-system case is a hard conformance requirement since the issue #9
+compat layer: `/v1/messages` must merge inline `messages[].role=system` entries
+into the nearest preceding user message (US-13 us13-v1), and a dropped or
+indeterminate marker fails the case. Before the compat layer, LiteLLM 1.96.2
+silently dropped the marker; that gap motivated the gateway-side normalizer.
 
 Automatic and forced tool selection are separate cases. Real coding agents
 normally use automatic selection; a forced-selection failure is still reported
 because clients that send OpenAI `required` or Anthropic `any` will encounter it.
+Single-tool forced choice is repaired by the compat layer (rewritten to name the
+tool); multi-tool forced choice must return a stable 400 instead of a malformed
+200, because the gateway refuses to pick a tool on the client's behalf.
 
 ## Run
 

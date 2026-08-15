@@ -1,4 +1,4 @@
-# private-llm 网关全容器栈（#7 容器化：一个 compose file 管 6 服务，docker 组用户可部署）
+# private-llm 网关全容器栈（#7 容器化：一个 compose file 管 7 服务，docker 组用户可部署；issue #9 增 compat）
 # 上游引用一律用容器名（compose 项目共享 external 网络时，裸服务名会与其他项目同名服务冲突，
 # 实测被解析到 sub2api 的 postgres——沿用 litellm DATABASE_URL 的结论）。
 # 对外仅由既有 nginx-sub2api 容器经共享网络反代（nginx/private-llm.conf，deploy.sh 注入）；
@@ -33,6 +33,22 @@ services:
       - shared
     depends_on:
       - postgres
+
+  # 协议兼容层（issue #9 / US-13 us13-v1）：nginx 三条 API 路径经此转 LiteLLM。
+  # 无状态、不落盘、不挂 sock、不持密钥（鉴权头原样透传，鉴权/路由/记账仍归 litellm）
+  compat:
+    build: ../compat
+    container_name: private-llm-compat
+    restart: unless-stopped
+    environment:
+      LITELLM_BASE: http://litellm:4000
+    ports:
+      - "127.0.0.1:8400:8400"   # 本机冒烟/调试
+    networks:
+      - default
+      - shared
+    depends_on:
+      - litellm
 
   postgres:
     image: postgres:18-alpine

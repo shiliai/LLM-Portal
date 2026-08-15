@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # private-llm 网关一键部署（VPS 侧，docker 组用户执行，日常无需 sudo；幂等可重复跑）。
-# #7 容器化：6 服务全 compose——litellm/postgres/mcp-hub/onboardd/console + wireguard sidecar
+# #7 容器化：7 服务全 compose——litellm/compat/postgres/mcp-hub/onboardd/console + wireguard sidecar
 #   （host 网络，wg0 仍在宿主机 netns，站点路由模型不变）；onboardd/consoled 经 docker.sock
 #   管理 wg peer / 重启 mcp-hub（挂 sock 的容器 ≈ 宿主机 root，仅管理面容器，见 runbook §7）。
 # 步骤：[一次性迁移退役 systemd] → 引导 wg 密钥与配置（docker 执行，免 sudo）→ compose build/up
@@ -92,6 +92,7 @@ echo "== [5/7] nginx site (into nginx-sub2api)"
 # 中间产物走 mktemp：/var/lib/private-llm 与历史 /tmp 固定名文件均为旧 root 部署所建，docker 组用户不可写
 RENDERED=$(mktemp) && STRIPPED=$(mktemp) && trap 'rm -f "$RENDERED" "$STRIPPED"' EXIT
 sed -e "s|{{LITELLM_UPSTREAM}}|litellm:4000|g" \
+    -e "s|{{COMPAT_UPSTREAM}}|private-llm-compat:8400|g" \
     nginx/private-llm.conf > "$RENDERED"
 cp "$NGINX_CONF_DIR/nginx.conf" "$NGINX_CONF_DIR/nginx.conf.backup-$(date +%Y%m%d-%H%M%S)"
 # 幂等：先移除旧块再追加。注意必须保留 inode 原地写（cat > / >>）——此文件被单文件 bind-mount 进
@@ -120,6 +121,7 @@ case ":$PATH:" in *":$BIN_DIR:"*) : ;; *) echo "   note: $BIN_DIR 不在 PATH，
 
 echo "== [7/7] smoke"
 echo "-- litellm health:"; curl -sf -m 5 http://127.0.0.1:4000/health/liveliness && echo || echo "!! litellm not up (docker compose logs litellm)"
+echo "-- compat-proxy:"; code=$(curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8400/v1/chat/completions -H 'content-type: application/json' -d '{"model":"x","messages":[]}'); [ "$code" = "401" ] && echo "   ok (no-key 401 passthrough)" || echo "!! expect 401 via compat, got $code (docker compose logs compat)"
 echo "-- onboardd:"; curl -s -m 5 -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:8100/onboard/install?token=x" | sed 's/^/   (expect 403): /'
 echo "-- mcp-hub:"; curl -s -m 5 -o /dev/null -w '%{http_code}\n' -H 'authorization: Bearer invalid' http://127.0.0.1:8200/mcp/usage | sed 's/^/   (expect 401): /'
 echo "-- consoled:"; curl -s -m 5 -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8300/console/api/me | sed 's/^/   (expect 401): /'

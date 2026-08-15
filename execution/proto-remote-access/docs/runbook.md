@@ -7,8 +7,9 @@
 
 | 组件 | 位置 | 端口 | 说明 |
 |---|---|---|---|
-| nginx（既有 `nginx-sub2api` 容器） | 公网 | 443/tcp | 单入口（r6 allowlist）：`/`→主页、`/v1/*`+`= /key/info`+`= /health/liveliness`→litellm、`/mcp*`→mcp-hub:8200、`/onboard/install\|register\|confirm`→onboardd:8100、`/console`→consoled:8300；**其余一律 404**（LiteLLM `/ui`/`/login`/全部管理 API、`/onboard/admin/*` 不对公网）；SSE 不缓冲；本机仍可直查 127.0.0.1:4000 |
+| nginx（既有 `nginx-sub2api` 容器） | 公网 | 443/tcp | 单入口（r6 allowlist）：`/`→主页、`= /v1/messages`+`= /v1/messages/count_tokens`+`= /v1/chat/completions`→compat:8400（issue #9）、其余`/v1/*`+`= /key/info`+`= /health/liveliness`→litellm、`/mcp*`→mcp-hub:8200、`/onboard/install\|register\|confirm`→onboardd:8100、`/console`→consoled:8300；**其余一律 404**（LiteLLM `/ui`/`/login`/全部管理 API、`/onboard/admin/*` 不对公网）；SSE 不缓冲；本机仍可直查 127.0.0.1:4000 |
 | LiteLLM Proxy（容器） | 回环 | 127.0.0.1:4000 | 双协议 API（`/v1/chat/completions` + `/v1/messages`）、别名、least-busy 分流、虚拟 Key、用量记账——r6 起退居底层引擎，管理面经控制台 |
+| **compat 协议兼容层（容器 `private-llm-compat`）** | 本机回环 | 127.0.0.1:8400 | **协议兼容代理（issue #9，2026-08-15）**：nginx 三条 API 路径（`= /v1/messages`、`= /v1/messages/count_tokens`、`= /v1/chat/completions`）经此转 LiteLLM——①US-13 us13-v1 内联 system 规范化（`/messages` 与 `/count_tokens` 共用同一纯函数，norm_hash 可对账）；②单工具 `required`/`any` 改写为指定工具；③多工具 forced 稳定 400 `forced_tool_choice_unsupported`；④OpenAI 流式 finish_reason=stop→`tool_calls` 修正。无变换即原始字节透传（保护 prompt cache），SSE 逐行不缓冲；鉴权/路由/记账仍归 LiteLLM；脱敏指标走 `docker logs private-llm-compat`（无 key/正文） |
 | Postgres（容器） | compose 内 | 无主机端口 | LiteLLM Key/用量/deployment 存储（`STORE_MODEL_IN_DB=True`） |
 | mcp-hub（容器 `private-llm-mcp-hub`） | 本机回环 | 127.0.0.1:8200 | `/mcp`（Streamable HTTP）+ `/mcp/upload` + `/mcp/files/*` + `/mcp/usage` + 主页托管；nginx 经共享网络容器名反代（#7） |
 | onboardd（容器 `private-llm-onboardd`） | 本机回环 | 127.0.0.1:8100 | 站点注册：install/register/confirm + admin API（admin/* 公网 404；site-tools CLI 走本机回环）；经 docker.sock 管 wg peer（#7） |
@@ -37,6 +38,7 @@
     - **时区修正**：日志时间统一转 Asia/Shanghai(+08) 展示（此前直接切 UTC 字符串，差 8 小时）。
     - **客户端 IP（2026-08-15 二次调查后解决）**：LiteLLM 实为支持 XFF——`general_settings.use_x_forwarded_for: true`（config.yaml 已加）即记录 nginx 传来的 `X-Forwarded-For`（consoled 取首跳）；此前记的是 nginx 容器地址（172.18.x，历史行页面标注「经 nginx」）。仅当上游为可信反代时开启：litellm 端口只在 docker 网内可达，安全。已实测：工作站经公网调用，日志记录真实出口 IP。
    **本地集成实测（2026-08-15）**：4 镜像本地构建 + 4 容器栈（wireguard 用隔离 netns 冒烟）——admin 容器内登录、console→docker.sock→wg sidecar 的 `wg show`/`wg set peer` 链路、`/mcp/register` 触发 `docker restart private-llm-mcp-hub`（容器 StartedAt 实变）、external-mcp.json 跨容器共享写读、LiteLLM 缺席容错，全部通过。
+11. **协议兼容层（2026-08-15，issue #9）**：nginx 与 LiteLLM 之间新增 compat-proxy（`compat/compat_proxy.py`，容器 `private-llm-compat:8400`，Starlette 单文件，随 compose 第 7 服务部署）。背景：agent-compat 矩阵实测 deepseek-v4-flash-0731 上 4 个 forced 用例畸形（`tool_choice=required`/`any` 不产生工具调用）、内联 `messages[].role=system` 被 LiteLLM 1.96.2 静默丢弃（issue #2）。**为何是独立代理而非 LiteLLM hook**：`group_routing.py` 的 `async_pre_call_hook` 位于 LiteLLM 请求解析之后，内联 system 到达时已丢失；独立代理在解析前规范化。**修复语义**：①内联 system 结构化块合并进最近前一条 user（无前置 user 原地转合成 user；顶层 `system`、tool ID、cache_control、thinking 不动；确定性——多轮重发前缀字节稳定，US-08 缓存互锁）；②单工具 forced 改写为指定该工具（探针实测可完整恢复）；③多工具 forced 稳定 400（`forced_tool_choice_unsupported`，OpenAI/Anthropic 各自错误格式；禁止静默删参或代选第一个）；④OpenAI 流式见过 tool_calls fragments 却报 stop → 改写为 `tool_calls`（逐 choice，仅重写该行）；⑤**DSML 参数规范化（部署中实测发现，探针未覆盖）**：vLLM（site-a deepseek）在 forced/指定函数路径把 DeepSeek 原生 `<｜DSML｜…>` 标记文本放进 `function.arguments`（auto 路径则是干净 JSON），第二轮历史回传时 vLLM 解析 arguments 即 400「Expecting value」——compat 在 OpenAI 非流式响应侧与请求侧 assistant 历史双侧把非法 JSON 的 DSML arguments 确定性转为 JSON（非 DSML 结构不猜测、原样透传）。**不变式**：无变换即原始字节透传；`Accept-Encoding: identity`；内部容器（mcp-hub/onboardd/console）仍直连 litellm 不经 compat；多工具 forced 待上游支持后移除 400 并回归矩阵。验证：`compat/test_compat.py` 30 项单测 + 本地 stub 端到端冒烟 15 项 + agent-compat 矩阵 16 项（含 2 项新增多工具 400 用例；inline_system 升级为硬性 PASS 条件）；TTFT 对比无回归（openai 715→751ms / anthropic 655→646ms，晚高峰噪声内）。
 
 ## 2. VPS 部署（一次性）
 
@@ -128,6 +130,14 @@ install.sh 在站点侧：装 wireguard-tools → `wg genkey`（私钥不出机�
 # 日志（#7 容器化：compose 一把抓）
 cd ~/LLM-Portal/vps && docker compose logs -f            # 全部；--tail 100 起
 docker compose logs -f console mcp-hub onboardd               # 单看三服务
+# compat 变换指标（issue #9；脱敏：只有规则/索引/norm_hash，无 key 无正文）
+docker logs --tail 200 private-llm-compat
+#   对账：同一报文分别打 /v1/messages 与 /v1/messages/count_tokens，两条 compat.transform
+#   的 norm_hash 应一致（= 同一有效消息序列，US-13 验收口径）
+# compat 回滚（兼容层自身故障时；恢复 = git 还原后重跑 deploy.sh）
+cd ~/LLM-Portal && git checkout <compat 之前的提交> -- vps/   # 或手改 nginx conf 去掉三个 = location
+cd ~/LLM-Portal/vps && ./deploy.sh                        # 重渲染 nginx，三条路径回直达 litellm
+docker compose stop compat                                     # 容器可留可停，不再有流量
 # 重启组件（consoled 会话已落盘，重启不掉线；mcp-hub 重启会中断进行中的 MCP 调用；
 #   wireguard 重启 = wg-quick down/up，隧道瞬断、conf 持久化的 peer 自动恢复）
 cd ~/LLM-Portal/vps && docker compose restart console
@@ -139,7 +149,7 @@ cd ~/LLM-Portal/vps && ./deploy.sh    # 幂等升级（compose build + up + 收�
 ## 7. 密钥与安全（C1/C2/C5）
 
 - master key / postgres 密码 / onboard admin token / 管理员邮箱密码与 TOTP 密钥：`vps/.env`（VPS 上 0600，不入库），compose 变量注入各容器；`/etc/private-llm/` 只剩 `external-mcp.json`（外部 MCP 注册表）。r6 起公网不再有任何接受 master key 的端点（控制台管理员登录走独立邮箱+密码+2FA 页，master key 仅服务端回环；用户登录用分配的虚拟 Key）。管理员登录连错 5 次/分钟锁定，与用户登录共用限速。
-- **docker.sock 取舍（#7）**：console/onboardd 容器挂 `/var/run/docker.sock`（执行 wg peer 管理 / mcp-hub 重启），挂 sock 的容器 ≈ 宿主机 root——只给这两个管理面容器，且它们本身已是管理员权限面；其余容器（litellm/postgres/mcp-hub/wireguard）不挂。
+- **docker.sock 取舍（#7）**：console/onboardd 容器挂 `/var/run/docker.sock`（执行 wg peer 管理 / mcp-hub 重启），挂 sock 的容器 ≈ 宿主机 root——只给这两个管理面容器，且它们本身已是管理员权限面；其余容器（litellm/compat/postgres/mcp-hub/wireguard）不挂（compat 亦不持任何密钥，鉴权头原样透传）。
 - WG 私钥：VPS `/var/lib/private-llm/wireguard-private.key`（0600）与 `/etc/wireguard/wg0.conf`（0600）；站点私钥仅站点本机。
 - 用户 Key 永不出网关：mcp-hub 只用它调 `/key/info` 与回环 LiteLLM；上游无鉴权直连不带 Key。
 - **Key 明文保险库（2026-08-15，管理员可再查）**：管理员需求「查看生成的 key，而非仅一次展示」——consoled 在创建时把明文 Fernet 加密存 `/var/lib/private-llm/console/keyvault.db`（密钥文件 `keyvault.key` 0600，独立于密文），`POST /console/api/keys/reveal`（仅管理员）解密取回；「使用」弹窗自动取回代入。**边界变化：网关成为密钥保管者**——VPS 失陷即密钥失陷（加密仅防离库拖走）；保险库启用前的旧 Key 只有哈希，reveal 404 提示重签；轮换保险库 = 删 `keyvault.key`（旧密文不可解，等同重签）。
