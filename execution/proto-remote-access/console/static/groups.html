@@ -29,7 +29,7 @@
     </table>
   </div>
 
-  <div class="pf-desc">Key 的可用模型 = 其分组内 provider 部署的模型 ∩ 模型白名单（未设白名单即不裁剪）；分组对 API 与网关托管 MCP 同时生效。「绑定 Key 数」为只读统计，改某 Key 的分组请到「用户 Key」页。</div>
+  <div class="pf-desc">密钥可用模型 = 所属分组内 provider 部署的模型 ∩ 模型白名单（未设置白名单即不裁剪）；分组对 API 与网关托管 MCP 同时生效。「绑定 Key 数」为只读统计；调整密钥所属分组请前往「用户 Key」页。</div>
 
   <!-- 新建分组弹窗 -->
   <div class="pf-modal" id="modal-newgroup" style="width:480px">
@@ -48,7 +48,7 @@
       <div class="pf-form-row">
         <label class="req">成员站点</label>
         <div>
-          <div class="pf-desc" style="margin-bottom:8px">勾选该分组包含的 provider（站点），至少一个；之后可在「站点与公钥」页增删。</div>
+          <div class="pf-desc" style="margin-bottom:8px">勾选该分组包含的 provider（站点），至少选择一个；后续可在「站点与公钥」页调整。</div>
           <div id="ng-checks"></div>
         </div>
       </div>
@@ -120,7 +120,7 @@
     document.querySelectorAll('.js-delete-group').forEach(function (btn) {
       btn.onclick = function () {
         var name = btn.dataset.group;
-        if (!confirm('删除分组「' + name + '」？成员站点的组 tag 将被移除（不影响 default 路由）。有 Key 绑定时会被拒绝。')) return;
+        if (!confirm('删除分组「' + name + '」？成员站点的组 tag 将被移除（不影响 default 路由）；存在绑定 Key 时将拒绝删除。')) return;
         window.pfApi('POST', '/groups/delete', { name: name }).then(function () {
           window.pfToast('分组「' + name + '」已删除');
           load();

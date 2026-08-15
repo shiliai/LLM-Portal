@@ -71,7 +71,7 @@
           此命令 <strong id="addsite-ttl">限时</strong>、仅可使用一次；过期或复用后返回 403，需重新生成。剩余有效时间：<span class="pf-key" id="addsite-countdown">--:--</span>
         </div>
         <div class="pf-code"><pre id="addsite-cmd"></pre></div>
-        <div class="pf-desc" style="margin-top:12px">在该站点机器上以可出站 UDP、可 sudo 的账户执行以上命令。<span class="mono">install.sh</span> 将自动完成：生成 WireGuard 密钥对（私钥不离开该机器）→ 注册公钥 → 建立隧道 → <span class="mono">systemctl enable --now wg-quick@wg0</span> 自启 → 模型端口连通性自检并回显结果；全绿后模型立即进入路由池。</div>
+        <div class="pf-desc" style="margin-top:12px">在站点机器上以具备 sudo 权限且可出站 UDP 的账户执行以上命令。<span class="mono">install.sh</span> 将自动完成：生成 WireGuard 密钥对（私钥不离开该机器）→ 注册公钥 → 建立隧道 → <span class="mono">systemctl enable --now wg-quick@wg0</span> 自启 → 模型端口连通性自检并回显结果；全绿后模型立即进入路由池。</div>
       </div>
 
     </div>
@@ -91,7 +91,7 @@
     <div class="pf-modal-body">
       <p style="margin:0 0 12px;font-size:12.5px">确定要吊销站点「<strong id="revoke-site-name"></strong>」吗？</p>
       <div class="pf-banner">
-        吊销后：① 隧道<strong>立即断开</strong>且无法重连；② 该站点全部 <span id="revoke-model-count">0</span> 个模型部署<strong>即刻从路由池摘除</strong>；③ 操作不可逆，需重新走「新增站点」才能再次接入。
+        吊销后：① 隧道<strong>立即断开</strong>且无法重连；② 该站点全部 <span id="revoke-model-count">0</span> 个模型部署<strong>即刻从路由池摘除</strong>；③ 操作不可逆，如需再次接入须重新执行「新增站点」。
       </div>
       <div class="pf-kv">
         <div class="pf-kv-k">WG IP</div><div class="pf-kv-v mono" id="revoke-wg"></div>
@@ -111,7 +111,7 @@
       <button class="pf-x" data-close>×</button>
     </div>
     <div class="pf-modal-body">
-      <div class="pf-desc" style="margin-bottom:10px">勾选该 provider 所属分组（可多选）。<span class="pf-chip">default</span> 为系统组（全部在线 provider 恒属 default，未绑组 Key 走 default）。新分组在「分组」页创建。</div>
+      <div class="pf-desc" style="margin-bottom:10px">勾选该 provider 所属分组（可多选）。default 为系统组：全部在线 provider 恒属于 default，未绑定分组的密钥按 default 组路由。新分组请在「分组」页创建。</div>
       <div id="sg-checks"></div>
     </div>
     <div class="pf-modal-foot">
@@ -162,7 +162,7 @@
         '<td class="site-status">' + statusChip + '</td>' +
         '<td>' + actions + '</td>' +
       '</tr>';
-    }).join('') || '<tr><td colspan="8" class="pf-desc" style="padding:10px">暂无站点，点右上「新增站点」接入第一个</td></tr>';
+    }).join('') || '<tr><td colspan="8" class="pf-desc" style="padding:10px">暂无站点；点击右上「新增站点」接入首个站点</td></tr>';
     bindRowActions();
   }
 

@@ -11,7 +11,7 @@
 
   <!-- 页头 -->
   <div class="pf-page-head">
-    <div class="pf-desc">用户 Key 是客户端调用网关（API 与 MCP 共用同一把）的唯一凭据；由管理员创建、分发、禁用，本期不开放用户自助注册（C3）。</div>
+    <div class="pf-desc">用户密钥是客户端调用网关的唯一凭据（API 与 MCP 共用），由管理员创建、分发与禁用；本期不开放用户自助注册（C3）。</div>
     <button class="pf-btn primary" data-modal="modal-newkey" id="btn-open-newkey">新建密钥</button>
   </div>
 
@@ -50,13 +50,13 @@
           <label>provider 分组</label>
           <div>
             <select class="pf-select" id="newkey-group"></select>
-            <div class="pf-desc">决定该 Key 的请求只在组内站点上分流与故障转移（与模型白名单正交）；未绑组走 default。分组在「分组」页管理。</div>
+            <div class="pf-desc">决定该密钥的请求只在组内站点上分流与故障转移（与模型白名单正交）；未绑定分组时按 default 组路由。分组在「分组」页管理。</div>
           </div>
         </div>
         <div class="pf-form-row">
           <label>模型范围</label>
           <div>
-            <input class="pf-input" id="newkey-models" placeholder="留空 = 全部模型（默认）；或填白名单，逗号分隔">
+            <input class="pf-input" id="newkey-models" placeholder="留空为全部模型（默认）；或以逗号分隔填写模型白名单">
             <div class="pf-desc">默认可调用全部对外模型名与 MCP 工具；白名单为管理员手动能力（LiteLLM 原生），对 API 与视觉 MCP 同时生效。</div>
           </div>
         </div>
@@ -64,7 +64,7 @@
       <div id="newkey-result" style="display:none">
         <div class="pf-banner">密钥全文仅此一次展示，关闭后只能看到尾 4 位。</div>
         <div class="pf-code"><pre id="newkey-full"></pre></div>
-        <div class="pf-desc">请立即复制并妥善保存；网关不存储明文，丢失后只能禁用重发。</div>
+        <div class="pf-desc">请立即复制并妥善保存；系统不存储密钥明文，遗失后只能禁用并重新签发。</div>
       </div>
     </div>
     <div class="pf-modal-foot">

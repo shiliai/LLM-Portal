@@ -31,7 +31,7 @@
       <div class="pf-kv-k">凭据边界</div><div class="pf-kv-v">网关以调用者自己的 Key 回调回环 <span class="mono">/v1/chat/completions</span>；私有上游无鉴权，出站不带任何 Key（C5）。</div>
       <div class="pf-kv-k">本地图片</div><div class="pf-kv-v">先经 <span class="mono">POST /mcp/upload</span>（同一 Key）换取限时临时 URL，再调用工具；toolcall 参数只含路径/URL 短字符串，base64 转换发生在 mcp-hub 进程内。</div>
       <div class="pf-kv-k">用量归属</div><div class="pf-kv-v">模型消耗计入调用者自己的 Key，与 API 通道共用同一账本（与 US-P10 口径一致）。</div>
-      <div class="pf-kv-k">客户端兼容</div><div class="pf-kv-v">契约 = Streamable HTTP + 标准 <span class="mono">Authorization: Bearer</span>（与 API 同一把 Key）+ 小写下划线工具名；Claude Code / Hermes / DeepSeek Harness / Pi（先装 pi-mcp-adapter 扩展）四类客户端均可接入，接入示例见 runbook。</div>
+      <div class="pf-kv-k">客户端兼容</div><div class="pf-kv-v">契约 = Streamable HTTP + 标准 <span class="mono">Authorization: Bearer</span>（与 API 使用同一密钥）+ 小写下划线工具名；Claude Code / Hermes / DeepSeek Harness / Pi（需先安装 pi-mcp-adapter 扩展）四类客户端均可接入，接入示例见 runbook。</div>
     </div>
   </div>
 
@@ -56,7 +56,7 @@
       <div class="pf-card-title">聚合 tools/list 预览</div>
       <div class="pf-card-extra"><button class="pf-link" id="btn-refresh-tools">刷新预览</button></div>
     </div>
-    <div class="pf-code"><pre id="tools-preview">（点「刷新预览」实连各外部 MCP 拉取工具清单）</pre></div>
+    <div class="pf-code"><pre id="tools-preview">点击「刷新预览」连接各外部 MCP 获取实时工具清单</pre></div>
   </div>
 
   <!-- 按 Key 调用计数 -->
@@ -75,7 +75,7 @@
     <div class="pf-card-head"><div class="pf-card-title">本地图片上传接口</div></div>
     <div class="pf-kv" style="margin-bottom:12px">
       <div class="pf-kv-k">入口</div><div class="pf-kv-v mono">POST /mcp/upload</div>
-      <div class="pf-kv-k">鉴权</div><div class="pf-kv-v">与 API/MCP 同一把 Key；无效 Key 拒绝</div>
+      <div class="pf-kv-k">鉴权</div><div class="pf-kv-v">与 API 使用同一密钥；无效密钥拒绝</div>
       <div class="pf-kv-k">有效期</div><div class="pf-kv-v">临时 URL 随机不可猜路径，30 分钟 TTL 自动清理</div>
       <div class="pf-kv-k">限制</div><div class="pf-kv-v">类型 jpg / png / webp / gif；大小 ≤ 10MB；超限或类型非法返回 413 / 400</div>
     </div>
@@ -144,7 +144,7 @@
         '<td class="mono">' + esc(e.prefix) + '</td>' +
         '<td><button class="pf-link danger js-mcp-remove" data-name="' + esc(e.name) + '">移除</button></td>' +
       '</tr>';
-    }).join('') || '<tr><td colspan="5" class="pf-desc" style="padding:10px">暂未注册外部 MCP（US-P12：注册后用户无需自备外部 Key）</td></tr>';
+    }).join('') || '<tr><td colspan="5" class="pf-desc" style="padding:10px">暂未注册外部 MCP（US-P12：注册后用户无需自备外部服务凭据）</td></tr>';
     document.querySelectorAll('.js-mcp-remove').forEach(function (btn) {
       btn.onclick = function () {
         if (!confirm('移除外部 MCP「' + btn.dataset.name + '」？将重启 mcp-hub 生效，进行中的工具调用会被中断。')) return;
