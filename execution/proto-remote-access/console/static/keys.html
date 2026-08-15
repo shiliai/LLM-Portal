@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>用户 Key · 远程模型网关</title>
+<link rel="stylesheet" href="assets/portal.css">
+<style>
+  /* 使用密钥弹窗：加宽 + 客户端/系统双层 tabs + 配置块标签 */
+  #modal-usekey { width: 680px; max-width: 94vw; }
+  #modal-usekey .pf-modal-body { max-height: 62vh; overflow-y: auto; }
+  .use-key-row { display: flex; gap: 8px; align-items: center; margin: 4px 0 14px; }
+  .use-key-row .pf-input { flex: 1; }
+  .use-os { margin: 2px 0 2px; }
+  .use-blk { margin-top: 12px; }
+  .use-blk-label { font-size: 12px; color: #595959; margin-bottom: 2px; }
+  .use-blk-label .mono { color: #8c8c8c; }
+  #modal-usekey .pf-tabpane { padding-top: 2px; }
+</style>
+</head>
+<body data-page="keys">
+<template id="page">
+
+  <!-- 页头 -->
+  <div class="pf-page-head">
+    <div class="pf-desc">用户密钥是客户端调用网关的唯一凭据（API 与 MCP 共用），由管理员创建、分发与禁用；本期不开放用户自助注册（C3）。</div>
+  </div>
+
+  <!-- 工具栏：搜索 + 分组/状态筛选 + 刷新 + 新建 -->
+  <div class="pf-toolbar" style="margin-bottom:12px">
+    <input class="pf-input" id="f-search" placeholder="搜索备注名或尾 4 位…">
+    <select class="pf-select" id="f-group"><option value="">全部分组</option></select>
+    <select class="pf-select" id="f-status">
+      <option value="">全部状态</option>
+      <option value="on">启用</option>
+      <option value="off">已禁用</option>
+    </select>
+    <button class="pf-btn" id="btn-refresh" type="button">刷新</button>
+    <span style="flex:1"></span>
+    <button class="pf-btn primary" data-modal="modal-newkey" id="btn-open-newkey" type="button">＋ 新建密钥</button>
+  </div>
+
+  <!-- Key 列表 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head">
+      <div class="pf-card-title">Key 列表</div>
+      <div class="pf-card-extra" id="keys-extra">加载中…</div>
+    </div>
+    <table class="pf-table">
+      <thead>
+        <tr><th>备注名</th><th>API Key</th><th>分组</th><th>模型范围</th><th>创建时间</th><th>状态</th><th>操作</th></tr>
+      </thead>
+      <tbody id="keys-tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="pf-desc">调用日志与用量口径中，Key 仅记尾 4 位；禁用立即生效，历史用量保留（见「用量总览」）。系统不存储密钥明文——「使用」弹窗中请粘贴完整密钥以生成客户端配置。</div>
+
+  <!-- 新建密钥弹窗（两态：表单 → 仅显示一次 + 客户端配置入口） -->
+  <div class="pf-modal" id="modal-newkey">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title" id="newkey-title">新建密钥</div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-modal-body">
+      <div id="newkey-form">
+        <div class="pf-form-row">
+          <label class="req">备注名</label>
+          <div>
+            <input class="pf-input" id="newkey-alias" placeholder="例：小明的笔记本">
+            <div class="pf-desc">用于在列表与日志中识别该 Key，不作为鉴权信息。</div>
+          </div>
+        </div>
+        <div class="pf-form-row">
+          <label>provider 分组</label>
+          <div>
+            <select class="pf-select" id="newkey-group"></select>
+            <div class="pf-desc">决定该密钥的请求只在组内站点上分流与故障转移（与模型白名单正交）；未绑定分组时按 default 组路由。分组在「分组」页管理。</div>
+          </div>
+        </div>
+        <div class="pf-form-row">
+          <label>模型范围</label>
+          <div>
+            <input class="pf-input" id="newkey-models" placeholder="留空为全部模型（默认）；或以逗号分隔填写模型白名单">
+            <div class="pf-desc">默认可调用全部对外模型名与 MCP 工具；白名单为管理员手动能力（LiteLLM 原生），对 API 与视觉 MCP 同时生效。</div>
+          </div>
+        </div>
+      </div>
+      <div id="newkey-result" style="display:none">
+        <div class="pf-banner">密钥已存入加密保险库——之后随时可在「使用」中取回明文。</div>
+        <div class="pf-code"><pre id="newkey-full"></pre></div>
+        <div class="pf-desc">请复制分发；亦可在「安全设置」启用管理员两步验证以加强控制台防护。</div>
+      </div>
+    </div>
+    <div class="pf-modal-foot">
+      <button class="pf-btn" id="newkey-cancel" data-close>取消</button>
+      <button class="pf-btn primary" id="btn-genkey">生成密钥</button>
+      <button class="pf-btn" id="btn-key-saved" style="display:none">我已保存</button>
+      <button class="pf-btn primary" id="btn-use-now" style="display:none">查看客户端配置 →</button>
+    </div>
+  </div>
+
+  <!-- 编辑密钥弹窗（备注名 + 模型范围；分组走列表行内下拉） -->
+  <div class="pf-modal" id="modal-editkey">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title">编辑密钥 · <span id="edit-alias-title"></span></div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-modal-body">
+      <div class="pf-form-row">
+        <label class="req">备注名</label>
+        <div><input class="pf-input" id="edit-alias"></div>
+      </div>
+      <div class="pf-form-row">
+        <label>模型范围</label>
+        <div>
+          <input class="pf-input" id="edit-models" placeholder="留空为全部模型；或以逗号分隔填写白名单">
+          <div class="pf-desc">清空即恢复全部模型。</div>
+        </div>
+      </div>
+    </div>
+    <div class="pf-modal-foot">
+      <button class="pf-btn" data-close>取消</button>
+      <button class="pf-btn primary" id="btn-editkey">保存</button>
+    </div>
+  </div>
+
+  <!-- 使用密钥弹窗：按客户端 × 系统生成接入配置（参考 sub2api「Use API Key」交互） -->
+  <div class="pf-modal" id="modal-usekey">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title">使用密钥 · <span id="use-alias"></span></div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-modal-body">
+      <div class="pf-desc" style="margin-bottom:10px">选择客户端与系统，把以下配置写入终端或对应配置文件即可接入网关；网关地址已按当前域名代入。</div>
+      <div class="use-key-row">
+        <input class="pf-input mono" id="use-key" type="password" autocomplete="off" spellcheck="false"
+               placeholder="粘贴完整密钥（sk-…）以代入下方配置">
+        <button class="pf-btn" id="btn-use-show" type="button" title="显示/隐藏明文">显示</button>
+      </div>
+      <div class="pf-desc" style="margin-bottom:6px">密钥明文由网关加密保管，「使用」时自动取回代入（仅管理员可见）；此功能启用前创建的旧 Key 未入库，可手动粘贴，本标签页内会记住。</div>
+
+      <div class="pf-tabs">
+        <button class="pf-tab active" data-tab="cc" type="button">Claude Code</button>
+        <button class="pf-tab" data-tab="codex" type="button">Codex CLI</button>
+        <button class="pf-tab" data-tab="openai" type="button">OpenAI 兼容</button>
+        <button class="pf-tab" data-tab="pi" type="button">pi</button>
+      </div>
+
+      <div class="pf-tabpane active" data-tab="cc">
+        <div class="pf-tabs use-os">
+          <button class="pf-tab active" data-tab="cc-nix" type="button">macOS · Linux</button>
+          <button class="pf-tab" data-tab="cc-win" type="button">Windows PowerShell</button>
+        </div>
+        <div class="pf-tabpane active" data-tab="cc-nix">
+          <div class="use-blk"><div class="use-blk-label">终端（写入 <span class="mono">~/.zshrc</span> 或当前会话）</div>
+            <div class="pf-code"><pre id="cc-nix-term"></pre></div></div>
+          <div class="use-blk"><div class="use-blk-label"><span class="mono">~/.claude/settings.json</span>（用户级持久配置）</div>
+            <div class="pf-code"><pre id="cc-nix-json"></pre></div></div>
+        </div>
+        <div class="pf-tabpane" data-tab="cc-win">
+          <div class="use-blk"><div class="use-blk-label">PowerShell（当前会话；持久化写入 <span class="mono">$PROFILE</span>）</div>
+            <div class="pf-code"><pre id="cc-win-term"></pre></div></div>
+          <div class="use-blk"><div class="use-blk-label"><span class="mono">~\.claude\settings.json</span></div>
+            <div class="pf-code"><pre id="cc-win-json"></pre></div></div>
+        </div>
+      </div>
+
+      <div class="pf-tabpane" data-tab="codex">
+        <div class="pf-tabs use-os">
+          <button class="pf-tab active" data-tab="codex-nix" type="button">macOS · Linux</button>
+          <button class="pf-tab" data-tab="codex-win" type="button">Windows PowerShell</button>
+        </div>
+        <div class="pf-tabpane active" data-tab="codex-nix">
+          <div class="use-blk"><div class="use-blk-label">终端（写入 <span class="mono">~/.zshrc</span> 或当前会话）</div>
+            <div class="pf-code"><pre id="codex-nix-term"></pre></div></div>
+          <div class="use-blk"><div class="use-blk-label"><span class="mono">~/.codex/config.toml</span></div>
+            <div class="pf-code"><pre id="codex-toml"></pre></div></div>
+        </div>
+        <div class="pf-tabpane" data-tab="codex-win">
+          <div class="use-blk"><div class="use-blk-label">PowerShell（当前会话；持久化写入 <span class="mono">$PROFILE</span>）</div>
+            <div class="pf-code"><pre id="codex-win-term"></pre></div></div>
+          <div class="use-blk"><div class="use-blk-label"><span class="mono">~\.codex\config.toml</span>（同左，路径改为 Windows 用户目录）</div>
+            <div class="pf-code"><pre id="codex-win-toml"></pre></div></div>
+        </div>
+      </div>
+
+      <div class="pf-tabpane" data-tab="openai">
+        <div class="pf-tabs use-os">
+          <button class="pf-tab active" data-tab="oa-nix" type="button">macOS · Linux</button>
+          <button class="pf-tab" data-tab="oa-win" type="button">Windows PowerShell</button>
+        </div>
+        <div class="pf-tabpane active" data-tab="oa-nix">
+          <div class="use-blk"><div class="use-blk-label">终端（OpenAI SDK / LangChain 等兼容生态直接可用）</div>
+            <div class="pf-code"><pre id="oa-nix-term"></pre></div></div>
+          <div class="use-blk"><div class="use-blk-label">Python SDK</div>
+            <div class="pf-code"><pre id="oa-py"></pre></div></div>
+        </div>
+        <div class="pf-tabpane" data-tab="oa-win">
+          <div class="use-blk"><div class="use-blk-label">PowerShell（当前会话）</div>
+            <div class="pf-code"><pre id="oa-win-term"></pre></div></div>
+        </div>
+      </div>
+
+      <div class="pf-tabpane" data-tab="pi">
+        <div class="use-blk"><div class="use-blk-label"><span class="mono">~/.pi/agent/models.json</span>（badlogic/pi-mono；模型名见主页或「模型与别名」页）</div>
+          <div class="pf-code"><pre id="pi-json"></pre></div></div>
+      </div>
+
+      <div class="pf-banner" style="margin-top:14px">以上均为用户级持久配置，含密钥明文：请勿提交到代码仓库、截图外发或粘贴到不可信环境。</div>
+    </div>
+    <div class="pf-modal-foot">
+      <button class="pf-btn" data-close>关闭</button>
+    </div>
+  </div>
+
+</template>
+<script src="assets/portal.js"></script>
+<script>
+(function () {
+  'use strict';
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function $(id) { return document.getElementById(id); }
+
+  var allKeys = [];
+  var allGroups = [];
+
+  /* ---------- 列表渲染 + 筛选 ---------- */
+  function visibleKeys() {
+    var q = $('f-search').value.trim().toLowerCase();
+    var g = $('f-group').value, st = $('f-status').value;
+    return allKeys.filter(function (k) {
+      if (q) {
+        var hitAlias = (k.alias || '').toLowerCase().indexOf(q) >= 0;
+        var hitTail = (k.key_last4 || '').indexOf(q) >= 0
+          || (q.length >= 4 && q.slice(-4) === (k.key_last4 || ''));
+        if (!hitAlias && !hitTail) return false;
+      }
+      if (g && k.group !== g) return false;
+      if (st === 'on' && k.blocked) return false;
+      if (st === 'off' && !k.blocked) return false;
+      return true;
+    });
+  }
+
+  function render() {
+    var keys = visibleKeys();
+    var enabled = allKeys.filter(function (k) { return !k.blocked; }).length;
+    $('keys-extra').textContent = allKeys.length === keys.length
+      ? '共 ' + allKeys.length + ' 把 · ' + enabled + ' 把启用'
+      : '匹配 ' + keys.length + ' / 共 ' + allKeys.length + ' 把';
+    $('keys-tbody').innerHTML = keys.map(function (k) {
+      var scope = k.models && k.models.length
+        ? '<span class="pf-chip warn">白名单：' + esc(k.models.join(', ')) + '</span>'
+        : '<span class="pf-chip">全部模型</span>';
+      var statusChip = k.blocked ? '<span class="pf-chip gray">已禁用</span>' : '<span class="pf-chip ok">启用</span>';
+      var groupSel = '<select class="pf-select js-group" data-token="' + esc(k.token) + '"' + (k.blocked ? ' disabled' : '') + ' style="width:auto;min-width:96px">' +
+        allGroups.map(function (g) {
+          return '<option value="' + esc(g) + '"' + (g === k.group ? ' selected' : '') + '>' + esc(g) + '</option>';
+        }).join('') + '</select>';
+      var toggle = k.blocked
+        ? '<button class="pf-link js-toggle-key" data-token="' + esc(k.token) + '" data-blocked="1">启用</button>'
+        : '<button class="pf-link danger js-toggle-key" data-token="' + esc(k.token) + '" data-blocked="0">禁用</button>';
+      return '<tr' + (k.blocked ? ' class="pf-row-muted"' : '') + '>' +
+        '<td>' + esc(k.alias) + '</td>' +
+        '<td><span class="pf-key">sk-…' + esc(keyTail(k.key_last4)) + '</span></td>' +
+        '<td>' + groupSel + '</td>' +
+        '<td>' + scope + '</td>' +
+        '<td class="mono">' + esc((k.created_at || '').slice(0, 10)) + '</td>' +
+        '<td>' + statusChip + '</td>' +
+        '<td style="white-space:nowrap">' +
+          '<button class="pf-link js-use-key" data-token="' + esc(k.token) + '" data-alias="' + esc(k.alias) + '" data-last4="' + esc(k.key_last4) + '">使用</button>' +
+          '<button class="pf-link js-edit-key" data-token="' + esc(k.token) + '" data-alias="' + esc(k.alias) + '" data-models="' + esc((k.models || []).join(',')) + '">编辑</button>' +
+          toggle +
+          '<button class="pf-link danger js-delete-key" data-token="' + esc(k.token) + '" data-alias="' + esc(k.alias) + '">删除</button>' +
+        '</td>' +
+      '</tr>';
+    }).join('') || '<tr><td colspan="7" class="pf-empty">没有匹配的 Key</td></tr>';
+    bindActions();
+  }
+
+  function load() {
+    window.pfApi('GET', '/keys').then(function (d) { allKeys = d.keys; render(); })
+      .catch(function (e) { window.pfErr(e.error || 'Key 加载失败'); });
+  }
+
+  /* ---------- 行内操作 ---------- */
+  function bindActions() {
+    document.querySelectorAll('.js-toggle-key').forEach(function (btn) {
+      btn.onclick = function () {
+        var blocking = btn.dataset.blocked === '0';
+        window.pfApi('POST', blocking ? '/keys/block' : '/keys/unblock', { key: btn.dataset.token }).then(function () {
+          window.pfToast(blocking ? '已禁用，立即生效' : '已启用');
+          load();
+        }).catch(function (e) { window.pfErr(e.error || '操作失败'); });
+      };
+    });
+    document.querySelectorAll('.js-delete-key').forEach(function (btn) {
+      btn.onclick = function () {
+        if (!confirm('删除 Key「' + btn.dataset.alias + '」？该 Key 立即失效且不可恢复（历史用量保留）。')) return;
+        window.pfApi('POST', '/keys/delete', { key: btn.dataset.token }).then(function () {
+          window.pfToast('Key 已删除');
+          load();
+        }).catch(function (e) { window.pfErr(e.error || '删除失败'); });
+      };
+    });
+    document.querySelectorAll('.js-group').forEach(function (sel) {
+      sel.onchange = function () {
+        window.pfApi('POST', '/keys/update', { key: sel.dataset.token, group: sel.value }).then(function () {
+          window.pfToast('已切到「' + sel.value + '」组，路由即时生效');
+          load();
+        }).catch(function (e) { window.pfErr(e.error || '改组失败'); load(); });
+      };
+    });
+    document.querySelectorAll('.js-edit-key').forEach(function (btn) {
+      btn.onclick = function () {
+        $('edit-alias-title').textContent = btn.dataset.alias;
+        $('edit-alias').value = btn.dataset.alias;
+        $('edit-models').value = btn.dataset.models;
+        $('btn-editkey').dataset.token = btn.dataset.token;
+        window.pfModal('modal-editkey');
+      };
+    });
+    document.querySelectorAll('.js-use-key').forEach(function (btn) {
+      btn.onclick = function () {
+        var alias = btn.dataset.alias, last4 = btn.dataset.last4;
+        // 保险库优先：管理员随时可取回明文；旧 Key 未入库则退回本页会话记忆
+        window.pfApi('POST', '/keys/reveal', { key: btn.dataset.token }).then(function (d) {
+          openUse(alias, d.key, last4);
+        }).catch(function () {
+          openUse(alias, cachedKey(last4), last4);
+        });
+      };
+    });
+  }
+
+  /* ---------- 使用密钥弹窗:配置片段生成 ---------- */
+  /* 密钥会话记忆（sessionStorage，按尾4位）：本标签页内创建/粘贴过的密钥直接代入
+     「使用」弹窗，免去每次粘贴；关闭标签即清除，不落盘不回传（系统不存明文的边界内） */
+  var KEY_CACHE = 'pll-usekey-cache';
+  function keyTail(s) { return String(s || '').replace(/^…+/, '').slice(-4); }   // key_last4 带「…」前缀，归一化
+  function rememberKey(keyStr) {
+    try {
+      var m = JSON.parse(sessionStorage.getItem(KEY_CACHE) || '{}');
+      m[keyTail(keyStr)] = keyStr;
+      var ks = Object.keys(m);
+      if (ks.length > 8) delete m[ks[0]];   // 上限防膨胀
+      sessionStorage.setItem(KEY_CACHE, JSON.stringify(m));
+    } catch (e) { /* 隐私模式等场景静默降级 */ }
+  }
+  function cachedKey(last4) {
+    try { return (JSON.parse(sessionStorage.getItem(KEY_CACHE) || '{}'))[keyTail(last4)] || ''; }
+    catch (e) { return ''; }
+  }
+
+  function keyVal() { return $('use-key').value.trim() || 'sk-（在此粘贴你的完整密钥）'; }
+
+  function fillUse() {
+    var B = location.origin, K = keyVal(), q = function (s) { return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'; };
+    $('cc-nix-term').textContent =
+      'export ANTHROPIC_BASE_URL=' + q(B) + '\n' +
+      'export ANTHROPIC_AUTH_TOKEN=' + q(K);
+    $('cc-nix-json').textContent =
+      '{\n  "env": {\n    "ANTHROPIC_BASE_URL": ' + JSON.stringify(B) + ',\n    "ANTHROPIC_AUTH_TOKEN": ' + JSON.stringify(K) + '\n  }\n}';
+    $('cc-win-term').textContent =
+      '$env:ANTHROPIC_BASE_URL = ' + q(B) + '\n' +
+      '$env:ANTHROPIC_AUTH_TOKEN = ' + q(K);
+    $('cc-win-json').textContent = $('cc-nix-json').textContent;
+    $('codex-nix-term').textContent = 'export PLL_API_KEY=' + q(K);
+    $('codex-win-term').textContent = '$env:PLL_API_KEY = ' + q(K);
+    var toml =
+      'model = "deepseek-v4-flash-0731"          # 默认模型，可换任意对外模型名/别名\n' +
+      'model_provider = "private-llm"\n\n' +
+      '[model_providers.private-llm]\n' +
+      'name = "private-llm"\n' +
+      'base_url = ' + q(B + '/v1') + '\n' +
+      'env_key = "PLL_API_KEY"';
+    $('codex-toml').textContent = toml;
+    $('codex-win-toml').textContent = toml;
+    $('oa-nix-term').textContent =
+      'export OPENAI_BASE_URL=' + q(B + '/v1') + '\n' +
+      'export OPENAI_API_KEY=' + q(K);
+    $('oa-win-term').textContent =
+      '$env:OPENAI_BASE_URL = ' + q(B + '/v1') + '\n' +
+      '$env:OPENAI_API_KEY = ' + q(K);
+    $('oa-py').textContent =
+      'from openai import OpenAI\n\n' +
+      'client = OpenAI(base_url=' + q(B + '/v1') + ', api_key=' + q(K) + ')\n' +
+      'resp = client.chat.completions.create(\n' +
+      '    model="deepseek-v4-flash-0731",\n' +
+      '    messages=[{"role": "user", "content": "你好"}],\n' +
+      ')';
+    $('pi-json').textContent =
+      '{\n  "providers": {\n    "private-llm": {\n' +
+      '      "baseUrl": ' + JSON.stringify(B + '/v1') + ',\n' +
+      '      "apiKey": ' + JSON.stringify(K) + '\n    }\n  }\n}';
+  }
+
+  function openUse(alias, key, last4) {
+    $('use-alias').textContent = alias || '';
+    var k = key || (last4 ? cachedKey(last4) : '');
+    if (k) rememberKey(k);
+    $('use-key').value = k;
+    $('use-key').type = 'password';
+    $('btn-use-show').textContent = '显示';
+    fillUse();
+    window.pfModal('modal-usekey');
+    // 弹窗即聚焦粘贴框：防止把完整密钥粘进页面搜索框（实测踩坑）
+    setTimeout(function () { var i = $('use-key'); i.focus(); i.select(); }, 80);
+  }
+
+  /* 搜索框收到完整密钥（sk-…）→ 按尾 4 位找到对应 Key，直接带入「使用」弹窗 */
+  function openUseByKey(keyStr) {
+    var last4 = keyStr.slice(-4);
+    var hit = allKeys.filter(function (k) { return k.key_last4 === last4; })[0];
+    openUse(hit ? hit.alias : '密钥 …' + last4, keyStr);
+  }
+
+  /* ---------- 初始化 ---------- */
+  window.pfReady.then(function () {
+    load();
+    window.pfApi('GET', '/groups').then(function (d) {
+      allGroups = d.groups.map(function (g) { return g.name; });
+      if (allGroups.indexOf('default') < 0) allGroups.unshift('default');
+      $('newkey-group').innerHTML = allGroups.map(function (name) {
+        var g = d.groups.filter(function (x) { return x.name === name; })[0];
+        return '<option value="' + esc(name) + '">' + esc(name) + (g && g.system ? '（全部站点）' : (g ? '（成员：' + esc(g.sites.join(', ') || '无') + '）' : '')) + '</option>';
+      }).join('');
+      $('f-group').innerHTML = '<option value="">全部分组</option>' +
+        allGroups.map(function (g) { return '<option value="' + esc(g) + '">' + esc(g) + '</option>'; }).join('');
+      render();
+    });
+
+    $('f-search').addEventListener('input', function () {
+      var v = this.value.trim();
+      if (/^sk-[A-Za-z0-9_-]{16,}$/.test(v)) {
+        this.value = '';            // 完整密钥不是搜索词：转入「使用」弹窗并带入
+        openUseByKey(v);
+        window.pfToast('检测到完整密钥，已代入「使用密钥」弹窗');
+        render();
+        return;
+      }
+      render();
+    });
+    $('f-group').addEventListener('input', render);
+    $('f-status').addEventListener('input', render);
+    $('btn-refresh').addEventListener('click', function () { load(); window.pfToast('已刷新'); });
+    $('use-key').addEventListener('input', function () {
+      var v = this.value.trim();
+      if (/^sk-[A-Za-z0-9_-]{16,}$/.test(v)) rememberKey(v);   // 会话内记住,下次直接代入
+      fillUse();
+    });
+    $('btn-use-show').addEventListener('click', function () {
+      var show = $('use-key').type === 'password';
+      $('use-key').type = show ? 'text' : 'password';
+      $('btn-use-show').textContent = show ? '隐藏' : '显示';
+    });
+
+    /* 编辑弹窗保存 */
+    $('btn-editkey').addEventListener('click', function () {
+      var models = $('edit-models').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+      window.pfApi('POST', '/keys/update', {
+        key: $('btn-editkey').dataset.token,
+        alias: $('edit-alias').value.trim(),
+        models: models
+      }).then(function () {
+        window.pfModalClose(); window.pfToast('已保存'); load();
+      }).catch(function (e) { window.pfErr(e.error || '保存失败'); });
+    });
+
+    /* 新建密钥（两态：表单 → 仅显示一次 → 客户端配置） */
+    function state(showResult) {
+      $('newkey-form').style.display = showResult ? 'none' : '';
+      $('newkey-cancel').style.display = showResult ? 'none' : '';
+      $('btn-genkey').style.display = showResult ? 'none' : '';
+      $('newkey-result').style.display = showResult ? '' : 'none';
+      $('btn-key-saved').style.display = showResult ? '' : 'none';
+      $('btn-use-now').style.display = showResult ? '' : 'none';
+      $('newkey-title').textContent = showResult ? '密钥已生成（仅显示一次）' : '新建密钥';
+    }
+    $('btn-open-newkey').addEventListener('click', function () { state(false); });
+    $('btn-genkey').addEventListener('click', function () {
+      var alias = $('newkey-alias').value.trim();
+      var group = $('newkey-group').value || 'default';
+      var models = $('newkey-models').value.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+      window.pfApi('POST', '/keys/create', { alias: alias, group: group, models: models }).then(function (d) {
+        $('newkey-full').textContent = d.key;
+        $('btn-use-now').dataset.key = d.key;
+        $('btn-use-now').dataset.alias = alias || d.alias || '';
+        state(true);
+      }).catch(function (e) { window.pfErr(e.error || '生成失败'); });
+    });
+    $('btn-key-saved').addEventListener('click', function () {
+      window.pfModalClose(); window.pfToast('新密钥已创建并启用'); state(false); load();
+    });
+    $('btn-use-now').addEventListener('click', function () {
+      window.pfModalClose();
+      state(false); load();
+      openUse($('btn-use-now').dataset.alias, $('btn-use-now').dataset.key);
+    });
+  });
+})();
+</script>
+</body>
+</html>

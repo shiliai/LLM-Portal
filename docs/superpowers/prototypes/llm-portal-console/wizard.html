@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>初始化向导 · LLM-portal</title>
+<link rel="stylesheet" href="assets/portal.css">
+<style>
+  /* 页面级布局（无壳居中）：仅排版尺寸，颜色全部复用 portal.css 令牌 */
+  .wz-wrap { max-width: 720px; margin: 0 auto; padding: 36px 20px 60px; }
+  .wz-head {
+    display: flex; align-items: center; justify-content: center; gap: 9px;
+    margin-bottom: 20px;
+  }
+  .wz-head-title { font-size: 16px; font-weight: 600; letter-spacing: .2px; }
+  .wz-card { background: #fff; border: 1px solid #f0f0f0; border-radius: 6px; }
+  .wz-steps { padding: 18px 24px; border-bottom: 1px solid #f0f0f0; }
+  .wz-body { padding: 24px 24px 20px; }
+  .wz-panel { display: none; }
+  .wz-panel.active { display: block; }
+  .wz-panel-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+  .wz-panel-desc { margin-bottom: 18px; }
+  .wz-foot {
+    display: flex; justify-content: flex-end; gap: 8px;
+    margin-top: 20px; padding-top: 16px; border-top: 1px solid #f0f0f0;
+  }
+  .wz-done-head { text-align: center; padding: 6px 0 2px; margin-bottom: 14px; }
+  .wz-done-icon {
+    width: 52px; height: 52px; border-radius: 50%;
+    background: #f6ffed; border: 1px solid #b7eb8f; color: #389e0d;
+    font-size: 24px; line-height: 1;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .wz-done-title { font-size: 17px; font-weight: 600; margin: 10px 0 2px; }
+  .wz-sec-label { font-size: 12.5px; font-weight: 500; margin: 16px 0 2px; }
+</style>
+</head>
+<body>
+
+<div class="wz-wrap">
+
+  <div class="wz-head">
+    <span class="pf-logo-mark"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8.8 1.6 3.2 9h3.6l-.8 5.4L11.6 7H8z"/></svg></span>
+    <span class="wz-head-title">LLM-portal · 初始化向导</span>
+  </div>
+
+  <div class="pf-banner">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" style="flex:none"><circle cx="8" cy="8" r="6.4"/><path d="M8 4.8v3.8M8 11.2h.01" stroke-width="1.6"/></svg>
+    系统未初始化：完成本向导前，管理接口与数据面 API 均不可用（无默认凭据，不可跳过）。
+  </div>
+
+  <div class="wz-card">
+
+    <div class="wz-steps">
+      <div class="pf-steps" id="wzSteps">
+        <div class="pf-step" data-num="1"><span class="pf-step-dot">1</span><span class="pf-step-title">设置管理员密码</span></div>
+        <div class="pf-step" data-num="2"><span class="pf-step-dot">2</span><span class="pf-step-title">注册首个上游</span></div>
+        <div class="pf-step" data-num="3"><span class="pf-step-dot">3</span><span class="pf-step-title">创建首条映射</span></div>
+        <div class="pf-step" data-num="4"><span class="pf-step-dot">4</span><span class="pf-step-title">发放首把密钥</span></div>
+        <div class="pf-step" data-num="✓"><span class="pf-step-dot">✓</span><span class="pf-step-title">完成</span></div>
+      </div>
+    </div>
+
+    <div class="wz-body">
+
+      <!-- ① 管理员密码 -->
+      <div class="wz-panel active">
+        <div class="wz-panel-title">设置管理员密码</div>
+        <div class="pf-desc wz-panel-desc">系统无默认凭据，必须先设置管理员密码才能继续。</div>
+
+        <div class="pf-form-row">
+          <label class="req">管理员密码</label>
+          <div>
+            <input class="pf-input" type="password" placeholder="至少 12 位" autocomplete="new-password">
+            <div class="pf-desc">至少 12 位；Argon2id 加密存储，无默认凭据。</div>
+          </div>
+        </div>
+        <div class="pf-form-row">
+          <label class="req">确认密码</label>
+          <div>
+            <input class="pf-input" type="password" placeholder="再次输入密码" autocomplete="new-password">
+          </div>
+        </div>
+
+        <div class="wz-foot">
+          <button class="pf-btn primary" data-goto="1">下一步</button>
+        </div>
+      </div>
+
+      <!-- ② 注册首个上游 -->
+      <div class="wz-panel">
+        <div class="wz-panel-title">注册首个上游 Provider</div>
+        <div class="pf-desc wz-panel-desc">网关将把请求转发到这里配置的上游供应商，之后可在控制台继续添加。</div>
+
+        <div class="pf-form-row">
+          <label class="req">名称</label>
+          <div>
+            <input class="pf-input" type="text" value="openai-main">
+          </div>
+        </div>
+        <div class="pf-form-row">
+          <label class="req">Base URL</label>
+          <div>
+            <input class="pf-input mono" type="text" value="https://api.openai.com">
+            <div class="pf-desc">默认拒绝私网/回环地址；保存与请求时均校验。</div>
+          </div>
+        </div>
+        <div class="pf-form-row">
+          <label class="req">协议能力</label>
+          <div>
+            <label class="pf-checkbox"><input type="checkbox" checked>chat_completions</label>
+            <label class="pf-checkbox"><input type="checkbox" checked>responses</label>
+            <label class="pf-checkbox"><input type="checkbox">anthropic_messages</label>
+          </div>
+        </div>
+        <div class="pf-form-row">
+          <label class="req">API Key</label>
+          <div>
+            <input class="pf-input" type="password" placeholder="sk-…" autocomplete="off">
+            <div class="pf-desc">加密存储，保存后不再回显。</div>
+          </div>
+        </div>
+        <div class="pf-form-row">
+          <label></label>
+          <div>
+            <button class="pf-btn" data-toast="连接成功 · 186ms">测试连接</button>
+          </div>
+        </div>
+
+        <div class="wz-foot">
+          <button class="pf-btn" data-goto="0">上一步</button>
+          <button class="pf-btn primary" data-goto="2">下一步</button>
+        </div>
+      </div>
+
+      <!-- ③ 创建首条映射 -->
+      <div class="wz-panel">
+        <div class="wz-panel-title">创建首条模型映射</div>
+        <div class="pf-desc wz-panel-desc">对外暴露统一模型名，由网关映射到上游的真实模型。</div>
+
+        <div class="pf-form-row">
+          <label class="req">对外模型名</label>
+          <div>
+            <input class="pf-input mono" type="text" value="gpt-4o">
+          </div>
+        </div>
+        <div class="pf-form-row">
+          <label class="req">主目标</label>
+          <div>
+            <div style="display:flex;gap:8px">
+              <select class="pf-select" style="flex:1">
+                <option selected>openai-main</option>
+              </select>
+              <select class="pf-select" style="flex:1">
+                <option selected>gpt-4o</option>
+                <option>gpt-4o-mini</option>
+              </select>
+            </div>
+            <div class="pf-desc">客户端将用统一模型名调用，映射可随时热更新；fallback 可稍后在控制台添加。</div>
+          </div>
+        </div>
+
+        <div class="wz-foot">
+          <button class="pf-btn" data-goto="1">上一步</button>
+          <button class="pf-btn primary" data-goto="3">下一步</button>
+        </div>
+      </div>
+
+      <!-- ④ 发放首把密钥 -->
+      <div class="wz-panel">
+        <div class="wz-panel-title">发放首把虚拟密钥</div>
+        <div class="pf-desc wz-panel-desc">客户端使用虚拟密钥调用网关，上游真实凭据不会外泄。</div>
+
+        <div class="pf-form-row">
+          <label class="req">备注名</label>
+          <div>
+            <input class="pf-input" type="text" value="我的第一把密钥">
+          </div>
+        </div>
+        <div class="pf-form-row">
+          <label class="req">授权模型</label>
+          <div>
+            <label class="pf-checkbox"><input type="checkbox" checked>gpt-4o</label>
+            <div class="pf-desc">当前仅有这一条映射，之后可在控制台调整授权范围。</div>
+          </div>
+        </div>
+        <div class="pf-form-row">
+          <label></label>
+          <div class="pf-desc">点击「生成密钥」后，密钥全文仅展示一次。</div>
+        </div>
+
+        <div class="wz-foot">
+          <button class="pf-btn" data-goto="2">上一步</button>
+          <button class="pf-btn primary" data-goto="4">生成密钥</button>
+        </div>
+      </div>
+
+      <!-- ⑤ 完成 -->
+      <div class="wz-panel">
+        <div class="wz-done-head">
+          <span class="wz-done-icon">✓</span>
+          <div class="wz-done-title">初始化完成！</div>
+          <div class="pf-desc">管理接口与数据面 API 已解锁。</div>
+        </div>
+
+        <div class="pf-banner">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" style="flex:none"><circle cx="8" cy="8" r="6.4"/><path d="M8 4.8v3.8M8 11.2h.01" stroke-width="1.6"/></svg>
+          密钥全文仅此一次展示，请立即复制保存；之后只能看到前缀预览。
+        </div>
+
+        <div class="pf-code"><pre>sk-portal-9f2a4c7e1b8d3f6a0e5c2b9d4f7a1e3c</pre></div>
+
+        <div class="wz-sec-label">用任一命令验证网关（跑通即完成部署验收）</div>
+
+        <div class="pf-desc" style="margin-top:8px">OpenAI 入口</div>
+        <div class="pf-code"><pre>curl http://&lt;网关IP&gt;:8080/v1/chat/completions \
+  -H "Authorization: Bearer sk-portal-9f2a4c7e1b8d3f6a0e5c2b9d4f7a1e3c" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"你好"}]}'</pre></div>
+
+        <div class="pf-desc" style="margin-top:10px">Anthropic 入口</div>
+        <div class="pf-code"><pre>curl http://&lt;网关IP&gt;:8080/v1/messages \
+  -H "x-api-key: sk-portal-9f2a4c7e1b8d3f6a0e5c2b9d4f7a1e3c" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o","max_tokens":100,"messages":[{"role":"user","content":"你好"}]}'</pre></div>
+
+        <div class="pf-desc">两个入口都会路由到同一条映射（协议自动转换）。</div>
+
+        <div class="wz-foot">
+          <a class="pf-btn primary" href="index.html">进入控制台</a>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script src="assets/portal.js"></script>
+<script>
+(function () {
+  'use strict';
+  var panels = document.querySelectorAll('.wz-panel');
+  var steps = document.querySelectorAll('#wzSteps .pf-step');
+  var last = panels.length - 1;
+
+  function show(n) {
+    panels.forEach(function (p, i) { p.classList.toggle('active', i === n); });
+    steps.forEach(function (s, i) {
+      s.classList.remove('done', 'active');
+      var dot = s.querySelector('.pf-step-dot');
+      if (n === last || i < n) {           // 完成页：全部置 done
+        s.classList.add('done');
+        dot.textContent = '✓';
+      } else {
+        dot.textContent = s.dataset.num;
+        if (i === n) s.classList.add('active');
+      }
+    });
+    window.scrollTo(0, 0);
+  }
+
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-goto]');
+    if (btn) show(parseInt(btn.dataset.goto, 10));
+  });
+
+  show(0);
+})();
+</script>
+</body>
+</html>

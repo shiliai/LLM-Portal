@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>我的用量 · 远程模型网关</title>
+<link rel="stylesheet" href="assets/portal.css">
+</head>
+<body data-page="my-usage">
+<template id="page">
+
+  <div class="pf-banner info">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" style="flex:none"><circle cx="8" cy="8" r="6.4"/><path d="M8 4.8v3.8M8 11.2h.01" stroke-width="1.6"/></svg>
+    用户自助视图：仅展示当前密钥自身的用量与调用记录，不包含其他密钥的数据（US-P10）。当前身份：<strong id="my-alias">加载中…</strong>
+  </div>
+
+  <div class="pf-page-head">
+    <div class="pf-desc">统计口径：请求数与 token 数（取上游 usage 字段），不含计费。API 用量来自调用日志聚合，MCP 用量为工具调用计数。</div>
+  </div>
+
+  <!-- 密钥信息 -->
+  <div class="pf-grid main-side">
+    <div class="pf-card">
+      <div class="pf-card-head"><div class="pf-card-title">密钥信息</div></div>
+      <div class="pf-kv">
+        <div class="pf-kv-k">备注名</div><div class="pf-kv-v" id="my-kv-alias">—</div>
+        <div class="pf-kv-k">密钥</div><div class="pf-kv-v"><span class="pf-key" id="my-kv-key">—</span></div>
+        <div class="pf-kv-k">创建时间</div><div class="pf-kv-v mono" id="my-kv-created">—</div>
+        <div class="pf-kv-k">所属分组</div><div class="pf-kv-v" id="my-kv-group">—</div>
+        <div class="pf-kv-k">有效期</div><div class="pf-kv-v" id="my-kv-expires">—</div>
+        <div class="pf-kv-k">模型范围</div><div class="pf-kv-v" id="my-kv-models">—</div>
+      </div>
+    </div>
+
+    <div class="pf-grid cols-2" style="margin-bottom:0">
+      <div class="pf-stat">
+        <div class="pf-stat-label">今日请求（API）</div>
+        <div class="pf-stat-value" id="my-req">—</div>
+        <div class="pf-stat-sub" id="my-req-sub">&nbsp;</div>
+      </div>
+      <div class="pf-stat">
+        <div class="pf-stat-label">今日 Token（总计）</div>
+        <div class="pf-stat-value" id="my-token">—</div>
+        <div class="pf-stat-sub" id="my-token-sub">&nbsp;</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- API 用量明细 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head">
+      <div class="pf-card-title">API 用量明细（今日）</div>
+    </div>
+    <table class="pf-table">
+      <thead>
+        <tr><th>模型</th><th class="num">请求数</th><th class="num">输入 Token</th><th class="num">缓存读取</th><th class="num">输出 Token</th><th class="num">总 Token</th></tr>
+      </thead>
+      <tbody id="my-api-rows"></tbody>
+      <tfoot>
+        <tr>
+          <td style="font-weight:600">合计</td>
+          <td class="num" style="font-weight:600" id="my-sum-req">0</td>
+          <td class="num" style="font-weight:600" id="my-sum-in">0</td>
+          <td class="num" style="font-weight:600" id="my-sum-cache">0</td>
+          <td class="num" style="font-weight:600" id="my-sum-out">0</td>
+          <td class="num" style="font-weight:600" id="my-sum-total">0</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+
+  <!-- MCP 用量明细 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head">
+      <div class="pf-card-title">MCP 工具调用计数</div>
+    </div>
+    <table class="pf-table">
+      <thead>
+        <tr><th>工具</th><th>来源</th><th class="num">调用次数</th><th>说明</th></tr>
+      </thead>
+      <tbody id="my-mcp-rows"></tbody>
+    </table>
+    <div class="pf-desc" style="padding:8px 12px;display:none" id="my-mcp-note"></div>
+  </div>
+
+</template>
+<script src="assets/portal.js"></script>
+<script>
+(function () {
+  'use strict';
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function fmtN(n) { return Number(n || 0).toLocaleString('zh-CN'); }
+  function fmtM(n) { return n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'K' : String(n || 0); }
+
+  window.pfReady.then(function () {
+    window.pfApi('GET', '/my').then(function (d) {
+      document.getElementById('my-alias').textContent = d.alias + '（密钥 …' + (d.key_last4 || '').replace('…', '') + '）';
+      document.getElementById('my-kv-alias').textContent = d.alias;
+      document.getElementById('my-kv-key').textContent = 'sk-…' + (d.key_last4 || '').replace('…', '');
+      document.getElementById('my-kv-created').textContent = d.created_at ? d.created_at.replace('T', ' ') : '—';
+      document.getElementById('my-kv-group').textContent = d.group || '—';
+      document.getElementById('my-kv-expires').textContent = d.expires ? String(d.expires).replace('T', ' ').slice(0, 16) : '长期有效';
+      document.getElementById('my-kv-models').textContent =
+        d.models && d.models.length ? d.models.join('、') : '全部对外模型（未设置白名单）';
+
+      var t = d.today || {};
+      var total = (t.prompt_tokens || 0) + (t.completion_tokens || 0) + (t.cached_tokens || 0);
+      document.getElementById('my-req').textContent = fmtN(t.requests);
+      document.getElementById('my-req-sub').textContent = '按调用日志聚合';
+      document.getElementById('my-token').textContent = fmtM(total);
+      document.getElementById('my-token-sub').textContent = '输入 ' + fmtM(t.prompt_tokens) + ' · 缓存读取 ' + fmtM(t.cached_tokens) + ' · 输出 ' + fmtM(t.completion_tokens);
+
+      var models = d.today_models || [];
+      document.getElementById('my-api-rows').innerHTML = models.map(function (m) {
+        var mtotal = (m.prompt_tokens || 0) + (m.completion_tokens || 0) + (m.cached_tokens || 0);
+        return '<tr>' +
+          '<td class="mono">' + esc(m.model) + '</td>' +
+          '<td class="num">' + fmtN(m.requests) + '</td>' +
+          '<td class="num">' + fmtN(m.prompt_tokens) + '</td>' +
+          '<td class="num">' + fmtN(m.cached_tokens) + '</td>' +
+          '<td class="num">' + fmtN(m.completion_tokens) + '</td>' +
+          '<td class="num" style="font-weight:600">' + fmtN(mtotal) + '</td>' +
+        '</tr>';
+      }).join('') || '<tr><td colspan="6" class="pf-desc" style="padding:10px">今日暂无 API 调用记录</td></tr>';
+      document.getElementById('my-sum-req').textContent = fmtN(t.requests);
+      document.getElementById('my-sum-in').textContent = fmtN(t.prompt_tokens);
+      document.getElementById('my-sum-cache').textContent = fmtN(t.cached_tokens);
+      document.getElementById('my-sum-out').textContent = fmtN(t.completion_tokens);
+      document.getElementById('my-sum-total').textContent = fmtN(total);
+
+      var tools = (d.mcp && d.mcp.tools) || {};
+      document.getElementById('my-mcp-rows').innerHTML = Object.keys(tools).map(function (name) {
+        var builtin = name === 'analyze_image' || name === 'upload';
+        return '<tr>' +
+          '<td class="mono">' + esc(name) + '</td>' +
+          '<td><span class="pf-chip ' + (builtin ? 'info' : 'violet') + '">' + (builtin ? '内建' : '外部 MCP') + '</span></td>' +
+          '<td class="num">' + fmtN(tools[name]) + '</td>' +
+          '<td class="pf-desc">' + (builtin && name === 'analyze_image' ? '模型消耗计入上方 API 用量' : '按次计数，token 用量不保证可得') + '</td>' +
+        '</tr>';
+      }).join('') || '<tr><td colspan="4" class="pf-desc" style="padding:10px">暂无 MCP 工具调用记录</td></tr>';
+      if (d.mcp_note) {
+        var note = document.getElementById('my-mcp-note');
+        note.style.display = '';
+        note.textContent = d.mcp_note;
+      }
+    }).catch(function (e) { window.pfErr(e.error || '用量加载失败'); });
+  });
+})();
+</script>
+</body>
+</html>

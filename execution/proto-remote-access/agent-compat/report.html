@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LLM Portal Agent 兼容性实测</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17202a;
+      --muted: #637083;
+      --line: #d9dee6;
+      --surface: #ffffff;
+      --page: #f4f6f8;
+      --green: #18794e;
+      --green-soft: #e7f5ed;
+      --red: #b42318;
+      --red-soft: #fce8e6;
+      --amber: #9a6700;
+      --amber-soft: #fff4d6;
+      --blue: #1769aa;
+      --blue-soft: #e8f2fb;
+      --charcoal: #26313d;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--page);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .shell { min-height: 100vh; }
+
+    header {
+      background: var(--charcoal);
+      color: #fff;
+      border-bottom: 4px solid #40a977;
+    }
+
+    .header-inner,
+    main {
+      width: min(1180px, calc(100% - 40px));
+      margin: 0 auto;
+    }
+
+    .header-inner { padding: 28px 0 25px; }
+
+    .eyebrow {
+      margin: 0 0 6px;
+      color: #9fdab9;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(24px, 4vw, 36px);
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin: 8px 0 0;
+      color: #dce3ea;
+      font-size: 14px;
+      overflow-wrap: anywhere;
+    }
+
+    .model {
+      color: #fff;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+
+    main { padding: 24px 0 42px; }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .metric {
+      min-height: 112px;
+      padding: 16px 18px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+    }
+
+    .metric strong {
+      display: block;
+      margin-bottom: 3px;
+      font-size: 30px;
+      line-height: 1.15;
+    }
+
+    .metric-label { font-weight: 700; }
+    .metric-note { margin-top: 5px; color: var(--muted); font-size: 12px; }
+    .metric.good strong { color: var(--green); }
+    .metric.bad strong { color: var(--red); }
+    .metric.warn strong { color: var(--amber); }
+
+    section {
+      margin-top: 26px;
+      padding-top: 22px;
+      border-top: 1px solid var(--line);
+    }
+
+    section:first-of-type { margin-top: 0; }
+
+    .section-head {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 14px;
+    }
+
+    h2 { margin: 0; font-size: 19px; letter-spacing: 0; }
+    .section-note { margin: 0; color: var(--muted); font-size: 12px; }
+
+    .duration-chart {
+      padding: 18px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+    }
+
+    .duration-row {
+      display: grid;
+      grid-template-columns: 150px minmax(160px, 1fr) 78px;
+      align-items: center;
+      gap: 12px;
+      min-height: 42px;
+    }
+
+    .duration-row + .duration-row { border-top: 1px solid #edf0f3; }
+    .agent-name { font-weight: 700; }
+    .track { height: 14px; background: #edf1f4; position: relative; overflow: hidden; }
+    .bar { height: 100%; min-width: 4px; background: var(--blue); }
+    .duration-row.slow .bar { background: var(--amber); }
+    .duration { text-align: right; font-variant-numeric: tabular-nums; font-weight: 700; }
+
+    .table-wrap {
+      overflow-x: auto;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+    }
+
+    table { width: 100%; border-collapse: collapse; min-width: 760px; }
+    th, td { padding: 11px 13px; text-align: left; border-bottom: 1px solid #e6e9ee; vertical-align: top; }
+    th { background: #f7f8fa; color: #475467; font-size: 12px; font-weight: 700; }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:hover td { background: #fafbfc; }
+    .number { text-align: right; font-variant-numeric: tabular-nums; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+    .status.pass { color: var(--green); }
+    .status.fail { color: var(--red); }
+    .status.warn { color: var(--amber); }
+
+    .protocol-summary {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .protocol-band {
+      padding: 13px 15px;
+      border-left: 4px solid var(--green);
+      background: var(--green-soft);
+    }
+
+    .protocol-band.fail { border-color: var(--red); background: var(--red-soft); }
+    .protocol-band strong { display: block; font-size: 16px; }
+    .protocol-band span { color: #4b5563; font-size: 12px; }
+
+    .filters { display: flex; gap: 4px; flex-wrap: wrap; }
+    .filters button {
+      min-height: 32px;
+      padding: 5px 11px;
+      color: #344054;
+      background: transparent;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .filters button[aria-pressed="true"] { color: #fff; background: var(--charcoal); border-color: var(--charcoal); }
+    .filters button:focus-visible { outline: 3px solid #9ec7e8; outline-offset: 2px; }
+
+    .finding {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: 16px;
+      padding: 14px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .finding:last-child { border-bottom: 0; }
+    .finding-title { font-weight: 700; }
+    .finding p { margin: 0; color: #3f4b59; }
+
+    footer { margin-top: 30px; color: var(--muted); font-size: 12px; }
+
+    @media (max-width: 760px) {
+      .header-inner, main { width: min(100% - 24px, 1180px); }
+      .metrics { grid-template-columns: 1fr; }
+      .metric { min-height: 92px; }
+      .section-head { align-items: flex-start; flex-direction: column; }
+      .protocol-summary { grid-template-columns: 1fr; }
+      .duration-row { grid-template-columns: 105px minmax(80px, 1fr) 66px; gap: 8px; }
+      .agent-name { font-size: 12px; }
+      .finding { grid-template-columns: 1fr; gap: 4px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="header-inner">
+        <p class="eyebrow">LLM Portal / LiteLLM endpoint validation</p>
+        <h1>Agent 兼容性实测报告</h1>
+        <p class="subtitle">模型 <span class="model">deepseek-v4-flash-0731</span> · 2026-08-15 · compat 协议兼容层上线后复测 · 凭据仅从环境变量加载</p>
+      </div>
+    </header>
+
+    <main>
+      <div class="metrics" aria-label="关键结论">
+        <div class="metric good">
+          <strong>4 / 4</strong>
+          <div class="metric-label">真实 Agent 工作流通过</div>
+          <div class="metric-note">读写文件、执行校验、工具结果回传及续轮（全部经 compat 层）</div>
+        </div>
+        <div class="metric good">
+          <strong>4 / 4</strong>
+          <div class="metric-label">强制工具选择通过</div>
+          <div class="metric-note">compat 层改写单工具 forced；多工具返回稳定 400</div>
+        </div>
+        <div class="metric good">
+          <strong>16 / 16</strong>
+          <div class="metric-label">协议矩阵全部通过</div>
+          <div class="metric-note">内联 system 已保留（US-13 us13-v1）</div>
+        </div>
+      </div>
+
+      <section aria-labelledby="duration-title">
+        <div class="section-head">
+          <div>
+            <h2 id="duration-title">端到端 Agent 耗时</h2>
+            <p class="section-note">相同夹具与精确产物校验；条形使用线性时间轴</p>
+          </div>
+        </div>
+        <div class="duration-chart" role="img" aria-label="Hermes Agent 108.4 秒，DeepSeek Harness 88.0 秒，Claude Code 59.8 秒，pi 40.5 秒">
+          <div class="duration-row"><span class="agent-name">Claude Code</span><div class="track"><div class="bar" style="width:55.2%"></div></div><span class="duration">59.8s</span></div>
+          <div class="duration-row"><span class="agent-name">pi</span><div class="track"><div class="bar" style="width:37.4%"></div></div><span class="duration">40.5s</span></div>
+          <div class="duration-row"><span class="agent-name">Hermes Agent</span><div class="track"><div class="bar" style="width:100%"></div></div><span class="duration">108.4s</span></div>
+          <div class="duration-row"><span class="agent-name">DeepSeek Harness</span><div class="track"><div class="bar" style="width:81.2%"></div></div><span class="duration">88.0s</span></div>
+        </div>
+      </section>
+
+      <section aria-labelledby="agents-title">
+        <div class="section-head">
+          <div>
+            <h2 id="agents-title">Agent 结果对比</h2>
+            <p class="section-note">工具计数来自各客户端可观测日志，统计口径随客户端而异</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Agent</th><th>版本 / 提交</th><th>会话模式</th><th>工具证据</th><th class="number">耗时</th><th>结果</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Claude Code</strong></td><td><code>2.1.220</code></td><td>同一 session，两次用户回合</td><td>9 个可观察事件</td><td class="number">59.8s</td><td><span class="status pass">PASS</span></td></tr>
+              <tr><td><strong>pi</strong></td><td><code>0.84.1</code></td><td>同一 session，两次用户回合</td><td>28 个可观察事件</td><td class="number">40.5s</td><td><span class="status pass">PASS</span></td></tr>
+              <tr><td><strong>Hermes Agent</strong></td><td><code>0.20.1</code></td><td>resume latest，两次用户回合</td><td>读写、执行与校验均完成</td><td class="number">108.4s</td><td><span class="status pass">PASS</span></td></tr>
+              <tr><td><strong>DeepSeek Harness</strong></td><td><code>0.1.0-rc.5 / 47f94385</code></td><td>单任务内多次模型/工具往返</td><td>11 call + 11 result</td><td class="number">88.0s</td><td><span class="status pass">PASS</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section aria-labelledby="protocol-title">
+        <div class="section-head">
+          <div>
+            <h2 id="protocol-title">协议兼容矩阵</h2>
+            <p class="section-note">最新复测：16 项通过，0 项失败（compat 协议兼容层上线后）</p>
+          </div>
+          <div class="filters" aria-label="筛选协议结果">
+            <button type="button" data-filter="all" aria-pressed="true">全部 16</button>
+            <button type="button" data-filter="pass" aria-pressed="false">通过 16</button>
+            <button type="button" data-filter="fail" aria-pressed="false">失败 0</button>
+          </div>
+        </div>
+        <div class="protocol-summary">
+          <div class="protocol-band"><strong>自动工具选择：4 / 4 PASS</strong><span>OpenAI 与 Anthropic 的流式帧和完整 tool-result 往返均正常</span></div>
+          <div class="protocol-band"><strong>强制工具选择：4 / 4 PASS</strong><span>compat 层将单工具 required / any 改写为指定该工具，响应侧修正 finish_reason 与 DSML 参数</span></div>
+        </div>
+        <div class="table-wrap">
+          <table id="protocol-table">
+            <thead><tr><th>接口</th><th>场景</th><th>模式</th><th>证据</th><th>结果</th></tr></thead>
+            <tbody>
+              <tr data-status="pass"><td>OpenAI</td><td>文本生成</td><td>非流式</td><td><code>finish_reason=stop</code></td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>OpenAI</td><td>文本生成</td><td>流式</td><td>13 SSE events + DONE</td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>OpenAI</td><td>自动工具调用</td><td>流式</td><td><code>tool_calls</code> + call ID</td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>OpenAI</td><td>自动工具完整往返</td><td>非流式</td><td>tool result 被消费，返回 FINAL=34</td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>OpenAI</td><td>强制工具调用</td><td>流式</td><td>compat 改写为指定函数；fragments + ID，<code>finish_reason=tool_calls</code></td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>OpenAI</td><td>强制工具完整往返</td><td>非流式</td><td>DSML 参数规范化后 tool result 被消费，FINAL=34</td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>OpenAI</td><td>多工具强制选择</td><td>非流式</td><td>稳定 400 <code>forced_tool_choice_unsupported</code></td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>Anthropic</td><td>文本生成</td><td>非流式</td><td><code>stop_reason=end_turn</code></td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>Anthropic</td><td>文本生成</td><td>流式</td><td>message_stop 正常</td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>Anthropic</td><td>自动工具调用</td><td>流式</td><td><code>tool_use</code> + call ID</td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>Anthropic</td><td>自动工具完整往返</td><td>非流式</td><td>tool result 被消费，返回 FINAL=34</td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>Anthropic</td><td>强制工具调用</td><td>流式</td><td>compat 改写为指定工具；<code>stop_reason=tool_use</code> + ID</td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>Anthropic</td><td>强制工具完整往返</td><td>非流式</td><td>tool_use → tool_result 往返，FINAL=34</td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>Anthropic</td><td>多工具强制选择</td><td>非流式</td><td>稳定 Anthropic 格式 400（不代选、不畸形 200）</td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>Anthropic</td><td>内联 system</td><td>非流式</td><td>US-13 合并进最近前一条 user，标记 <strong>preserved</strong></td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>Anthropic</td><td>count_tokens</td><td>非流式</td><td>与生成同一规范化（含标记 19 &gt; 去标记 13，norm_hash 可对账）</td><td><span class="status pass">PASS</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section aria-labelledby="findings-title">
+        <div class="section-head"><h2 id="findings-title">上线判断</h2></div>
+        <div class="finding"><div class="finding-title"><span class="status pass">可用于常规 Agent</span></div><p>Claude Code、pi、Hermes Agent 与 DeepSeek Harness 均完成真实文件工具任务和精确产物校验；四个 Agent 的全部流量经 compat 协议兼容层，无回归。</p></div>
+        <div class="finding"><div class="finding-title"><span class="status pass">强制工具选择已修复</span></div><p>compat 层将单工具 <code>required</code> / <code>any</code> 改写为指定该工具，并修正 OpenAI 流式 <code>finish_reason</code> 与 DSML 参数文本；多工具 forced 返回稳定 400 <code>forced_tool_choice_unsupported</code>，不静默删参、不代客户端选工具。</p></div>
+        <div class="finding"><div class="finding-title"><span class="status pass">内联 system 语义保留</span></div><p>US-13 us13-v1 规范化在网关入口把内联 <code>role=system</code> 合并进最近前一条 user 消息；<code>/v1/messages</code> 与 <code>/v1/messages/count_tokens</code> 共用同一纯函数（norm_hash 可对账）。</p></div>
+        <div class="finding"><div class="finding-title"><span class="status warn">已知边界</span></div><p>多工具 forced 待上游 vLLM 完整支持后移除 400 限制并回归本矩阵；SSE 首事件时间实测无回归（openai 715→751ms / anthropic 655→646ms，晚高峰噪声内）。</p></div>
+      </section>
+
+      <footer>数据来源：agent-compat results · 最新全量复测 20260815T231850（16 协议项 + 4 Agent 单轮全绿）· API token 未记录</footer>
+    </main>
+  </div>
+
+  <script>
+    const filterButtons = document.querySelectorAll('[data-filter]');
+    const protocolRows = document.querySelectorAll('#protocol-table tbody tr');
+    filterButtons.forEach((button) => {
+      button.addEventListener('click', () => {
+        const filter = button.dataset.filter;
+        filterButtons.forEach((item) => item.setAttribute('aria-pressed', String(item === button)));
+        protocolRows.forEach((row) => {
+          row.hidden = filter !== 'all' && row.dataset.status !== filter;
+        });
+      });
+    });
+  </script>
+</body>
+</html>

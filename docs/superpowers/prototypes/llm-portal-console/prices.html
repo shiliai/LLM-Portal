@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>价格表 · LLM-portal</title>
+<link rel="stylesheet" href="assets/portal.css">
+</head>
+<body data-page="prices">
+<template id="page">
+
+  <div class="pf-page-head">
+    <div class="pf-desc">计价按请求时价格版本冻结，修改只影响之后的请求。缓存价默认按输入价推导：读 0.1× / 写 1.25×。</div>
+  </div>
+
+  <div class="pf-card flush">
+    <table class="pf-table">
+      <thead>
+        <tr>
+          <th>目标</th>
+          <th class="num">输入 (¥/M)</th>
+          <th class="num">输出 (¥/M)</th>
+          <th class="num">缓存读 (¥/M)</th>
+          <th class="num">缓存写 (¥/M)</th>
+          <th>价格版本</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>openai-main / <span class="mono">gpt-4o</span></td>
+          <td class="num mono">18.00</td>
+          <td class="num mono">72.00</td>
+          <td class="num mono">1.80</td>
+          <td class="num mono">22.50</td>
+          <td><span class="pf-chip gray">v3</span> <span class="pf-desc">2026-08-02 生效</span></td>
+          <td><button class="pf-link" data-modal="price-modal">编辑</button></td>
+        </tr>
+        <tr>
+          <td>anthropic-main / <span class="mono">claude-sonnet-4-5</span></td>
+          <td class="num mono">21.60</td>
+          <td class="num mono">108.00</td>
+          <td class="num mono">2.16</td>
+          <td class="num mono">27.00</td>
+          <td><span class="pf-chip gray">v2</span> <span class="pf-desc">2026-07-15</span></td>
+          <td><button class="pf-link" data-modal="price-modal">编辑</button></td>
+        </tr>
+        <tr>
+          <td>deepseek-backup / <span class="mono">deepseek-chat</span></td>
+          <td class="num mono">4.00</td>
+          <td class="num mono">16.00</td>
+          <td class="num mono">0.40</td>
+          <td class="num mono">5.00</td>
+          <td><span class="pf-chip gray">v1</span></td>
+          <td><button class="pf-link" data-modal="price-modal">编辑</button></td>
+        </tr>
+        <tr>
+          <td>vllm-internal / <span class="mono">Qwen2.5-72B-Instruct</span></td>
+          <td class="num mono">0</td>
+          <td class="num mono">0</td>
+          <td class="num mono">0</td>
+          <td class="num mono">0</td>
+          <td><span class="pf-chip gray">v1</span> <span class="pf-desc">自建，不计费</span></td>
+          <td><button class="pf-link" data-modal="price-modal">编辑</button></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 编辑价格弹窗（以 openai-main / gpt-4o 为例） -->
+  <div class="pf-modal" id="price-modal">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title">编辑价格 · openai-main / gpt-4o</div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-modal-body">
+      <div class="pf-form-row">
+        <label class="req">输入 (¥/M)</label>
+        <div><input class="pf-input mono" style="width:180px" value="18.00"></div>
+      </div>
+      <div class="pf-form-row">
+        <label class="req">输出 (¥/M)</label>
+        <div><input class="pf-input mono" style="width:180px" value="72.00"></div>
+      </div>
+      <div class="pf-form-row">
+        <label class="req">缓存读 (¥/M)</label>
+        <div><input class="pf-input mono" style="width:180px" value="1.80"></div>
+      </div>
+      <div class="pf-form-row">
+        <label class="req">缓存写 (¥/M)</label>
+        <div><input class="pf-input mono" style="width:180px" value="22.50"></div>
+      </div>
+      <div class="pf-form-row">
+        <label></label>
+        <div>
+          <button class="pf-btn" data-toast="已按输入价带出缓存价">按默认带出缓存价（读 0.1× / 写 1.25×）</button>
+        </div>
+      </div>
+      <div class="pf-form-row" style="margin-bottom:0">
+        <label></label>
+        <div>
+          <div class="pf-desc" style="background:#fafafa;border:1px solid #f0f0f0;border-radius:4px;padding:9px 12px">
+            保存将产生新价格版本 <span class="pf-chip gray">v4</span>，仅对之后的请求生效；历史请求成本按请求时冻结的版本计价，不重算。
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="pf-modal-foot">
+      <button class="pf-btn" data-close>取消</button>
+      <button class="pf-btn primary" onclick="pfModalClose();pfToast('已保存 · 产生新价格版本 v4')">保存</button>
+    </div>
+  </div>
+
+</template>
+<script src="assets/portal.js"></script>
+</body>
+</html>

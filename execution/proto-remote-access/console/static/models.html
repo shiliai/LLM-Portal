@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>模型与别名 · 远程模型网关</title>
+<link rel="stylesheet" href="assets/portal.css">
+</head>
+<body data-page="models">
+<template id="page">
+
+  <!-- 页头 -->
+  <div class="pf-page-head">
+    <div class="pf-desc">对外模型名 = 直选名或别名；同一对外名在多个站点有部署时按 <span class="mono">least-busy</span> 按在途请求数分流，站点故障自动熔断切流（US-P6/US-P11）。</div>
+    <button class="pf-btn primary" data-modal="modal-newalias">新建别名</button>
+  </div>
+
+  <!-- 模型列表（可展开 deployment） -->
+  <div class="pf-card flush">
+    <div class="pf-card-head">
+      <div class="pf-card-title">对外模型名</div>
+      <div class="pf-card-extra" id="models-extra">加载中…</div>
+    </div>
+    <table class="pf-table">
+      <thead>
+        <tr>
+          <th style="width:28px"></th>
+          <th>对外模型名</th><th>类型</th><th class="num">Deployment</th><th>路由策略</th><th>分组 tag</th>
+        </tr>
+      </thead>
+      <tbody id="models-tbody"></tbody>
+    </table>
+  </div>
+
+  <!-- 路由与解析说明 -->
+  <div class="pf-card">
+    <div class="pf-card-head"><div class="pf-card-title">路由与解析说明</div></div>
+    <div class="pf-kv">
+      <div class="pf-kv-k">路由策略</div><div class="pf-kv-v" id="kv-routing"><span class="mono">least-busy</span>：按各 deployment 在途请求数分流，非加权随机；低并发下近似轮询，属预期行为。</div>
+      <div class="pf-kv-k">故障熔断</div><div class="pf-kv-v">单 deployment 连续失败后冷却 60 秒（<span class="mono">cooldown_time=60</span>），期间不参与分流；全部 deployment 不可用时返回可判读 503，不无限挂起。</div>
+      <div class="pf-kv-k">别名解析</div><div class="pf-kv-v">别名与直选名并存；别名在创建时克隆指向模型的全部站点 deployment（含组 tag），此后随分组调整同步。请求未映射且不存在的模型名返回 400/404「模型不存在」，不误路由。</div>
+      <div class="pf-kv-k">可见性</div><div class="pf-kv-v"><span class="mono">/v1/models</span> 返回全部对外名：<span class="mono" id="kv-public">—</span></div>
+    </div>
+  </div>
+
+  <!-- 新建别名弹窗 -->
+  <div class="pf-modal" id="modal-newalias">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title">新建别名</div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-modal-body">
+      <div class="pf-form-row">
+        <label class="req">对外模型名（别名）</label>
+        <div>
+          <input class="pf-input mono" id="alias-name" placeholder="例：gpt-4o-mini">
+          <div class="pf-desc">客户端将用此名称直接调用；不得与已存在的对外模型名冲突。</div>
+        </div>
+      </div>
+      <div class="pf-form-row">
+        <label class="req">指向的直选模型</label>
+        <div>
+          <select class="pf-select" id="alias-target"></select>
+          <div class="pf-desc">别名继承其指向模型的全部站点 deployment（同 api_base 克隆）与组 tag。</div>
+        </div>
+      </div>
+    </div>
+    <div class="pf-modal-foot">
+      <button class="pf-btn" data-close>取消</button>
+      <button class="pf-btn primary" id="btn-create-alias">创建</button>
+    </div>
+  </div>
+
+</template>
+<script src="assets/portal.js"></script>
+<script>
+(function () {
+  'use strict';
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  var chevron = '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2.5 11 8l-6 5.5"/></svg>';
+
+  function render(d) {
+    var direct = d.models.filter(function (m) { return m.type !== '别名'; }).length;
+    document.getElementById('models-extra').textContent =
+      direct + ' 个直选 · ' + (d.models.length - direct) + ' 个别名 · 共 ' +
+      d.models.reduce(function (n, m) { return n + m.deployments.length; }, 0) + ' 个 deployment';
+    document.getElementById('models-tbody').innerHTML = d.models.map(function (m, i) {
+      var isAlias = m.type === '别名';
+      var nameHtml = esc(m.name) + (isAlias ? ' <span class="pf-chip violet">别名 → ' + esc(m.alias_target) + '</span>' : '');
+      var tag = m.deployments.length
+        ? (m.deployments[0].tags || []).map(function (t) { return '<span class="pf-chip">' + esc(t) + '</span>'; }).join(' ') || '<span class="pf-desc">default（隐式）</span>'
+        : '—';
+      var deps = (isAlias ? '<div class="pf-desc" style="margin-bottom:8px">别名克隆其指向 <span class="mono">' + esc(m.alias_target) + '</span> 的全部 deployment：</div>' : '') +
+        m.deployments.map(function (dep) {
+          var host = (dep.api_base || '').replace(/^https?:\/\//, '');
+          return '<div class="pf-dep-item"><div class="pf-dep-main">' +
+            '<strong class="mono">' + esc(host.split(':')[0]) + '</strong>' +
+            '<span class="mono pf-muted">api_base=' + esc(host) + '</span>' +
+            '<span class="mono pf-muted">上游=' + esc((dep.upstream || '').replace(/^openai\//, '')) + '</span>' +
+            '</div></div>';
+        }).join('');
+      return '<tr class="clickable js-model-toggle" data-target="dep-row-' + i + '">' +
+          '<td><button class="pf-btn-icon" aria-label="展开">' + chevron + '</button></td>' +
+          '<td class="mono">' + nameHtml + '</td>' +
+          '<td><span class="pf-chip ' + (isAlias ? 'violet' : 'info') + '">' + esc(m.type) + '</span></td>' +
+          '<td class="num">' + m.deployments.length + '</td>' +
+          '<td class="mono">least-busy</td>' +
+          '<td>' + tag + '</td>' +
+        '</tr>' +
+        '<tr class="pf-collapse-row" id="dep-row-' + i + '" style="display:none"><td colspan="6"><div class="pf-collapse-body">' +
+          deps + '</div></td></tr>';
+    }).join('') || '<tr><td colspan="6" class="pf-desc" style="padding:10px">暂无模型（接入站点后自动注册）</td></tr>';
+
+    document.querySelectorAll('.js-model-toggle').forEach(function (row) {
+      row.addEventListener('click', function (e) {
+        if (e.target.closest('a')) return;
+        var target = document.getElementById(row.dataset.target);
+        var icon = row.querySelector('.pf-btn-icon');
+        var open = target.style.display !== 'none';
+        target.style.display = open ? 'none' : '';
+        icon.classList.toggle('expanded', !open);
+      });
+    });
+    document.getElementById('kv-public').textContent = (d.public_names || []).join('、');
+  }
+
+  window.pfReady.then(function () {
+    function load() {
+      window.pfApi('GET', '/models').then(function (d) {
+        render(d);
+        var targets = d.models.filter(function (m) { return m.type !== '别名'; });
+        document.getElementById('alias-target').innerHTML = targets.map(function (m) {
+          return '<option value="' + esc(m.name) + '">' + esc(m.name) + '</option>';
+        }).join('') || '<option value="">（无直选模型）</option>';
+      }).catch(function (e) { window.pfErr(e.error || '模型加载失败'); });
+    }
+    load();
+    document.getElementById('btn-create-alias').addEventListener('click', function () {
+      var alias = document.getElementById('alias-name').value.trim();
+      var target = document.getElementById('alias-target').value;
+      if (!alias || !target) { window.pfErr('请填写别名并选择指向模型'); return; }
+      window.pfApi('POST', '/models/alias', { alias: alias, target: target }).then(function (d) {
+        window.pfModalClose();
+        window.pfToast('别名 ' + alias + ' 已创建（克隆 ' + d.deployments + ' 个 deployment）');
+        load();
+      }).catch(function (e) { window.pfErr(e.error || '创建失败'); });
+    });
+  });
+})();
+</script>
+</body>
+</html>

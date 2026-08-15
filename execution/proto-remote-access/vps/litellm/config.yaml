@@ -1,0 +1,28 @@
+# LiteLLM Proxy 配置（private-llm 网关）
+# r6：模型/别名 deployment 全部动态注册入库（onboardd 站点注册 + consoled 别名克隆，STORE_MODEL_IN_DB=True），
+# 此处只保留引擎级设置骨架——config.yaml 属部署期配置（设计 §6 职责边界），日常管理走控制台 /console/。
+# 2026-08-14 迁移记录：静态别名 claude-opus-5、qwen3.6-35b-a3 已迁为 DB 条目（参数不变），
+# 由 consoled「模型与别名」页作为唯一事实来源管理。
+# 注意：deployment 不打 "default" tag（1.96.2 会把 default tag 当 tag 无匹配时的兜底池，
+# 与基线「组内无部署→报错」冲突）；default 组 = 隐式全量池，由 group_routing.py 实现
+model_list: []
+
+router_settings:
+  routing_strategy: least-busy    # 按在途请求数分流（US-P6）
+  enable_tag_filtering: true      # 分组过滤（US-P13）
+  num_retries: 1                  # 单站点失败重试到其他健康 deployment
+  timeout: 600
+  cooldown_time: 60               # 故障 deployment 冷却 60s（熔断）
+  allowed_fails: 1
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  store_model_in_db: true
+  # 记录真实客户端 IP 到 spend logs 的 requester_ip_address（X-Forwarded-For，nginx 已传）。
+  # 仅当上游是可信反代时开启（litellm 端口只在 docker 网络内可达，公网不可直连，安全）
+  use_x_forwarded_for: true
+
+litellm_settings:
+  drop_params: true               # 上游不认识的参数直接丢弃，提高客户端兼容性
+  callbacks: ["proxy.group_routing.group_routing_hook"]   # US-P13：网关侧注入 Key 分组 tag（模块级实例；每请求强制 enable_tag_filtering）
