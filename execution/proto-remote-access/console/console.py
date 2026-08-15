@@ -30,6 +30,7 @@
   POST /console/api/keys/unblock       启用（/key/unblock）
   POST /console/api/keys/delete        删除（/key/delete）
   GET  /console/api/usage?days=N       用量聚合（/spend/logs 本地聚合）
+  GET  /console/api/usage/logs?days=N  逐请求明细（时间/Key/模型/token/延迟/状态/request_id）
   GET  /console/api/my                 用户自查（/key/info + /mcp/usage 代查）
   GET  /console/api/mcp                外部 MCP 注册清单（脱敏）
   POST /console/api/mcp/register       注册外部 MCP（写配置 + 重启 mcp-hub）
@@ -699,6 +700,47 @@ async def api_usage(request: Request) -> Response:
     t["total_tokens"] = t["prompt_tokens"] + t["completion_tokens"] + t["cached_tokens"]
     return JSONResponse({"rows": rows, "errors": errors, "totals": t,
                          "per_key": sorted(per_key.items(), key=lambda kv: -kv[1])})
+
+
+async def api_usage_logs(request: Request) -> Response:
+    """逐请求明细（US-P9 增补，参照 sub2api 日志视图）：时间/Key/模型/类型/token/延迟/状态，
+    request_id + session_id 供排障。上限 500 行（/spend/logs 本身全量拉取，MVP 规模足够）。"""
+    sess = await require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    try:
+        days = min(max(float(request.query_params.get("days", 1)), 0.02), 90)
+    except ValueError:
+        days = 1.0
+    logs, keys = await fetch_logs(), await key_list_full()
+    alias_of = {k.get("token"): k.get("key_alias") or "?" for k in keys}
+
+    def ak_valid(ak: str) -> bool:
+        return ak == "litellm_proxy_master_key" or (len(ak) == 64 and all(c in "0123456789abcdef" for c in ak))
+
+    out = []
+    for r in logs_since(logs, days):
+        ak = str(r.get("api_key") or "")
+        if not ak_valid(ak):
+            continue
+        failed = r.get("status") == "failure"
+        out.append({
+            "ts": (r.get("startTime") or "")[:19],
+            "alias": alias_of.get(ak) or ("管理员（master key）" if ak == "litellm_proxy_master_key" else "已删除密钥"),
+            "key": key_last4(r),
+            "model": r.get("model_group") or r.get("model") or "?",
+            "call_type": r.get("call_type") or "",
+            "prompt_tokens": int(r.get("prompt_tokens") or 0),
+            "completion_tokens": int(r.get("completion_tokens") or 0),
+            "cached_tokens": row_cached(r),
+            "duration_ms": int(r.get("request_duration_ms") or 0),
+            "status": "failure" if failed else "ok",
+            "request_id": r.get("request_id") or "",
+            "session_id": r.get("session_id") or "",
+            "error": err_text(r) if failed else "",
+        })
+    out.sort(key=lambda r: r["ts"], reverse=True)
+    return JSONResponse({"logs": out[:500], "count": len(out)})
 
 
 # ---------------------------------------------------------------- 站点
@@ -1395,6 +1437,7 @@ api_routes = [
     Route("/console/api/me", api_me, methods=["GET"]),
     Route("/console/api/overview", api_overview, methods=["GET"]),
     Route("/console/api/usage", api_usage, methods=["GET"]),
+    Route("/console/api/usage/logs", api_usage_logs, methods=["GET"]),
     Route("/console/api/sites", api_sites, methods=["GET"]),
     Route("/console/api/sites/token", api_sites_token, methods=["POST"]),
     Route("/console/api/sites/revoke", api_sites_revoke, methods=["POST"]),
