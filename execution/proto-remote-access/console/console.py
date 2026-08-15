@@ -38,8 +38,8 @@
   GET  /console/api/mcp/tools          聚合 tools/list 预览（直连各外部 MCP）
   GET  /console/api/mcp/usage?days=N   按 Key 工具调用计数（usage.db）
 
-会话：服务端内存表（key 永不进 cookie），cookie 只放 sid+HMAC；登录限速；变更类请求
-要求 X-Requested-With 头。LiteLLM 1.96.2 语义（设计 §12 r6 spike 结论）：
+会话：sqlite 落盘（容器重建/重部署不掉线；key 永不进 cookie，cookie 只放 sid+HMAC）；
+登录限速；变更类请求要求 X-Requested-With 头。LiteLLM 1.96.2 语义（设计 §12 r6 spike 结论）：
 /key/list 需 return_full_object、禁用字段 blocked、tags 在 litellm_params、
 /spend/logs 过滤参数不可靠故全量拉取本地聚合。
 """
@@ -108,7 +108,10 @@ else:
     SECRET_PATH.write_bytes(_SECRET)
     os.chmod(SECRET_PATH, 0o600)
 
-SESSIONS: dict[str, dict] = {}          # sid -> {role, key, exp}
+SESSIONS_DB = STATE_DIR / "sessions.db"            # 会话落盘：容器重建/重部署不掉线
+with sqlite3.connect(SESSIONS_DB) as _conn:
+    _conn.execute("CREATE TABLE IF NOT EXISTS sessions ("
+                  "sid TEXT PRIMARY KEY, role TEXT NOT NULL, key TEXT NOT NULL, exp REAL NOT NULL)")
 _login_fails: dict[str, list] = {}      # ip -> [window_start, fail_count]
 _totp_used: dict[int, float] = {}       # TOTP timestep -> 使用时刻（防同一动态码重放）
 NAME_RE = re.compile(r"[a-zA-Z0-9_-]{1,32}")
@@ -156,11 +159,11 @@ def session_of(request: Request) -> dict | None:
     sid, _, sig = raw.partition(".")
     if not hmac.compare_digest(sign(sid), sig):
         return None
-    sess = SESSIONS.get(sid)
-    if sess is None or sess["exp"] < time.time():
-        SESSIONS.pop(sid, None)
+    with sqlite3.connect(SESSIONS_DB) as conn:
+        row = conn.execute("SELECT role, key, exp FROM sessions WHERE sid=?", (sid,)).fetchone()
+    if row is None or row[2] < time.time():
         return None
-    return sess
+    return {"role": row[0], "key": row[1]}
 
 
 def client_ip(request: Request) -> str:
@@ -294,7 +297,11 @@ def vault_get(token_hash: str) -> str:
 
 def _start_session(role: str, key: str) -> Response:
     sid = secrets.token_urlsafe(24)
-    SESSIONS[sid] = {"role": role, "key": key, "exp": time.time() + SESSION_TTL}
+    exp = time.time() + SESSION_TTL
+    with sqlite3.connect(SESSIONS_DB) as conn:
+        conn.execute("DELETE FROM sessions WHERE exp < ?", (time.time() - 3600,))   # 顺手清过期
+        conn.execute("INSERT INTO sessions (sid, role, key, exp) VALUES (?,?,?,?)",
+                     (sid, role, key, exp))
     resp = JSONResponse({"ok": True, "role": role})
     resp.set_cookie("pll_session", f"{sid}.{sign(sid)}", max_age=SESSION_TTL,
                     httponly=True, secure=True, samesite="lax", path="/console")
@@ -445,7 +452,8 @@ async def api_login(request: Request) -> Response:
 async def api_logout(request: Request) -> Response:
     raw = request.cookies.get("pll_session", "")
     if "." in raw:
-        SESSIONS.pop(raw.partition(".")[0], None)
+        with sqlite3.connect(SESSIONS_DB) as conn:
+            conn.execute("DELETE FROM sessions WHERE sid=?", (raw.partition(".")[0],))
     resp = JSONResponse({"ok": True})
     resp.delete_cookie("pll_session", path="/console")
     return resp
