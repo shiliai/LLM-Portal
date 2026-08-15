@@ -11,13 +11,16 @@
   POST /onboard/admin/groups {site, groups}           r6：站点分组同步（LiteLLM retag 由 consoled 负责）
   GET  /onboard/admin/list                            站点清单
 
-状态存 SQLite；wg 命令直接操作 wg0（systemd 以 root 运行），peer 持久化回写 /etc/wireguard/wg0.conf。
+状态存 SQLite；peer 持久化回写 /etc/wireguard/wg0.conf。wg 命令前缀 WG_EXEC：
+默认宿主机直跑；容器化部署（#7）由 compose 注入 `docker exec private-llm-wireguard wg`
+（wg0 在宿主机网络命名空间，由 wireguard sidecar 托管）。
 """
 
 import json
 import os
 import re
 import secrets
+import shlex
 import sqlite3
 import subprocess
 import time
@@ -33,6 +36,7 @@ from starlette.routing import Route
 DOMAIN = os.environ.get("DOMAIN", "llm-portal.example.com")
 WG_CONF = Path(os.environ.get("WG_CONF", "/etc/wireguard/wg0.conf"))
 WG_IFACE = os.environ.get("WG_IFACE", "wg0")
+WG_EXEC = shlex.split(os.environ.get("WG_EXEC", "wg"))
 WG_PORT = os.environ.get("WG_PORT", "51820")
 WG_SUBNET_PREFIX = os.environ.get("WG_SUBNET_PREFIX", "10.77.0")  # 站点 IP 从 .11 递增
 LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://127.0.0.1:4000")
@@ -117,13 +121,13 @@ async def register(request: Request) -> Response:
         # 站点重装场景：同 token 重复注册允许更新公钥（token 尚未确认即未 used）
         existing = conn.execute("SELECT * FROM sites WHERE wg_ip=?", (wg_ip,)).fetchone()
         if existing and existing["pubkey"] != pubkey:
-            r = run(["wg", "set", WG_IFACE, "peer", existing["pubkey"], "remove"])
+            r = run(WG_EXEC + ["set", WG_IFACE, "peer", existing["pubkey"], "remove"])
             if r.returncode != 0:
                 return JSONResponse({"error": f"wg remove old peer failed: {r.stderr.strip()}"}, status_code=500)
             remove_peer_from_conf(existing["pubkey"])
             conn.execute("DELETE FROM sites WHERE wg_ip=?", (wg_ip,))
         conn.execute("UPDATE tokens SET used=1 WHERE token=?", (token,))
-    r = run(["wg", "set", WG_IFACE, "peer", pubkey, "allowed-ips", f"{wg_ip}/32"])
+    r = run(WG_EXEC + ["set", WG_IFACE, "peer", pubkey, "allowed-ips", f"{wg_ip}/32"])
     if r.returncode != 0:
         return JSONResponse({"error": f"wg set peer failed: {r.stderr.strip()}"}, status_code=500)
     append_peer_to_conf(pubkey, wg_ip, row["site"])
@@ -232,7 +236,7 @@ async def admin_revoke(request: Request) -> Response:
     if row is None:
         return JSONResponse({"error": f"unknown site {site}"}, status_code=404)
     outputs = {}
-    r = run(["wg", "set", WG_IFACE, "peer", row["pubkey"], "remove"])
+    r = run(WG_EXEC + ["set", WG_IFACE, "peer", row["pubkey"], "remove"])
     outputs["wg_remove"] = "ok" if r.returncode == 0 else r.stderr.strip()
     remove_peer_from_conf(row["pubkey"])
     deleted = []
