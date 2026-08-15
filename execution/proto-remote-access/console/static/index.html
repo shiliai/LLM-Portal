@@ -132,8 +132,9 @@
       var t = d.totals;
       document.getElementById('stat-req').textContent = fmtN(t.requests);
       document.getElementById('stat-req-sub').textContent = '错误 ' + fmtN(t.errors) + ' 次';
-      document.getElementById('stat-token').textContent = fmtM(t.prompt_tokens + t.completion_tokens);
-      document.getElementById('stat-token-sub').textContent = '输入 ' + fmtM(t.prompt_tokens) + ' · 输出 ' + fmtM(t.completion_tokens);
+      document.getElementById('stat-token').textContent = fmtM(t.prompt_tokens + t.completion_tokens + (t.cached_tokens || 0));
+      document.getElementById('stat-token-sub').textContent =
+        '输入 ' + fmtM(t.prompt_tokens) + ' · 缓存读取 ' + fmtM(t.cached_tokens || 0) + ' · 输出 ' + fmtM(t.completion_tokens);
       document.getElementById('stat-sites').innerHTML = d.sites.online + '<small>/' + d.sites.total + '</small>';
       document.getElementById('stat-sites-sub').textContent = '隧道在线';
       document.getElementById('stat-deps').innerHTML = d.deployments.healthy + '<small>/' + d.deployments.total + '</small>';

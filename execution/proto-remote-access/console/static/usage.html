@@ -34,7 +34,7 @@
     </div>
     <table class="pf-table" id="usage-table">
       <thead>
-        <tr><th>Key</th><th>模型</th><th class="num">请求数</th><th class="num">输入 Token</th><th class="num">输出 Token</th></tr>
+        <tr><th>Key</th><th>模型</th><th class="num">请求数</th><th class="num">输入 Token</th><th class="num">缓存读取</th><th class="num">输出 Token</th><th class="num">总 Token</th><th class="num">平均延迟</th></tr>
       </thead>
       <tbody id="usage-rows"></tbody>
       <tfoot>
@@ -42,7 +42,10 @@
           <td colspan="2" style="font-weight:600">合计</td>
           <td class="num" style="font-weight:600" id="sum-req">0</td>
           <td class="num" style="font-weight:600" id="sum-in">0</td>
+          <td class="num" style="font-weight:600" id="sum-cache">0</td>
           <td class="num" style="font-weight:600" id="sum-out">0</td>
+          <td class="num" style="font-weight:600" id="sum-total">0</td>
+          <td class="num" style="font-weight:600" id="sum-lat">—</td>
         </tr>
       </tfoot>
     </table>
@@ -83,22 +86,33 @@
     document.getElementById('usage-rows').innerHTML = shown.map(function (r) {
       return '<tr>' +
         '<td><span class="pf-key">…' + esc(r.key) + '</span> ' + esc(r.alias) + '</td>' +
-        '<td class="mono">' + esc(r.model) + '</td>' +
+        '<td class="mono">' + esc(r.model === '?' ? '（未解析）' : r.model) + '</td>' +
         '<td class="num">' + fmtN(r.requests) + '</td>' +
         '<td class="num">' + fmtN(r.prompt_tokens) + '</td>' +
+        '<td class="num">' + fmtN(r.cached_tokens) + '</td>' +
         '<td class="num">' + fmtN(r.completion_tokens) + '</td>' +
+        '<td class="num" style="font-weight:600">' + fmtN(r.total_tokens) + '</td>' +
+        '<td class="num">' + (r.avg_ms >= 1000 ? (r.avg_ms / 1000).toFixed(1) + ' s' : r.avg_ms + ' ms') + '</td>' +
       '</tr>';
-    }).join('') || '<tr><td colspan="5"><div class="pf-empty"><div class="pf-empty-icon">▢</div>没有符合筛选条件的用量记录</div></td></tr>';
+    }).join('') || '<tr><td colspan="8"><div class="pf-empty"><div class="pf-empty-icon">▢</div>没有符合筛选条件的用量记录</div></td></tr>';
     document.getElementById('sum-req').textContent = fmtN(shown.reduce(function (n, r) { return n + r.requests; }, 0));
     document.getElementById('sum-in').textContent = fmtN(shown.reduce(function (n, r) { return n + r.prompt_tokens; }, 0));
+    document.getElementById('sum-cache').textContent = fmtN(shown.reduce(function (n, r) { return n + r.cached_tokens; }, 0));
     document.getElementById('sum-out').textContent = fmtN(shown.reduce(function (n, r) { return n + r.completion_tokens; }, 0));
+    document.getElementById('sum-total').textContent = fmtN(shown.reduce(function (n, r) { return n + r.total_tokens; }, 0));
+    var totReq = shown.reduce(function (n, r) { return n + r.requests; }, 0);
+    var totMs = shown.reduce(function (n, r) { return n + (r.duration_ms_sum || 0); }, 0);
+    var avg = totReq ? Math.round(totMs / totReq) : 0;
+    document.getElementById('sum-lat').textContent = totReq ? (avg >= 1000 ? (avg / 1000).toFixed(1) + ' s' : avg + ' ms') : '—';
   }
 
   function render(d, daysLabel) {
     ALL = d.rows;
     document.getElementById('usage-title').textContent = '用量明细（' + daysLabel + '）';
     document.getElementById('usage-extra').textContent =
-      '合计 ' + fmtN(d.totals.requests) + ' 次 · 输入 ' + fmtN(d.totals.prompt_tokens) + ' · 输出 ' + fmtN(d.totals.completion_tokens);
+      '合计 ' + fmtN(d.totals.requests) + ' 次 · 输入 ' + fmtN(d.totals.prompt_tokens) +
+      ' · 缓存读取 ' + fmtN(d.totals.cached_tokens) + ' · 输出 ' + fmtN(d.totals.completion_tokens) +
+      ' · 总计 ' + fmtN(d.totals.total_tokens);
     var keys = [], models = [];
     ALL.forEach(function (r) {
       if (keys.indexOf(r.alias) < 0) keys.push(r.alias);
@@ -110,7 +124,7 @@
       models.map(function (m) { return '<option value="' + esc(m) + '">' + esc(m) + '</option>'; }).join('');
     applyFilter();
 
-    var perKey = d.per_key || [];
+    var perKey = (d.per_key || []).filter(function (kv) { return kv[0] !== '已删除密钥'; });
     var max = perKey.length ? perKey[0][1] : 1;
     document.getElementById('bar-title').textContent = '按 Key 的请求占比（' + daysLabel + '）';
     document.getElementById('key-bars').innerHTML = perKey.map(function (kv, i) {
