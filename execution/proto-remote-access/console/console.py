@@ -1376,10 +1376,11 @@ async def console_static(request: Request) -> Response:
     root = STATIC_DIR.resolve()
     if root not in target.parents or not target.is_file():
         return jerr("not found", 404)
-    # no-cache：允许缓存但必须带 etag 再验证——页面/JS 迭代频繁，避免浏览器启发式
-    # 缓存把旧版页面serve给已部署新代码的用户（2026-08-15 实测踩坑：用户 reload
-    # 命中启发式缓存拿到旧 keys.html，新修复完全未生效）
-    return FileResponse(target, headers={"Cache-Control": "no-cache"})
+    # no-store：控制台页面/JS 迭代频繁且用户极少，直接不缓存，每次导航拿新文件。
+    # 踩坑记录（2026-08-15）：无 Cache-Control 时浏览器启发式缓存旧页面；改 no-cache
+    # 后，修复前已缓存的条目不带该指令仍可能被沿用——过渡期用户继续拿到旧代码，
+    # 故最终采用 no-store 一劳永逸
+    return FileResponse(target, headers={"Cache-Control": "no-store"})
 
 
 api_routes = [
