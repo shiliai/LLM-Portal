@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>安全设置 · 远程模型网关</title>
+<link rel="stylesheet" href="assets/portal.css">
+<style>
+  .s2-qr-box { display: flex; gap: 22px; align-items: flex-start; flex-wrap: wrap; margin-top: 14px; }
+  .s2-qr-box img { width: 176px; height: 176px; background: #fff; border: 1px solid #f0f0f0; border-radius: 6px; padding: 8px; }
+  .s2-qr-side { flex: 1; min-width: 240px; }
+  .s2-qr-side .pf-input { width: 100%; }
+  .s2-row { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+  .s2-code { width: 130px; letter-spacing: 2px; }
+</style>
+</head>
+<body data-page="security">
+<template id="page">
+
+  <div class="pf-page-head">
+    <div class="pf-desc">管理员两步验证（TOTP）：启用后登录需输入认证器 6 位动态码（30 秒一换）。「安全设置」页生成的密钥优先于 console.env 预置（ADMIN_TOTP_SECRET）。</div>
+  </div>
+
+  <!-- 状态卡 -->
+  <div class="pf-card">
+    <div class="pf-card-head">
+      <div class="pf-card-title">两步验证状态</div>
+      <div class="pf-card-extra"><span class="pf-chip gray" id="st-chip">查询中…</span></div>
+    </div>
+    <div class="pf-kv">
+      <div class="pf-kv-k">状态</div><div class="pf-kv-v" id="st-text">—</div>
+      <div class="pf-kv-k">密钥来源</div><div class="pf-kv-v" id="st-source">—</div>
+    </div>
+    <div id="st-note" class="pf-desc" style="margin-top:10px"></div>
+    <div class="s2-row">
+      <button class="pf-btn primary" id="btn-setup" type="button">生成密钥并扫码启用</button>
+      <button class="pf-btn danger" id="btn-show-disable" type="button" style="display:none">停用两步验证</button>
+    </div>
+  </div>
+
+  <!-- 启用流程卡（生成后显示） -->
+  <div class="pf-card" id="card-setup" style="display:none">
+    <div class="pf-card-head">
+      <div class="pf-card-title">扫码录入认证器</div>
+      <div class="pf-card-extra"><span class="pf-chip info">pending · 确认后生效</span></div>
+    </div>
+    <div class="s2-qr-box">
+      <img id="setup-qr" alt="TOTP 二维码" src="">
+      <div class="s2-qr-side">
+        <label class="pf-label" for="setup-secret">手工录入密钥（扫码失败时用，SHA1 / 6 位 / 30 秒）</label>
+        <input class="pf-input mono" id="setup-secret" readonly>
+        <div class="s2-row">
+          <input class="pf-input mono s2-code" id="setup-code" maxlength="6" inputmode="numeric" placeholder="6 位动态码">
+          <button class="pf-btn primary" id="btn-confirm" type="button">确认并启用</button>
+        </div>
+        <div class="pf-desc" style="margin-top:8px">手机认证器（Google Authenticator / 1Password 等）扫码或录入上方密钥，然后输入当前动态码确认。</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 停用卡 -->
+  <div class="pf-card" id="card-disable" style="display:none">
+    <div class="pf-card-head">
+      <div class="pf-card-title">停用两步验证</div>
+      <div class="pf-card-extra"><span class="pf-chip warn">需密码 + 当前动态码</span></div>
+    </div>
+    <div class="s2-row" style="flex-wrap:wrap">
+      <input class="pf-input" id="dis-pwd" type="password" placeholder="管理员密码" style="width:200px">
+      <input class="pf-input mono s2-code" id="dis-code" maxlength="6" inputmode="numeric" placeholder="6 位动态码">
+      <button class="pf-btn danger" id="btn-disable" type="button">停用</button>
+    </div>
+  </div>
+
+</template>
+<script src="assets/portal.js"></script>
+<script>
+(function () {
+  'use strict';
+  var pfApi = window.pfApi;
+
+  window.pfReady.then(function (sess) {
+    if (sess.role !== 'admin') { location.href = '/console/my-usage.html'; return; }
+    var $ = function (id) { return document.getElementById(id); };
+
+    function load() {
+      pfApi('GET', '/2fa').then(function (d) {
+        var chip = $('st-chip');
+        chip.className = 'pf-chip ' + (d.enabled ? 'ok' : 'gray');
+        chip.textContent = d.enabled ? '已启用' : '未启用';
+        $('st-text').textContent = d.enabled ? '登录需邮箱 + 密码 + 动态码' : '登录仅需邮箱 + 密码';
+        $('st-source').textContent = d.enabled
+          ? (d.source === 'state' ? '安全设置页生成' : 'console.env 预置（ADMIN_TOTP_SECRET）') : '—';
+        $('st-note').textContent = d.source === 'env'
+          ? '当前密钥由 console.env 预置：如需轮换或停用，请清空 ADMIN_TOTP_SECRET 重启后在此页重新启用。'
+          : '';
+        $('btn-show-disable').style.display = d.enabled && d.source === 'state' ? '' : 'none';
+        $('btn-setup').textContent = d.enabled ? '更换密钥（重新扫码）' : '生成密钥并扫码启用';
+      }).catch(function (e) { window.pfErr(e.error || '加载失败'); });
+    }
+
+    $('btn-setup').addEventListener('click', function () {
+      pfApi('POST', '/2fa/setup', {}).then(function (d) {
+        $('setup-qr').src = d.qr;
+        $('setup-secret').value = d.secret;
+        $('setup-code').value = '';
+        $('card-setup').style.display = '';
+        $('card-setup').scrollIntoView({ behavior: 'smooth' });
+      }).catch(function (e) { window.pfErr(e.error || '生成失败'); });
+    });
+
+    $('btn-confirm').addEventListener('click', function () {
+      var code = $('setup-code').value.trim();
+      if (!/^\d{6}$/.test(code)) { window.pfErr('请输入 6 位动态码'); return; }
+      pfApi('POST', '/2fa/confirm', { code: code }).then(function () {
+        window.pfToast('两步验证已启用');
+        $('card-setup').style.display = 'none';
+        load();
+      }).catch(function (e) { window.pfErr(e.error || '确认失败'); });
+    });
+
+    $('btn-show-disable').addEventListener('click', function () {
+      var c = $('card-disable');
+      c.style.display = c.style.display === 'none' ? '' : 'none';
+    });
+
+    $('btn-disable').addEventListener('click', function () {
+      var body = { password: $('dis-pwd').value, code: $('dis-code').value.trim() };
+      if (!body.password || !/^\d{6}$/.test(body.code)) { window.pfErr('请输入密码和 6 位动态码'); return; }
+      if (!confirm('停用后登录仅需邮箱 + 密码，确认停用两步验证？')) return;
+      pfApi('POST', '/2fa/disable', body).then(function () {
+        window.pfToast('两步验证已停用');
+        $('card-disable').style.display = 'none';
+        $('dis-pwd').value = ''; $('dis-code').value = '';
+        load();
+      }).catch(function (e) { window.pfErr(e.error || '停用失败'); });
+    });
+
+    load();
+  });
+})();
+</script>
+</body>
+</html>

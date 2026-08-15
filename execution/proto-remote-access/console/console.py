@@ -5,6 +5,10 @@
   POST /console/api/admin-login        管理员登录 {email, password, totp}（console.env
                                        的 ADMIN_EMAIL/ADMIN_PASSWORD[/_TOTP_SECRET]）；
                                        配置后 master key 不再作为网页登录方式
+  GET  /console/api/2fa                2FA 状态（是否启用 + 来源 state/env）
+  POST /console/api/2fa/setup          生成新密钥（pending）+ otpauth URI + 二维码
+  POST /console/api/2fa/confirm        {code} 校验 pending 密钥并启用（页面生成优先于 env 预置）
+  POST /console/api/2fa/disable        {password, code} 停用页面启用的 2FA
   POST /console/api/logout             注销
   GET  /console/api/me                 会话信息（角色 + 导航裁剪）
   GET  /console/api/overview           仪表盘：今日聚合 + 站点隧道 + deployment 健康 + 近期错误
@@ -44,6 +48,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import sqlite3
 import struct
 import subprocess
@@ -53,11 +58,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
+import segno
 import uvicorn
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
+from urllib.parse import quote
 
 LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://127.0.0.1:4000")
 ONBOARD_URL = os.environ.get("ONBOARDD_URL", "http://127.0.0.1:8100")
@@ -73,9 +80,15 @@ MCP_VISION_MODEL = os.environ.get("MCP_VISION_MODEL", "qwen3.6-35b-fp8")
 EXTERNAL_MCP_CONF = Path(os.environ.get("EXTERNAL_MCP_CONF", "/etc/private-llm/external-mcp.json"))
 MCP_USAGE_DB = Path(os.environ.get("MCP_USAGE_DB", "/var/lib/private-llm/mcp-hub/usage.db"))
 WG_IFACE = os.environ.get("WG_IFACE", "wg0")
+# 宿主机操作命令前缀（#7 容器化）：默认保留宿主机直跑语义；容器模式由 compose 注入
+# docker.sock 版本（挂载 /var/run/docker.sock 的容器 ≈ 宿主机 root，见 runbook §7 取舍）
+WG_EXEC = shlex.split(os.environ.get("WG_EXEC", "wg"))
+MCP_RESTART_CMD = shlex.split(os.environ.get("MCP_RESTART_CMD", "systemctl restart mcp-hub"))
 STATIC_DIR = Path(__file__).parent / "static"
 STATE_DIR = Path(os.environ.get("CONSOLE_DATA", "/var/lib/private-llm/console"))
 SECRET_PATH = STATE_DIR / "console.secret"
+# 页面启用的 2FA 密钥（#8）：{enabled, secret, pending}；优先于 env 预置
+TOTP_STATE_PATH = STATE_DIR / "totp.json"
 SESSION_TTL = 8 * 3600
 LOGIN_FAIL_LIMIT, LOGIN_WINDOW = 5, 60
 HANDSHAKE_ONLINE = 180  # 最近握手 3 分钟内视为在线
@@ -204,6 +217,27 @@ if ADMIN_TOTP_SECRET and _b32_key(ADMIN_TOTP_SECRET) is None:
           file=sys.stderr)
 
 
+def _totp_state() -> dict:
+    try:
+        st = json.loads(TOTP_STATE_PATH.read_text())
+        return st if isinstance(st, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_totp_state(st: dict) -> None:
+    TOTP_STATE_PATH.write_text(json.dumps(st, ensure_ascii=False, indent=2) + "\n")
+    os.chmod(TOTP_STATE_PATH, 0o600)
+
+
+def active_totp() -> tuple[str, str]:
+    """(secret, source)：安全设置页启用（state）优先于 console.env 预置（env）。"""
+    st = _totp_state()
+    if st.get("enabled") and st.get("secret"):
+        return st["secret"], "state"
+    return (ADMIN_TOTP_SECRET, "env") if ADMIN_TOTP_SECRET else ("", "")
+
+
 def _start_session(role: str, key: str) -> Response:
     sid = secrets.token_urlsafe(24)
     SESSIONS[sid] = {"role": role, "key": key, "exp": time.time() + SESSION_TTL}
@@ -215,7 +249,7 @@ def _start_session(role: str, key: str) -> Response:
 
 async def api_admin_login_state(request: Request) -> Response:
     """登录页据此决定是否展示 2FA 输入框（只暴露开关，不暴露账号信息）。"""
-    return JSONResponse({"configured": bool(ADMIN_EMAIL), "totp": bool(ADMIN_TOTP_SECRET)})
+    return JSONResponse({"configured": bool(ADMIN_EMAIL), "totp": bool(active_totp()[0])})
 
 
 async def api_admin_login(request: Request) -> Response:
@@ -235,8 +269,9 @@ async def api_admin_login(request: Request) -> Response:
         return jerr("bad request", 400)
     # 统一报错文案，不区分错在哪一项；2FA 只在口令正确时校验（省计算，语义不变）
     ok = _str_eq(email.strip().lower(), ADMIN_EMAIL) and _str_eq(password, ADMIN_PASSWORD)
-    if ok and ADMIN_TOTP_SECRET:
-        ok = totp_verify(ADMIN_TOTP_SECRET, totp)
+    totp_secret, _ = active_totp()
+    if ok and totp_secret:
+        ok = totp_verify(totp_secret, totp)
     if not ok:
         if not win or now - win[0] >= LOGIN_WINDOW:
             _login_fails[ip] = [now, 1]
@@ -246,6 +281,72 @@ async def api_admin_login(request: Request) -> Response:
     _login_fails.pop(ip, None)
     # 管理接口本就以服务端 env 里的 master key 回环调 LiteLLM，会话不再另存管理员口令
     return _start_session("admin", LITELLM_MASTER_KEY)
+
+
+# ---------------------------------------------------------------- 2FA 管理（#8，admin）
+
+async def api_2fa(request: Request) -> Response:
+    sess = await require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    secret, source = active_totp()
+    return JSONResponse({"enabled": bool(secret), "source": source,
+                         "pending": bool(_totp_state().get("pending"))})
+
+
+async def api_2fa_setup(request: Request) -> Response:
+    sess = await require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    secret = base64.b32encode(secrets.token_bytes(20)).decode()
+    st = _totp_state()
+    st["pending"] = secret
+    _write_totp_state(st)
+    label = quote(f"private-llm:{ADMIN_EMAIL or 'admin'}")
+    uri = (f"otpauth://totp/{label}?secret={secret}&issuer=private-llm"
+           "&algorithm=SHA1&digits=6&period=30")
+    qr = segno.make(uri, error="m").svg_data_uri(scale=4)
+    return JSONResponse({"secret": secret, "otpauth": uri, "qr": qr})
+
+
+async def api_2fa_confirm(request: Request) -> Response:
+    sess = await require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    try:
+        code = ((await request.json()).get("code") or "")
+    except ValueError:
+        return jerr("bad request", 400)
+    st = _totp_state()
+    pending = st.get("pending") or ""
+    if not pending:
+        return jerr("请先生成密钥", 400)
+    if not totp_verify(pending, code):
+        return jerr("动态码不正确", 401)
+    # 已启用时这是密钥轮换：confirm 通过即切换（需持有新密钥的认证器）
+    st.pop("pending", None)
+    st["enabled"], st["secret"] = True, pending
+    _write_totp_state(st)
+    return JSONResponse({"ok": True})
+
+
+async def api_2fa_disable(request: Request) -> Response:
+    sess = await require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    secret, source = active_totp()
+    if not secret:
+        return jerr("2FA 未启用", 400)
+    if source == "env":
+        return jerr("2FA 由 console.env 预置（ADMIN_TOTP_SECRET），如需停用请清空该变量并重启 console", 409)
+    try:
+        body = await request.json()
+    except ValueError:
+        return jerr("bad request", 400)
+    if not (_str_eq(body.get("password", ""), ADMIN_PASSWORD) and totp_verify(secret, body.get("code") or "")):
+        return jerr("密码或动态码错误", 401)
+    _write_totp_state({})
+    return JSONResponse({"ok": True})
 
 
 async def api_login(request: Request) -> Response:
@@ -343,7 +444,7 @@ def logs_since(logs: list[dict], days: float) -> list[dict]:
 def wg_handshakes() -> dict[str, int]:
     """pubkey -> 距上次握手秒数（0=从未）。dump: interface 行 + peer 行。"""
     try:
-        r = subprocess.run(["wg", "show", WG_IFACE, "dump"], capture_output=True, text=True, timeout=5)
+        r = subprocess.run(WG_EXEC + ["show", WG_IFACE, "dump"], capture_output=True, text=True, timeout=10)
         if r.returncode != 0:
             return {}
     except (OSError, subprocess.TimeoutExpired):
@@ -1028,7 +1129,7 @@ def write_mcp_conf(entries: list[dict]) -> None:
 
 
 def restart_mcp_hub() -> str:
-    r = subprocess.run(["systemctl", "restart", "mcp-hub"], capture_output=True, text=True, timeout=60)
+    r = subprocess.run(MCP_RESTART_CMD, capture_output=True, text=True, timeout=60)
     return "ok" if r.returncode == 0 else r.stderr.strip()[:200]
 
 
@@ -1172,6 +1273,10 @@ api_routes = [
     Route("/console/api/login", api_login, methods=["POST"]),
     Route("/console/api/admin-login/state", api_admin_login_state, methods=["GET"]),
     Route("/console/api/admin-login", api_admin_login, methods=["POST"]),
+    Route("/console/api/2fa", api_2fa, methods=["GET"]),
+    Route("/console/api/2fa/setup", api_2fa_setup, methods=["POST"]),
+    Route("/console/api/2fa/confirm", api_2fa_confirm, methods=["POST"]),
+    Route("/console/api/2fa/disable", api_2fa_disable, methods=["POST"]),
     Route("/console/api/logout", api_logout, methods=["POST"]),
     Route("/console/api/me", api_me, methods=["GET"]),
     Route("/console/api/overview", api_overview, methods=["GET"]),

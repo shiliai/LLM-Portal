@@ -48,7 +48,9 @@
     { key: 'my-usage', title: '我的用量', file: 'my-usage.html', admin: false,
       icon: icon('<circle cx="8" cy="5.4" r="2.6"/><path d="M2.6 14c0-2.9 2.4-4.6 5.4-4.6s5.4 1.7 5.4 4.6"/>') },
     { key: 'mcp', title: 'MCP 管理', file: 'mcp.html', admin: true,
-      icon: icon('<rect x="1.8" y="3" width="12.4" height="10" rx="1.4"/><path d="M4.6 6.4l2 1.8-2 1.8M8.6 10h2.8"/>') }
+      icon: icon('<rect x="1.8" y="3" width="12.4" height="10" rx="1.4"/><path d="M4.6 6.4l2 1.8-2 1.8M8.6 10h2.8"/>') },
+    { key: 'security', title: '安全设置', file: '2fa.html', admin: true,
+      icon: icon('<path d="M8 1.8l4.6 1.8v3.6c0 3-1.9 5.6-4.6 6.8-2.7-1.2-4.6-3.8-4.6-6.8V3.6z"/><path d="M5.9 8l1.5 1.5 2.7-2.7"/>') }
   ];
 
   /* ---------- 会话守卫 + 壳注入 ---------- */
@@ -79,7 +81,7 @@
     });
     var title = current ? current.title : '远程模型网关';
     var who = sess.role === 'admin' ? '管理员' : (sess.alias || '用户');
-    var sub = sess.role === 'admin' ? 'master key' : ('Key …' + (sess.key_last4 || ''));
+    var sub = sess.role === 'admin' ? '邮箱登录' : ('Key …' + (sess.key_last4 || ''));
 
     var layout = document.createElement('div');
     layout.className = 'pf-layout';
