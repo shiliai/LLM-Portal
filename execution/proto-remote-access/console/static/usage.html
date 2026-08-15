@@ -105,7 +105,7 @@
         <thead id="rl-head"></thead>
         <tbody id="rl-rows"></tbody>
       </table>
-      <div class="pf-desc" style="padding:8px 2px">鉴权失败不产生日志行；明细最多保留最近 500 条；172.18.x 为网关（nginx）地址——真实客户端 IP 需上游支持 X-Forwarded-For（已知限制）。</div>
+      <div class="pf-desc" style="padding:8px 2px">鉴权失败不产生日志行；明细最多保留最近 500 条；2026-08-15 前的行显示网关地址（172.18.x），之后记录真实客户端 IP（X-Forwarded-For）。</div>
     </div>
   </div>
 

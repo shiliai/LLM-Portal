@@ -35,7 +35,7 @@
     - **趋势 Tab**：6 指标卡（请求/输入/缓存读取/输出/平均TFT/平均总延迟）+ 按小时「请求量(Token 双面积)」混合图 + 平均 TFT 柱图（>1.5s 橙 / >3s 红）+ 模型分布与 Key 占比条形 + 近期错误卡；`/usage` 扩展返回 `hourly`（今天 24 小时 / 多日按日期铺满）与 `avg_tft`。
     - **明细 Tab**：`GET /console/api/usage/logs` 逐请求（上限 500 行）——**TFT = completionStartTime − startTime（生产 100% 可算）**、Token 与延迟为聚合双行列（↓输入 ↑输出 / ▣缓存读；首T + 总 + 双段迷你条，阈值着色）、Key 只显示别名、**全列可排序**、筛选 + 搜索 + 分页 + 详情抽屉（request_id/session_id/耗时分解/IP）；**↻ 刷新按钮只刷数据不刷页面**。
     - **时区修正**：日志时间统一转 Asia/Shanghai(+08) 展示（此前直接切 UTC 字符串，差 8 小时）。
-    - **已知限制**：`requester_ip_address` 记的是 nginx 容器地址（172.18.x，页面标注「经 nginx」）——LiteLLM 1.96.2 不读 X-Forwarded-For，真实客户端 IP 需上游支持。
+    - **客户端 IP（2026-08-15 二次调查后解决）**：LiteLLM 实为支持 XFF——`general_settings.use_x_forwarded_for: true`（config.yaml 已加）即记录 nginx 传来的 `X-Forwarded-For`（consoled 取首跳）；此前记的是 nginx 容器地址（172.18.x，历史行页面标注「经 nginx」）。仅当上游为可信反代时开启：litellm 端口只在 docker 网内可达，安全。已实测：工作站经公网调用，日志记录真实出口 IP。
    **本地集成实测（2026-08-15）**：4 镜像本地构建 + 4 容器栈（wireguard 用隔离 netns 冒烟）——admin 容器内登录、console→docker.sock→wg sidecar 的 `wg show`/`wg set peer` 链路、`/mcp/register` 触发 `docker restart private-llm-mcp-hub`（容器 StartedAt 实变）、external-mcp.json 跨容器共享写读、LiteLLM 缺席容错，全部通过。
 
 ## 2. VPS 部署（一次性）
