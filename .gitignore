@@ -21,3 +21,7 @@ build/
 # 本地工作产物（截图 / agent 会话目录，不入库）
 .zcode/
 *.png
+
+# E2E 测试数据（含密钥哈希，不入库；见 console/e2e/README.md）
+keylist.json
+r*.png
