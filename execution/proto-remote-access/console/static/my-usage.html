@@ -39,7 +39,7 @@
         <div class="pf-stat-sub" id="my-req-sub">&nbsp;</div>
       </div>
       <div class="pf-stat">
-        <div class="pf-stat-label">今日 Token</div>
+        <div class="pf-stat-label">今日 Token（总计）</div>
         <div class="pf-stat-value" id="my-token">—</div>
         <div class="pf-stat-sub" id="my-token-sub">&nbsp;</div>
       </div>
@@ -53,7 +53,7 @@
     </div>
     <table class="pf-table">
       <thead>
-        <tr><th>模型</th><th class="num">请求数</th><th class="num">输入 Token</th><th class="num">输出 Token</th></tr>
+        <tr><th>模型</th><th class="num">请求数</th><th class="num">输入 Token</th><th class="num">缓存读取</th><th class="num">输出 Token</th><th class="num">总 Token</th></tr>
       </thead>
       <tbody id="my-api-rows"></tbody>
       <tfoot>
@@ -61,7 +61,9 @@
           <td style="font-weight:600">合计</td>
           <td class="num" style="font-weight:600" id="my-sum-req">0</td>
           <td class="num" style="font-weight:600" id="my-sum-in">0</td>
+          <td class="num" style="font-weight:600" id="my-sum-cache">0</td>
           <td class="num" style="font-weight:600" id="my-sum-out">0</td>
+          <td class="num" style="font-weight:600" id="my-sum-total">0</td>
         </tr>
       </tfoot>
     </table>
@@ -103,23 +105,29 @@
         d.models && d.models.length ? d.models.join('、') : '全部对外模型（未设置白名单）';
 
       var t = d.today || {};
+      var total = (t.prompt_tokens || 0) + (t.completion_tokens || 0) + (t.cached_tokens || 0);
       document.getElementById('my-req').textContent = fmtN(t.requests);
       document.getElementById('my-req-sub').textContent = '按调用日志聚合';
-      document.getElementById('my-token').textContent = fmtM((t.prompt_tokens || 0) + (t.completion_tokens || 0));
-      document.getElementById('my-token-sub').textContent = '输入 ' + fmtM(t.prompt_tokens) + ' · 输出 ' + fmtM(t.completion_tokens);
+      document.getElementById('my-token').textContent = fmtM(total);
+      document.getElementById('my-token-sub').textContent = '输入 ' + fmtM(t.prompt_tokens) + ' · 缓存读取 ' + fmtM(t.cached_tokens) + ' · 输出 ' + fmtM(t.completion_tokens);
 
       var models = d.today_models || [];
       document.getElementById('my-api-rows').innerHTML = models.map(function (m) {
+        var mtotal = (m.prompt_tokens || 0) + (m.completion_tokens || 0) + (m.cached_tokens || 0);
         return '<tr>' +
           '<td class="mono">' + esc(m.model) + '</td>' +
           '<td class="num">' + fmtN(m.requests) + '</td>' +
           '<td class="num">' + fmtN(m.prompt_tokens) + '</td>' +
+          '<td class="num">' + fmtN(m.cached_tokens) + '</td>' +
           '<td class="num">' + fmtN(m.completion_tokens) + '</td>' +
+          '<td class="num" style="font-weight:600">' + fmtN(mtotal) + '</td>' +
         '</tr>';
-      }).join('') || '<tr><td colspan="4" class="pf-desc" style="padding:10px">今日暂无 API 调用记录</td></tr>';
+      }).join('') || '<tr><td colspan="6" class="pf-desc" style="padding:10px">今日暂无 API 调用记录</td></tr>';
       document.getElementById('my-sum-req').textContent = fmtN(t.requests);
       document.getElementById('my-sum-in').textContent = fmtN(t.prompt_tokens);
+      document.getElementById('my-sum-cache').textContent = fmtN(t.cached_tokens);
       document.getElementById('my-sum-out').textContent = fmtN(t.completion_tokens);
+      document.getElementById('my-sum-total').textContent = fmtN(total);
 
       var tools = (d.mcp && d.mcp.tools) || {};
       document.getElementById('my-mcp-rows').innerHTML = Object.keys(tools).map(function (name) {

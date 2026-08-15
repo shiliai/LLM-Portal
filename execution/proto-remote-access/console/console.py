@@ -342,6 +342,13 @@ def key_last4(row: dict) -> str:
     return f"…{ak[-4:]}" if len(ak) >= 8 else (ak or "—")
 
 
+def row_cached(row: dict) -> int:
+    """缓存读取 token（vLLM/OpenAI：prompt_tokens_details.cached_tokens；Anthropic：cache_read_input_tokens）。"""
+    uo = (row.get("metadata") or {}).get("usage_object") or {}
+    ptd = uo.get("prompt_tokens_details") or {}
+    return int(ptd.get("cached_tokens") or uo.get("cache_read_input_tokens") or 0)
+
+
 async def api_overview(request: Request) -> Response:
     sess = await require(request)
     if isinstance(sess, JSONResponse):
@@ -353,6 +360,7 @@ async def api_overview(request: Request) -> Response:
         "requests": len(today),
         "prompt_tokens": sum(int(r.get("prompt_tokens") or 0) for r in today),
         "completion_tokens": sum(int(r.get("completion_tokens") or 0) for r in today),
+        "cached_tokens": sum(row_cached(r) for r in today),
         "errors": sum(1 for r in today if r.get("status") == "failure"),
     }
     site_rows = []
@@ -402,15 +410,29 @@ async def api_usage(request: Request) -> Response:
         days = 1.0
     logs, keys = await fetch_logs(), await key_list_full()
     alias_of = {k.get("token"): k.get("key_alias") or "?" for k in keys}
+
+    def ak_valid(ak: str) -> bool:
+        # 只统计真实调用方：sha256 哈希（用户密钥）或 master 标识；失败鉴权的脏行（nope/invalid/None…）不入表
+        return ak == "litellm_proxy_master_key" or (len(ak) == 64 and all(c in "0123456789abcdef" for c in ak))
+
     rows_map: dict[tuple, dict] = {}
     for r in logs_since(logs, days):
-        ak, model = str(r.get("api_key") or "?"), r.get("model_group") or r.get("model") or "?"
-        agg = rows_map.setdefault((ak, model), {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0})
+        ak, model = str(r.get("api_key") or ""), r.get("model_group") or r.get("model") or "?"
+        if not ak_valid(ak):
+            continue
+        agg = rows_map.setdefault((ak, model), {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0,
+                                                "cached_tokens": 0, "duration_ms_sum": 0})
         agg["requests"] += 1
         agg["prompt_tokens"] += int(r.get("prompt_tokens") or 0)
         agg["completion_tokens"] += int(r.get("completion_tokens") or 0)
-    rows = [{"key": ak[-4:], "alias": alias_of.get(ak, "未知 Key" if len(ak) > 20 else ak or "—"),
-             "model": model, **agg} for (ak, model), agg in sorted(rows_map.items())]
+        agg["cached_tokens"] += row_cached(r)
+        agg["duration_ms_sum"] += int(r.get("request_duration_ms") or 0)
+    rows = [{"key": ak[-4:],
+             "alias": alias_of.get(ak) or ("管理员（master key）" if ak == "litellm_proxy_master_key" else "已删除密钥"),
+             "model": model,
+             "total_tokens": a["prompt_tokens"] + a["completion_tokens"] + a["cached_tokens"],
+             "avg_ms": round(a["duration_ms_sum"] / a["requests"]) if a["requests"] else 0, **a}
+            for (ak, model), a in sorted(rows_map.items())]
     failures = [r for r in logs_since(logs, days) if r.get("status") == "failure"]
     errors = [{"time": (r.get("startTime") or "")[:19], "key": key_last4(r),
                "model": r.get("model_group") or r.get("model") or "?", "detail": err_text(r)}
@@ -419,10 +441,12 @@ async def api_usage(request: Request) -> Response:
     for row in rows:
         agg = per_key.setdefault(row["alias"], 0)
         per_key[row["alias"]] = agg + row["requests"]
-    return JSONResponse({"rows": rows, "errors": errors,
-                         "totals": {"requests": sum(r["requests"] for r in rows),
-                                    "prompt_tokens": sum(r["prompt_tokens"] for r in rows),
-                                    "completion_tokens": sum(r["completion_tokens"] for r in rows)},
+    t = {"requests": sum(r["requests"] for r in rows),
+         "prompt_tokens": sum(r["prompt_tokens"] for r in rows),
+         "completion_tokens": sum(r["completion_tokens"] for r in rows),
+         "cached_tokens": sum(r["cached_tokens"] for r in rows)}
+    t["total_tokens"] = t["prompt_tokens"] + t["completion_tokens"] + t["cached_tokens"]
+    return JSONResponse({"rows": rows, "errors": errors, "totals": t,
                          "per_key": sorted(per_key.items(), key=lambda kv: -kv[1])})
 
 
@@ -851,19 +875,23 @@ async def api_my(request: Request) -> Response:
                 mcp = r.json()
         except (httpx.HTTPError, ValueError):
             pass
-    today_tokens = {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0}
+    today_tokens = {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0}
     today_models: dict[str, dict] = {}
     for row in logs_since(await fetch_logs(), 1):
         if str(row.get("api_key") or "") != match_key:
             continue
+        cached = row_cached(row)
         today_tokens["requests"] += 1
         today_tokens["prompt_tokens"] += int(row.get("prompt_tokens") or 0)
         today_tokens["completion_tokens"] += int(row.get("completion_tokens") or 0)
+        today_tokens["cached_tokens"] += cached
         model = row.get("model_group") or row.get("model") or "?"
-        agg = today_models.setdefault(model, {"model": model, "requests": 0, "prompt_tokens": 0, "completion_tokens": 0})
+        agg = today_models.setdefault(model, {"model": model, "requests": 0, "prompt_tokens": 0,
+                                              "completion_tokens": 0, "cached_tokens": 0})
         agg["requests"] += 1
         agg["prompt_tokens"] += int(row.get("prompt_tokens") or 0)
         agg["completion_tokens"] += int(row.get("completion_tokens") or 0)
+        agg["cached_tokens"] += cached
     return JSONResponse({
         "role": sess["role"],
         "alias": alias,
