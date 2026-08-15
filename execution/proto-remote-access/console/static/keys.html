@@ -231,7 +231,12 @@
     var q = $('f-search').value.trim().toLowerCase();
     var g = $('f-group').value, st = $('f-status').value;
     return allKeys.filter(function (k) {
-      if (q && (k.alias || '').toLowerCase().indexOf(q) < 0 && (k.key_last4 || '').indexOf(q) < 0) return false;
+      if (q) {
+        var hitAlias = (k.alias || '').toLowerCase().indexOf(q) >= 0;
+        var hitTail = (k.key_last4 || '').indexOf(q) >= 0
+          || (q.length >= 4 && q.slice(-4) === (k.key_last4 || ''));
+        if (!hitAlias && !hitTail) return false;
+      }
       if (g && k.group !== g) return false;
       if (st === 'on' && k.blocked) return false;
       if (st === 'off' && !k.blocked) return false;
@@ -373,6 +378,15 @@
     $('btn-use-show').textContent = '显示';
     fillUse();
     window.pfModal('modal-usekey');
+    // 弹窗即聚焦粘贴框：防止把完整密钥粘进页面搜索框（实测踩坑）
+    setTimeout(function () { var i = $('use-key'); i.focus(); i.select(); }, 80);
+  }
+
+  /* 搜索框收到完整密钥（sk-…）→ 按尾 4 位找到对应 Key，直接带入「使用」弹窗 */
+  function openUseByKey(keyStr) {
+    var last4 = keyStr.slice(-4);
+    var hit = allKeys.filter(function (k) { return k.key_last4 === last4; })[0];
+    openUse(hit ? hit.alias : '密钥 …' + last4, keyStr);
   }
 
   /* ---------- 初始化 ---------- */
@@ -390,9 +404,19 @@
       render();
     });
 
-    ['f-search', 'f-group', 'f-status'].forEach(function (id) {
-      $(id).addEventListener('input', render);
+    $('f-search').addEventListener('input', function () {
+      var v = this.value.trim();
+      if (/^sk-[A-Za-z0-9_-]{16,}$/.test(v)) {
+        this.value = '';            // 完整密钥不是搜索词：转入「使用」弹窗并带入
+        openUseByKey(v);
+        window.pfToast('检测到完整密钥，已代入「使用密钥」弹窗');
+        render();
+        return;
+      }
+      render();
     });
+    $('f-group').addEventListener('input', render);
+    $('f-status').addEventListener('input', render);
     $('btn-refresh').addEventListener('click', function () { load(); window.pfToast('已刷新'); });
     $('use-key').addEventListener('input', fillUse);
     $('btn-use-show').addEventListener('click', function () {
