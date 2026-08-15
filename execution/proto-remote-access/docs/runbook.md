@@ -26,7 +26,8 @@
 7. **r6 自写控制台 + LiteLLM 退居底层 + 全量收敛**（2026-08-14 晚，proto-r6/US-P14）：新增 consoled:8300（`/console/` 9 页，双角色登录：master key=管理员 8 页 / 用户虚拟 Key=仅「我的用量」；会话在内存，consoled 重启即全员下线）；nginx 改 allowlist（见拓扑表，LiteLLM `/ui`、`/login`、全部管理 API、`/onboard/admin/*` 公网 404，应急通道 `ssh -L 4000:127.0.0.1:4000`）；静态别名 claude-opus-5、qwen3.6-35b-a3 一次性迁移为 DB deployment（config.yaml 只剩设置骨架，T3/T11 复验过）；分组改写 = 对站点 deployment 先 `/model/new`（带新 tags）再 `/model/delete`（实测 tags 经 /model/new 写入、/model/info 完整回显；不依赖 `/model/update` 的 tags 透传）。
    **部署坑（重要）**：nginx.conf 被单文件 bind-mount 进 nginx-sub2api 容器，`sed -i` 会换 inode → 容器内仍是旧内容、reload 无效（2026-08-14 实测：改完 reload 行为不变，需重启容器才恢复）；deploy.sh 已改为 `cat >` 原地写（保留 inode），此后 reload 即生效。
    **静态页面门禁（2026-08-15 评审意见「对外尽量少暴露内部信息」）**：consoled 的静态服务带会话门禁——未登录仅放行 `login.html`、`admin-login.html`、`assets/portal.css`、`favicon.ico`，其余页面与 portal.js 一律 302 跳登录（页面源码、内部组件名/策略文案不可匿名抓取，页面存在性亦不可探测）；dashboard 攻击面卡已去内部组件枚举，细节只留 runbook。
-   **管理员独立登录（2026-08-15）**：新增 `/console/admin-login.html`——邮箱（`ADMIN_EMAIL`）+ 密码（`ADMIN_PASSWORD`）+ 可选 TOTP 2FA（`ADMIN_TOTP_SECRET`，RFC 6238/SHA1/6 位/30s，±1 步漂移容错 + 同码防重放），凭据均在 `vps/.env`、由 deploy.sh 注入 `/etc/private-llm/console.env`；登录成功签发与用户登录同一套 `pll_session`（内存会话 + HMAC cookie，8h）。配置 ADMIN_EMAIL 后 master key 不再作为网页登录（未配置则保留旧行为兜底）；管理员登录不依赖 LiteLLM 可达。
+   **管理员独立登录（2026-08-15）**：新增 `/console/admin-login.html`——邮箱（`ADMIN_EMAIL`）+ 密码（`ADMIN_PASSWORD`）+ 可选 TOTP 2FA，凭据在 `vps/.env` 由 compose 注入；登录成功签发与用户登录同一套 `pll_session`（内存会话 + HMAC cookie，8h）。配置 ADMIN_EMAIL 后 master key 不再作为网页登录（未配置则保留旧行为兜底）；管理员登录不依赖 LiteLLM 可达。
+   **2FA 完整实现（2026-08-15，issue #8）**：控制台「安全设置」页（`/console/2fa.html`，仅管理员）——生成密钥 → **二维码扫码**（segno 服务端出 SVG data URI，含 otpauth:// URI；也提供手工密钥）→ 输码确认启用；可输码更换密钥（轮换）；停用需密码 + 当前动态码。已启用密钥存 `/var/lib/private-llm/console/totp.json`（0600，容器 bind mount 持久化），**优先于** env 预置的 `ADMIN_TOTP_SECRET`（env 来源只读，页面提示去 env 清空后重新启用）。TOTP 校验复用既有实现：RFC 6238/SHA1/6 位/30s、±1 步漂移容错、同码防重放。**手机丢失恢复**：SSH 删 `/var/lib/private-llm/console/totp.json`（页面密钥）或清 env `ADMIN_TOTP_SECRET` 后 `docker compose restart console`，回到仅密码登录再重新启用。
    **LiteLLM 1.96.2 管理面实测语义**（consoled 依赖）：`/key/list` 需 `return_full_object=true` 且 `size≤100`（超限 422）；禁用字段是 `blocked`（`/key/block`/`/key/unblock`，payload `{"key":"<sha256哈希>"}`，与 `/key/delete` 的 `{"keys":[…]}` 形状不同）；blocked Key 在鉴权层直接 401（API 与 mcp-hub 的 `/key/info` 验真同步生效，无需额外代码）；`/key/info` 自查不返回 blocked 字段；`/spend/logs` 的 `api_key`/`start_date` 过滤参数实测不可靠 → consoled 全量拉取本地聚合；错误行 = `status=="failure"`（鉴权失败 401 不入日志，控制台错误表已注明口径）。
 8. **全量容器化（2026-08-15，issue #7）**：consoled/onboardd/mcp-hub 从宿主机 systemd 迁入 compose——连同 litellm/postgres/wireguard sidecar，**一个 `vps/docker-compose.yml` 管 6 服务**，`docker compose up -d --build` 即部署/升级；deploy.sh 去 root 化（docker 组用户可跑，日常零 sudo）。nginx 上游从宿主机网关 IP 改共享网络容器名（`private-llm-console:8300` 等）。wireguard sidecar = host 网络 + NET_ADMIN，wg0 仍留宿主机 netns（路由模型不变，litellm 容器内 BBR 由 compose `sysctls` 设置）；consoled/onboardd 挂 docker.sock 执行 `docker exec private-llm-wireguard wg …` 与 `docker restart private-llm-mcp-hub`——**挂 sock 的容器 ≈ 宿主机 root**，仅给这两个管理面容器（有意取舍）；命令前缀 env 可覆写（`WG_EXEC`/`MCP_RESTART_CMD`，默认保留宿主机直跑语义）。127.0.0.1:4000/8100/8200/8300 端口发布仅供本机 CLI/冒烟/调试。状态全落 `/var/lib/private-llm`（bind mount，容器重建不丢，wg 密钥保留）。一次性迁移：deploy.sh 自动停用旧 systemd 单元（该步需 sudo；wg-quick 迁移瞬间隧道短暂中断）、旧 ufw 8100/8200/8300 规则作废（可手动清理）。宿主机一次性前置（sudo）：`ufw allow 51820/udp`、BBR sysctl。
    **本地集成实测（2026-08-15）**：4 镜像本地构建 + 4 容器栈（wireguard 用隔离 netns 冒烟）——admin 容器内登录、console→docker.sock→wg sidecar 的 `wg show`/`wg set peer` 链路、`/mcp/register` 触发 `docker restart private-llm-mcp-hub`（容器 StartedAt 实变）、external-mcp.json 跨容器共享写读、LiteLLM 缺席容错，全部通过。
@@ -114,9 +115,8 @@ install.sh 在站点侧：装 wireguard-tools → `wg genkey`（私钥不出机�
 
 ```bash
 # 日常管理（r6 起唯一入口）：https://<域名>/console/
-#   管理员：/console/admin-login.html（邮箱 + 密码 + 2FA 动态码，凭据在 vps/.env 的
-#           ADMIN_EMAIL/ADMIN_PASSWORD/ADMIN_TOTP_SECRET，deploy.sh 写入 console.env；
-#           配置后 master key 不再作为网页登录方式；轮换 = 改 .env 重跑 deploy.sh）
+#   管理员：/console/admin-login.html（邮箱 + 密码 + 2FA 动态码；2FA 在「安全设置」页扫码启用/轮换/停用，
+#           页面密钥优先于 env 的 ADMIN_TOTP_SECRET；手机丢失恢复见 §1.8）
 #   用户：/console/login.html（分配的访问密钥）
 #   站点/分组/模型别名/用户 Key/用量/外部 MCP 全部在控制台完成；LiteLLM 引擎级配置走下面 SSH
 # 日志（#7 容器化：compose 一把抓）
