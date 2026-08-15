@@ -1,0 +1,5 @@
+{
+  "reason": "quarter-end handling adjustment",
+  "amount": 3.35,
+  "expected_prior_total": 176.65
+}

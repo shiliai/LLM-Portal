@@ -1,0 +1,12 @@
+{
+  "discounts": {
+    "ALPHA": 0.10,
+    "BETA": 0.15,
+    "NONE": 0.0
+  },
+  "shipping": {
+    "north": 6.00,
+    "south": 8.00,
+    "west": 11.00
+  }
+}
