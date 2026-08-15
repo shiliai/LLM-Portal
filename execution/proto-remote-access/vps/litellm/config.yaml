@@ -19,6 +19,9 @@ general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
   database_url: os.environ/DATABASE_URL
   store_model_in_db: true
+  # 记录真实客户端 IP 到 spend logs 的 requester_ip_address（X-Forwarded-For，nginx 已传）。
+  # 仅当上游是可信反代时开启（litellm 端口只在 docker 网络内可达，公网不可直连，安全）
+  use_x_forwarded_for: true
 
 litellm_settings:
   drop_params: true               # 上游不认识的参数直接丢弃，提高客户端兼容性

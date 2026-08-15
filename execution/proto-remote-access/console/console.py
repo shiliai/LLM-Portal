@@ -804,7 +804,8 @@ async def api_usage_logs(request: Request) -> Response:
             "status": "failure" if failed else "ok",
             "request_id": r.get("request_id") or "",
             "session_id": r.get("session_id") or "",
-            "ip": str(r.get("requester_ip_address") or ""),
+            # use_x_forwarded_for 时可能为 "client, proxy1, …" 链，取首跳
+            "ip": str(r.get("requester_ip_address") or "").split(",")[0].strip(),
             "error": err_text(r) if failed else "",
         })
     out.sort(key=lambda r: r["ts"], reverse=True)
