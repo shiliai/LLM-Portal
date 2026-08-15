@@ -54,6 +54,23 @@ def request_json(url: str, token: str, body: dict[str, Any], *, anthropic: bool 
         raise ExperimentError(f"HTTP {exc.code}: {detail}") from exc
 
 
+def request_json_status(url: str, token: str, body: dict[str, Any], *, anthropic: bool = False) -> tuple[int, dict[str, Any]]:
+    """POST 并返回 (HTTP 状态, 解析后的 JSON)——用于断言稳定错误响应（如兼容层 400），非 2xx 不抛异常。"""
+    headers = {"content-type": "application/json", "authorization": f"Bearer {token}"}
+    if anthropic:
+        headers.update({"x-api-key": token, "anthropic-version": "2023-06-01"})
+    request = urllib.request.Request(url, json.dumps(body).encode(), headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=180) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        raw = exc.read() or b"{}"
+        try:
+            return exc.code, json.loads(raw)
+        except ValueError:
+            return exc.code, {"raw": raw.decode(errors="replace")[:500]}
+
+
 def request_sse(url: str, token: str, body: dict[str, Any], *, anthropic: bool = False) -> list[dict[str, Any]]:
     headers = {"content-type": "application/json", "authorization": f"Bearer {token}"}
     if anthropic:
@@ -106,6 +123,9 @@ def protocol_tests(base: str, token: str) -> list[dict[str, Any]]:
             },
         },
     }
+    tool2 = {"type": "function", "function": {"name": "noop_ping", "description": "Reply with the literal string PONG", "parameters": {"type": "object", "properties": {}}}}
+    a_tool = {"name": "lookup_multiplier", "description": "Return the integer multiplier for a code", "input_schema": tool["function"]["parameters"]}
+    a_tool2 = {"name": "noop_ping", "description": "Reply with the literal string PONG", "input_schema": {"type": "object", "properties": {}}}
 
     def openai_text() -> dict[str, Any]:
         value = request_json(chat_url, token, {"model": MODEL, "messages": [{"role": "user", "content": "Return exactly PORTAL_OK"}], "temperature": 0, "max_tokens": 64})
@@ -183,7 +203,6 @@ def protocol_tests(base: str, token: str) -> list[dict[str, Any]]:
         return {"events": len(events)}
 
     def anthropic_tool_stream(forced: bool = False) -> dict[str, Any]:
-        a_tool = {"name": "lookup_multiplier", "description": "Return the integer multiplier for a code", "input_schema": tool["function"]["parameters"]}
         body = {
             "model": MODEL,
             "max_tokens": 256,
@@ -204,7 +223,6 @@ def protocol_tests(base: str, token: str) -> list[dict[str, Any]]:
         return {"events": len(events), "stop_reasons": stop_reasons, "tool_use_id_present": True}
 
     def anthropic_tool_loop(forced: bool = False) -> dict[str, Any]:
-        a_tool = {"name": "lookup_multiplier", "description": "Return the integer multiplier for a code", "input_schema": tool["function"]["parameters"]}
         first_messages = [{"role": "user", "content": "Call lookup_multiplier with code OMEGA. Do not guess its result."}]
         first_body = {"model": MODEL, "max_tokens": 256, "messages": first_messages, "tools": [a_tool]}
         if forced:
@@ -232,15 +250,37 @@ def protocol_tests(base: str, token: str) -> list[dict[str, Any]]:
             behavior = "dropped"
         else:
             behavior = "indeterminate"
+        if behavior != "preserved":
+            # US-13/us13-v1 兼容层上线后标记必须被保留；dropped/indeterminate 均为不达标
+            raise ExperimentError(f"inline system marker not preserved (behavior={behavior}): {text[:200]}")
         return {"http_compatible": True, "inline_system_behavior": behavior, "answer": text[:120]}
 
     def count_tokens() -> dict[str, Any]:
-        body = {"model": MODEL, "system": "count baseline", "messages": [{"role": "user", "content": "alpha"}, {"role": "system", "content": "BANANA99 inline marker"}, {"role": "user", "content": "omega"}]}
-        value = request_json(messages_url + "/count_tokens", token, body, anthropic=True)
-        count = value.get("input_tokens")
-        if not isinstance(count, int) or count <= 0:
-            raise ExperimentError(f"invalid count response: {value}")
-        return {"input_tokens": count, "note": "generation normalization equality requires gateway-side payload capture"}
+        messages = [{"role": "user", "content": "alpha"}, {"role": "system", "content": "BANANA99 inline marker"}, {"role": "user", "content": "omega"}]
+        body = {"model": MODEL, "system": "count baseline", "messages": messages}
+        with_marker = request_json(messages_url + "/count_tokens", token, body, anthropic=True)
+        without_marker = request_json(messages_url + "/count_tokens", token, {**body, "messages": [m for m in messages if m.get("role") != "system"]}, anthropic=True)
+        count, baseline = with_marker.get("input_tokens"), without_marker.get("input_tokens")
+        if not isinstance(count, int) or count <= 0 or not isinstance(baseline, int) or baseline <= 0:
+            raise ExperimentError(f"invalid count responses: {with_marker} / {without_marker}")
+        if count <= baseline:
+            # 计数须与生成走同一内联 system 规范化（US-13）：含标记的请求必须数得出来
+            raise ExperimentError(f"count_tokens appears to drop inline system content: with={count} without={baseline}")
+        return {"input_tokens_with_marker": count, "input_tokens_without_marker": baseline}
+
+    def openai_tool_forced_multi() -> dict[str, Any]:
+        status, value = request_json_status(chat_url, token, {"model": MODEL, "messages": [{"role": "user", "content": "Call lookup_multiplier with code OMEGA."}], "tools": [tool, tool2], "tool_choice": "required", "temperature": 0, "max_tokens": 64})
+        error = value.get("error") or {}
+        if status != 400 or error.get("code") != "forced_tool_choice_unsupported" or error.get("type") != "invalid_request_error":
+            raise ExperimentError(f"expected stable 400 forced_tool_choice_unsupported, got HTTP {status}: {str(value)[:200]}")
+        return {"status": status, "code": error.get("code")}
+
+    def anthropic_tool_forced_multi() -> dict[str, Any]:
+        status, value = request_json_status(messages_url, token, {"model": MODEL, "max_tokens": 64, "messages": [{"role": "user", "content": "Call lookup_multiplier with code OMEGA."}], "tools": [a_tool, a_tool2], "tool_choice": {"type": "any"}}, anthropic=True)
+        error = value.get("error") or {}
+        if status != 400 or value.get("type") != "error" or error.get("type") != "invalid_request_error" or "multiple tools" not in str(error.get("message", "")):
+            raise ExperimentError(f"expected stable Anthropic-format 400 for multi-tool any, got HTTP {status}: {str(value)[:200]}")
+        return {"status": status, "error_type": error.get("type")}
 
     return [
         run_case("openai_text", openai_text),
@@ -257,6 +297,8 @@ def protocol_tests(base: str, token: str) -> list[dict[str, Any]]:
         run_case("anthropic_tool_loop_forced", lambda: anthropic_tool_loop(True)),
         run_case("anthropic_inline_system", inline_system),
         run_case("anthropic_count_tokens", count_tokens),
+        run_case("openai_tool_forced_multi", openai_tool_forced_multi),
+        run_case("anthropic_tool_forced_multi", anthropic_tool_forced_multi),
     ]
 
 
@@ -470,15 +512,9 @@ def build_markdown(report: dict[str, Any]) -> str:
     for name, item in report["agents"].items():
         detail = item.get("error") or json.dumps(item.get("detail", {}), ensure_ascii=False)
         lines.append(f"| {name} | {item['status']} | {item['seconds']} | {detail.replace('|', '/')[:800]} |")
-    warnings = []
-    inline = next((item for item in report["protocol"] if item["name"] == "anthropic_inline_system"), None)
-    if inline and inline.get("detail", {}).get("inline_system_behavior") == "dropped":
-        warnings.append("LiteLLM accepted the inline-system request but the marker was dropped, matching issue #2's known semantic gap.")
     lines += ["", "## Interpretation", ""]
-    if warnings:
-        lines.extend(f"- {warning}" for warning in warnings)
     failures = [item["name"] for item in report["protocol"] if item["status"] != "pass"] + [name for name, item in report["agents"].items() if item["status"] != "pass"]
-    lines.append(f"- Overall: {'FAIL (' + ', '.join(failures) + ')' if failures else 'PASS for the exercised matrix, with any semantic warning above.'}")
+    lines.append(f"- Overall: {'FAIL (' + ', '.join(failures) + ')' if failures else 'PASS for the exercised matrix.'}")
     return "\n".join(lines) + "\n"
 
 

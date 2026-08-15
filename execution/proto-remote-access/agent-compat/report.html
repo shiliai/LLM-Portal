@@ -243,7 +243,7 @@
       <div class="header-inner">
         <p class="eyebrow">LLM Portal / LiteLLM endpoint validation</p>
         <h1>Agent 兼容性实测报告</h1>
-        <p class="subtitle">模型 <span class="model">deepseek-v4-flash-0731</span> · 2026-08-15 · 凭据仅从环境变量加载</p>
+        <p class="subtitle">模型 <span class="model">deepseek-v4-flash-0731</span> · 2026-08-15 · compat 协议兼容层上线后复测 · 凭据仅从环境变量加载</p>
       </div>
     </header>
 
@@ -252,17 +252,17 @@
         <div class="metric good">
           <strong>4 / 4</strong>
           <div class="metric-label">真实 Agent 工作流通过</div>
-          <div class="metric-note">读写文件、执行校验、工具结果回传及续轮</div>
+          <div class="metric-note">读写文件、执行校验、工具结果回传及续轮（全部经 compat 层）</div>
         </div>
-        <div class="metric bad">
-          <strong>0 / 4</strong>
+        <div class="metric good">
+          <strong>4 / 4</strong>
           <div class="metric-label">强制工具选择通过</div>
-          <div class="metric-note">OpenAI required 与 Anthropic any 均不兼容</div>
+          <div class="metric-note">compat 层改写单工具 forced；多工具返回稳定 400</div>
         </div>
-        <div class="metric warn">
-          <strong>Dropped</strong>
-          <div class="metric-label">内联 system 消息</div>
-          <div class="metric-note">请求返回 200，但消息语义被静默丢弃</div>
+        <div class="metric good">
+          <strong>16 / 16</strong>
+          <div class="metric-label">协议矩阵全部通过</div>
+          <div class="metric-note">内联 system 已保留（US-13 us13-v1）</div>
         </div>
       </div>
 
@@ -273,11 +273,11 @@
             <p class="section-note">相同夹具与精确产物校验；条形使用线性时间轴</p>
           </div>
         </div>
-        <div class="duration-chart" role="img" aria-label="Hermes Agent 798.4 秒，DeepSeek Harness 87.7 秒，Claude Code 49.3 秒，pi 47.3 秒">
-          <div class="duration-row"><span class="agent-name">Claude Code</span><div class="track"><div class="bar" style="width:6.18%"></div></div><span class="duration">49.3s</span></div>
-          <div class="duration-row"><span class="agent-name">pi</span><div class="track"><div class="bar" style="width:5.92%"></div></div><span class="duration">47.3s</span></div>
-          <div class="duration-row slow"><span class="agent-name">Hermes Agent</span><div class="track"><div class="bar" style="width:100%"></div></div><span class="duration">798.4s</span></div>
-          <div class="duration-row"><span class="agent-name">DeepSeek Harness</span><div class="track"><div class="bar" style="width:10.98%"></div></div><span class="duration">87.7s</span></div>
+        <div class="duration-chart" role="img" aria-label="Hermes Agent 108.4 秒，DeepSeek Harness 88.0 秒，Claude Code 59.8 秒，pi 40.5 秒">
+          <div class="duration-row"><span class="agent-name">Claude Code</span><div class="track"><div class="bar" style="width:55.2%"></div></div><span class="duration">59.8s</span></div>
+          <div class="duration-row"><span class="agent-name">pi</span><div class="track"><div class="bar" style="width:37.4%"></div></div><span class="duration">40.5s</span></div>
+          <div class="duration-row"><span class="agent-name">Hermes Agent</span><div class="track"><div class="bar" style="width:100%"></div></div><span class="duration">108.4s</span></div>
+          <div class="duration-row"><span class="agent-name">DeepSeek Harness</span><div class="track"><div class="bar" style="width:81.2%"></div></div><span class="duration">88.0s</span></div>
         </div>
       </section>
 
@@ -292,10 +292,10 @@
           <table>
             <thead><tr><th>Agent</th><th>版本 / 提交</th><th>会话模式</th><th>工具证据</th><th class="number">耗时</th><th>结果</th></tr></thead>
             <tbody>
-              <tr><td><strong>Claude Code</strong></td><td><code>2.1.220</code></td><td>同一 session，两次用户回合</td><td>10 个可观察事件</td><td class="number">49.3s</td><td><span class="status pass">PASS</span></td></tr>
-              <tr><td><strong>pi</strong></td><td><code>0.84.1</code></td><td>同一 session，两次用户回合</td><td>44 个可观察事件</td><td class="number">47.3s</td><td><span class="status pass">PASS</span></td></tr>
-              <tr><td><strong>Hermes Agent</strong></td><td><code>0.20.1</code></td><td>resume latest，两次用户回合</td><td>读写、执行与校验均完成</td><td class="number">798.4s</td><td><span class="status pass">PASS</span></td></tr>
-              <tr><td><strong>DeepSeek Harness</strong></td><td><code>0.1.0-rc.5 / 47f94385</code></td><td>单任务内多次模型/工具往返</td><td>11 call + 11 result</td><td class="number">87.7s</td><td><span class="status pass">PASS</span></td></tr>
+              <tr><td><strong>Claude Code</strong></td><td><code>2.1.220</code></td><td>同一 session，两次用户回合</td><td>9 个可观察事件</td><td class="number">59.8s</td><td><span class="status pass">PASS</span></td></tr>
+              <tr><td><strong>pi</strong></td><td><code>0.84.1</code></td><td>同一 session，两次用户回合</td><td>28 个可观察事件</td><td class="number">40.5s</td><td><span class="status pass">PASS</span></td></tr>
+              <tr><td><strong>Hermes Agent</strong></td><td><code>0.20.1</code></td><td>resume latest，两次用户回合</td><td>读写、执行与校验均完成</td><td class="number">108.4s</td><td><span class="status pass">PASS</span></td></tr>
+              <tr><td><strong>DeepSeek Harness</strong></td><td><code>0.1.0-rc.5 / 47f94385</code></td><td>单任务内多次模型/工具往返</td><td>11 call + 11 result</td><td class="number">88.0s</td><td><span class="status pass">PASS</span></td></tr>
             </tbody>
           </table>
         </div>
@@ -305,17 +305,17 @@
         <div class="section-head">
           <div>
             <h2 id="protocol-title">协议兼容矩阵</h2>
-            <p class="section-note">最新复测：10 项通过，4 项失败</p>
+            <p class="section-note">最新复测：16 项通过，0 项失败（compat 协议兼容层上线后）</p>
           </div>
           <div class="filters" aria-label="筛选协议结果">
-            <button type="button" data-filter="all" aria-pressed="true">全部 14</button>
-            <button type="button" data-filter="pass" aria-pressed="false">通过 10</button>
-            <button type="button" data-filter="fail" aria-pressed="false">失败 4</button>
+            <button type="button" data-filter="all" aria-pressed="true">全部 16</button>
+            <button type="button" data-filter="pass" aria-pressed="false">通过 16</button>
+            <button type="button" data-filter="fail" aria-pressed="false">失败 0</button>
           </div>
         </div>
         <div class="protocol-summary">
           <div class="protocol-band"><strong>自动工具选择：4 / 4 PASS</strong><span>OpenAI 与 Anthropic 的流式帧和完整 tool-result 往返均正常</span></div>
-          <div class="protocol-band fail"><strong>强制工具选择：0 / 4 PASS</strong><span>required / any 均未产生有效工具调用帧</span></div>
+          <div class="protocol-band"><strong>强制工具选择：4 / 4 PASS</strong><span>compat 层将单工具 required / any 改写为指定该工具，响应侧修正 finish_reason 与 DSML 参数</span></div>
         </div>
         <div class="table-wrap">
           <table id="protocol-table">
@@ -325,16 +325,18 @@
               <tr data-status="pass"><td>OpenAI</td><td>文本生成</td><td>流式</td><td>13 SSE events + DONE</td><td><span class="status pass">PASS</span></td></tr>
               <tr data-status="pass"><td>OpenAI</td><td>自动工具调用</td><td>流式</td><td><code>tool_calls</code> + call ID</td><td><span class="status pass">PASS</span></td></tr>
               <tr data-status="pass"><td>OpenAI</td><td>自动工具完整往返</td><td>非流式</td><td>tool result 被消费，返回 FINAL=34</td><td><span class="status pass">PASS</span></td></tr>
-              <tr data-status="fail"><td>OpenAI</td><td>强制工具调用</td><td>流式</td><td><code>stop</code>，无 tool fragments</td><td><span class="status fail">FAIL</span></td></tr>
-              <tr data-status="fail"><td>OpenAI</td><td>强制工具调用</td><td>非流式</td><td><code>finish_reason=tool_calls</code>，但字段缺失</td><td><span class="status fail">FAIL</span></td></tr>
+              <tr data-status="pass"><td>OpenAI</td><td>强制工具调用</td><td>流式</td><td>compat 改写为指定函数；fragments + ID，<code>finish_reason=tool_calls</code></td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>OpenAI</td><td>强制工具完整往返</td><td>非流式</td><td>DSML 参数规范化后 tool result 被消费，FINAL=34</td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>OpenAI</td><td>多工具强制选择</td><td>非流式</td><td>稳定 400 <code>forced_tool_choice_unsupported</code></td><td><span class="status pass">PASS</span></td></tr>
               <tr data-status="pass"><td>Anthropic</td><td>文本生成</td><td>非流式</td><td><code>stop_reason=end_turn</code></td><td><span class="status pass">PASS</span></td></tr>
               <tr data-status="pass"><td>Anthropic</td><td>文本生成</td><td>流式</td><td>message_stop 正常</td><td><span class="status pass">PASS</span></td></tr>
               <tr data-status="pass"><td>Anthropic</td><td>自动工具调用</td><td>流式</td><td><code>tool_use</code> + call ID</td><td><span class="status pass">PASS</span></td></tr>
               <tr data-status="pass"><td>Anthropic</td><td>自动工具完整往返</td><td>非流式</td><td>tool result 被消费，返回 FINAL=34</td><td><span class="status pass">PASS</span></td></tr>
-              <tr data-status="fail"><td>Anthropic</td><td>强制工具调用</td><td>流式</td><td><code>end_turn</code>，无 tool_use</td><td><span class="status fail">FAIL</span></td></tr>
-              <tr data-status="fail"><td>Anthropic</td><td>强制工具调用</td><td>非流式</td><td><code>end_turn</code>，content 为空</td><td><span class="status fail">FAIL</span></td></tr>
-              <tr data-status="pass"><td>Anthropic</td><td>内联 system</td><td>非流式</td><td>HTTP 200，但语义丢弃</td><td><span class="status warn">WARN</span></td></tr>
-              <tr data-status="pass"><td>Anthropic</td><td>count_tokens</td><td>非流式</td><td><code>input_tokens=23</code></td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>Anthropic</td><td>强制工具调用</td><td>流式</td><td>compat 改写为指定工具；<code>stop_reason=tool_use</code> + ID</td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>Anthropic</td><td>强制工具完整往返</td><td>非流式</td><td>tool_use → tool_result 往返，FINAL=34</td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>Anthropic</td><td>多工具强制选择</td><td>非流式</td><td>稳定 Anthropic 格式 400（不代选、不畸形 200）</td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>Anthropic</td><td>内联 system</td><td>非流式</td><td>US-13 合并进最近前一条 user，标记 <strong>preserved</strong></td><td><span class="status pass">PASS</span></td></tr>
+              <tr data-status="pass"><td>Anthropic</td><td>count_tokens</td><td>非流式</td><td>与生成同一规范化（含标记 19 &gt; 去标记 13，norm_hash 可对账）</td><td><span class="status pass">PASS</span></td></tr>
             </tbody>
           </table>
         </div>
@@ -342,12 +344,13 @@
 
       <section aria-labelledby="findings-title">
         <div class="section-head"><h2 id="findings-title">上线判断</h2></div>
-        <div class="finding"><div class="finding-title"><span class="status pass">可用于常规 Agent</span></div><p>Claude Code、pi、Hermes Agent 与 DeepSeek Harness 均完成真实文件工具任务和精确产物校验；自动工具选择路径稳定。</p></div>
-        <div class="finding"><div class="finding-title"><span class="status fail">不可宣称全兼容</span></div><p>任何发送 OpenAI <code>tool_choice=required</code> 或 Anthropic <code>tool_choice={type:any}</code> 的客户端都可能无法调用工具。</p></div>
-        <div class="finding"><div class="finding-title"><span class="status warn">保留语义风险</span></div><p>LiteLLM 避免了内联 system 导致的格式错误，但会静默丢弃该消息；需要在网关侧合并到顶层 system，而不是直接删除。</p></div>
+        <div class="finding"><div class="finding-title"><span class="status pass">可用于常规 Agent</span></div><p>Claude Code、pi、Hermes Agent 与 DeepSeek Harness 均完成真实文件工具任务和精确产物校验；四个 Agent 的全部流量经 compat 协议兼容层，无回归。</p></div>
+        <div class="finding"><div class="finding-title"><span class="status pass">强制工具选择已修复</span></div><p>compat 层将单工具 <code>required</code> / <code>any</code> 改写为指定该工具，并修正 OpenAI 流式 <code>finish_reason</code> 与 DSML 参数文本；多工具 forced 返回稳定 400 <code>forced_tool_choice_unsupported</code>，不静默删参、不代客户端选工具。</p></div>
+        <div class="finding"><div class="finding-title"><span class="status pass">内联 system 语义保留</span></div><p>US-13 us13-v1 规范化在网关入口把内联 <code>role=system</code> 合并进最近前一条 user 消息；<code>/v1/messages</code> 与 <code>/v1/messages/count_tokens</code> 共用同一纯函数（norm_hash 可对账）。</p></div>
+        <div class="finding"><div class="finding-title"><span class="status warn">已知边界</span></div><p>多工具 forced 待上游 vLLM 完整支持后移除 400 限制并回归本矩阵；SSE 首事件时间实测无回归（openai 715→751ms / anthropic 655→646ms，晚高峰噪声内）。</p></div>
       </section>
 
-      <footer>数据来源：agent-compat results · 最新协议复测 20260815T214854 · API token 未记录</footer>
+      <footer>数据来源：agent-compat results · 最新全量复测 20260815T231850（16 协议项 + 4 Agent 单轮全绿）· API token 未记录</footer>
     </main>
   </div>
 
