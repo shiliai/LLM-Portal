@@ -1,7 +1,10 @@
 """consoled：网关管理控制台后端（设计 §3.6，US-P9 修订/US-P14）。
 
 静态页面挂 /console/（高保真原型接线落地），API 挂 /console/api/*：
-  POST /console/api/login {key}        登录：master→管理员；有效虚拟 Key→用户（仅 /my）
+  POST /console/api/login {key}        用户登录：有效虚拟 Key→用户（仅 /my）
+  POST /console/api/admin-login        管理员登录 {email, password, totp}（console.env
+                                       的 ADMIN_EMAIL/ADMIN_PASSWORD[/_TOTP_SECRET]）；
+                                       配置后 master key 不再作为网页登录方式
   POST /console/api/logout             注销
   GET  /console/api/me                 会话信息（角色 + 导航裁剪）
   GET  /console/api/overview           仪表盘：今日聚合 + 站点隧道 + deployment 健康 + 近期错误
@@ -34,6 +37,7 @@
 /spend/logs 过滤参数不可靠故全量拉取本地聚合。
 """
 
+import base64
 import hashlib
 import hmac
 import json
@@ -41,7 +45,9 @@ import os
 import re
 import secrets
 import sqlite3
+import struct
 import subprocess
+import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -58,6 +64,11 @@ ONBOARD_URL = os.environ.get("ONBOARDD_URL", "http://127.0.0.1:8100")
 MCP_HUB_URL = os.environ.get("MCP_HUB_URL", "http://127.0.0.1:8200")
 LITELLM_MASTER_KEY = os.environ["LITELLM_MASTER_KEY"]
 ONBOARD_ADMIN_TOKEN = os.environ["ONBOARD_ADMIN_TOKEN"]
+# 管理员网页登录凭据（console.env，deploy.sh 从 vps/.env 生成）：邮箱 + 密码 + 可选 TOTP。
+# 未配置 ADMIN_EMAIL 时回退旧行为（master key 可网页登录），兼容未迁移部署
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").strip().lower()
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+ADMIN_TOTP_SECRET = os.environ.get("ADMIN_TOTP_SECRET", "").strip()
 MCP_VISION_MODEL = os.environ.get("MCP_VISION_MODEL", "qwen3.6-35b-fp8")
 EXTERNAL_MCP_CONF = Path(os.environ.get("EXTERNAL_MCP_CONF", "/etc/private-llm/external-mcp.json"))
 MCP_USAGE_DB = Path(os.environ.get("MCP_USAGE_DB", "/var/lib/private-llm/mcp-hub/usage.db"))
@@ -79,6 +90,7 @@ else:
 
 SESSIONS: dict[str, dict] = {}          # sid -> {role, key, exp}
 _login_fails: dict[str, list] = {}      # ip -> [window_start, fail_count]
+_totp_used: dict[int, float] = {}       # TOTP timestep -> 使用时刻（防同一动态码重放）
 NAME_RE = re.compile(r"[a-zA-Z0-9_-]{1,32}")
 GROUP_RE = re.compile(r"[a-zA-Z0-9_-]{1,32}")
 
@@ -149,6 +161,93 @@ async def require(request: Request, role: str = "admin") -> dict | JSONResponse:
 
 # ---------------------------------------------------------------- 登录 / 会话
 
+def _str_eq(a: str, b: str) -> bool:
+    """时序安全字符串比较（compare_digest 对非 ASCII str 会抛 TypeError，先过 sha256）。"""
+    return hmac.compare_digest(hashlib.sha256(a.encode()).digest(),
+                               hashlib.sha256(b.encode()).digest())
+
+
+def _b32_key(secret_b32: str) -> bytes | None:
+    s = "".join(secret_b32.split()).upper()
+    try:
+        return base64.b32decode(s + "=" * (-len(s) % 8))
+    except (ValueError, TypeError):
+        return None
+
+
+def totp_verify(secret_b32: str, code: str) -> bool:
+    """RFC 6238 TOTP（SHA1 / 6 位 / 30s），容忍 ±1 步时钟漂移；同一步长动态码仅可用一次。"""
+    key = _b32_key(secret_b32)
+    if key is None:
+        return False
+    code = (code or "").strip()
+    if not (code.isdigit() and len(code) == 6):
+        return False
+    step_now = int(time.time()) // 30
+    for off in (-1, 0, 1):
+        step = step_now + off
+        mac = hmac.new(key, struct.pack(">Q", step), hashlib.sha1).digest()
+        o = mac[-1] & 0xF
+        val = (struct.unpack(">I", mac[o:o + 4])[0] & 0x7FFFFFFF) % 1_000_000
+        if hmac.compare_digest(f"{val:06d}", code):
+            if step in _totp_used:
+                return False
+            for stale in [k for k in _totp_used if k < step_now - 2]:
+                _totp_used.pop(stale, None)
+            _totp_used[step] = time.time()
+            return True
+    return False
+
+
+if ADMIN_TOTP_SECRET and _b32_key(ADMIN_TOTP_SECRET) is None:
+    print("!! ADMIN_TOTP_SECRET 不是合法 base32，管理员 2FA 校验将一律失败，请修正 console.env",
+          file=sys.stderr)
+
+
+def _start_session(role: str, key: str) -> Response:
+    sid = secrets.token_urlsafe(24)
+    SESSIONS[sid] = {"role": role, "key": key, "exp": time.time() + SESSION_TTL}
+    resp = JSONResponse({"ok": True, "role": role})
+    resp.set_cookie("pll_session", f"{sid}.{sign(sid)}", max_age=SESSION_TTL,
+                    httponly=True, secure=True, samesite="lax", path="/console")
+    return resp
+
+
+async def api_admin_login_state(request: Request) -> Response:
+    """登录页据此决定是否展示 2FA 输入框（只暴露开关，不暴露账号信息）。"""
+    return JSONResponse({"configured": bool(ADMIN_EMAIL), "totp": bool(ADMIN_TOTP_SECRET)})
+
+
+async def api_admin_login(request: Request) -> Response:
+    ip = client_ip(request)
+    now = time.time()
+    win = _login_fails.get(ip)
+    if win and now - win[0] < LOGIN_WINDOW and win[1] >= LOGIN_FAIL_LIMIT:
+        return jerr("尝试过于频繁，请一分钟后再试", 429)
+    if request.headers.get("x-requested-with") != "XMLHttpRequest":
+        return jerr("missing X-Requested-With", 403)
+    if not ADMIN_EMAIL or not ADMIN_PASSWORD:
+        return jerr("管理员账号未配置（在 console.env 设 ADMIN_EMAIL / ADMIN_PASSWORD 后重启 console）", 503)
+    try:
+        body = await request.json()
+        email, password, totp = body.get("email", ""), body.get("password", ""), body.get("totp", "")
+    except (ValueError, AttributeError):
+        return jerr("bad request", 400)
+    # 统一报错文案，不区分错在哪一项；2FA 只在口令正确时校验（省计算，语义不变）
+    ok = _str_eq(email.strip().lower(), ADMIN_EMAIL) and _str_eq(password, ADMIN_PASSWORD)
+    if ok and ADMIN_TOTP_SECRET:
+        ok = totp_verify(ADMIN_TOTP_SECRET, totp)
+    if not ok:
+        if not win or now - win[0] >= LOGIN_WINDOW:
+            _login_fails[ip] = [now, 1]
+        else:
+            win[1] += 1
+        return jerr("邮箱、密码或动态码错误", 401)
+    _login_fails.pop(ip, None)
+    # 管理接口本就以服务端 env 里的 master key 回环调 LiteLLM，会话不再另存管理员口令
+    return _start_session("admin", LITELLM_MASTER_KEY)
+
+
 async def api_login(request: Request) -> Response:
     ip = client_ip(request)
     now = time.time()
@@ -164,11 +263,14 @@ async def api_login(request: Request) -> Response:
     role = None
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(f"{LITELLM_BASE}/global/spend",
-                                 headers={"Authorization": f"Bearer {key}"})
-            if r.status_code == 200:
-                role = "admin"
-            else:
+            # 管理员账号已配置时 master key 不再作为网页登录（改走 /admin-login），
+            # 未配置则保留旧行为兜底
+            if not ADMIN_EMAIL:
+                r = await client.get(f"{LITELLM_BASE}/global/spend",
+                                     headers={"Authorization": f"Bearer {key}"})
+                if r.status_code == 200:
+                    role = "admin"
+            if role is None:
                 r = await client.get(f"{LITELLM_BASE}/key/info",
                                      headers={"Authorization": f"Bearer {key}"})
                 if r.status_code == 200:
@@ -182,12 +284,7 @@ async def api_login(request: Request) -> Response:
             win[1] += 1
         return jerr("invalid key", 401)
     _login_fails.pop(ip, None)
-    sid = secrets.token_urlsafe(24)
-    SESSIONS[sid] = {"role": role, "key": key, "exp": now + SESSION_TTL}
-    resp = JSONResponse({"ok": True, "role": role})
-    resp.set_cookie("pll_session", f"{sid}.{sign(sid)}", max_age=SESSION_TTL,
-                    httponly=True, secure=True, samesite="lax", path="/console")
-    return resp
+    return _start_session(role, key)
 
 
 async def api_logout(request: Request) -> Response:
@@ -1055,7 +1152,7 @@ async def console_redirect(request: Request) -> Response:
 
 # 未登录可取的静态资源（登录页本体 + 样式 + 图标）；其余页面源码一律会话门禁，
 # 避免内部拓扑/组件名/策略文案经公开 URL 外泄（安全收敛，对应评审意见「对外尽量少暴露内部信息」）
-PUBLIC_STATIC = {"login.html", "assets/portal.css", "favicon.ico"}
+PUBLIC_STATIC = {"login.html", "admin-login.html", "assets/portal.css", "favicon.ico"}
 
 
 async def console_static(request: Request) -> Response:
@@ -1073,6 +1170,8 @@ async def console_static(request: Request) -> Response:
 
 api_routes = [
     Route("/console/api/login", api_login, methods=["POST"]),
+    Route("/console/api/admin-login/state", api_admin_login_state, methods=["GET"]),
+    Route("/console/api/admin-login", api_admin_login, methods=["POST"]),
     Route("/console/api/logout", api_logout, methods=["POST"]),
     Route("/console/api/me", api_me, methods=["GET"]),
     Route("/console/api/overview", api_overview, methods=["GET"]),

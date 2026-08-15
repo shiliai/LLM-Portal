@@ -29,6 +29,7 @@
   .lg-card .pf-input { height: 34px; width: 100%; }
   .lg-btn { width: 100%; height: 34px; margin-top: 18px; font-size: 13px; border: 0; cursor: pointer; }
   .lg-note { text-align: center; margin-top: 16px; }
+  .lg-link { display: block; text-align: center; margin-top: 12px; font-size: 12.5px; }
   .lg-foot { margin-top: 24px; font-size: 12px; color: #8c8c8c; text-align: center; }
   .lg-surface {
     margin-top: 18px; display: flex; align-items: center; justify-content: center;
@@ -48,12 +49,13 @@
     <div class="lg-sub">管理控制台 · 凭据登录</div>
 
     <label class="lg-label" for="lg-pwd">访问密钥</label>
-    <input class="pf-input mono" id="lg-pwd" type="password" placeholder="管理员输入 Master Key；用户输入分配的密钥" autocomplete="current-password">
+    <input class="pf-input mono" id="lg-pwd" type="password" placeholder="输入分配的访问密钥" autocomplete="current-password">
 
     <button class="pf-btn primary lg-btn" id="lg-go" type="button">登 录</button>
     <div class="lg-err" id="lg-err"></div>
 
-    <div class="pf-desc lg-note">Master Key 可访问全部管理功能；用户密钥仅可查看「我的用量」。Master Key 不作为客户端调用凭据。</div>
+    <div class="pf-desc lg-note">用户密钥仅可查看「我的用量」；管理员请使用管理员入口。</div>
+    <a class="lg-link" href="/console/admin-login.html">管理员登录 →</a>
   </div>
 
   <div class="lg-foot">远程模型网关 · 局域网私有推理模型的统一公网入口</div>

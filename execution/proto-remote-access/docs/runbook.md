@@ -25,7 +25,8 @@
 6. **网关主页 + API 面收敛**（2026-08-14 评审意见「根路径是 Swagger，所有 API 都暴露了」）：根路径 `/` 由 mcp-hub 托管静态主页 `mcp-hub/homepage.html`（对外脸面：BASE URL、模型清单、快速开始、MCP 用法，带在线状态灯）；`/openapi.json`、`/redoc`、`/health` 在 nginx 层对公网返回 404（`/health/liveliness` 保留供主页状态灯）。
 7. **r6 自写控制台 + LiteLLM 退居底层 + 全量收敛**（2026-08-14 晚，proto-r6/US-P14）：新增 consoled:8300（`/console/` 9 页，双角色登录：master key=管理员 8 页 / 用户虚拟 Key=仅「我的用量」；会话在内存，consoled 重启即全员下线）；nginx 改 allowlist（见拓扑表，LiteLLM `/ui`、`/login`、全部管理 API、`/onboard/admin/*` 公网 404，应急通道 `ssh -L 4000:127.0.0.1:4000`）；静态别名 claude-opus-5、qwen3.6-35b-a3 一次性迁移为 DB deployment（config.yaml 只剩设置骨架，T3/T11 复验过）；分组改写 = 对站点 deployment 先 `/model/new`（带新 tags）再 `/model/delete`（实测 tags 经 /model/new 写入、/model/info 完整回显；不依赖 `/model/update` 的 tags 透传）。
    **部署坑（重要）**：nginx.conf 被单文件 bind-mount 进 nginx-sub2api 容器，`sed -i` 会换 inode → 容器内仍是旧内容、reload 无效（2026-08-14 实测：改完 reload 行为不变，需重启容器才恢复）；deploy.sh 已改为 `cat >` 原地写（保留 inode），此后 reload 即生效。
-   **静态页面门禁（2026-08-15 评审意见「对外尽量少暴露内部信息」）**：consoled 的静态服务带会话门禁——未登录仅放行 `login.html`、`assets/portal.css`、`favicon.ico`，其余页面与 portal.js 一律 302 跳登录（页面源码、内部组件名/策略文案不可匿名抓取，页面存在性亦不可探测）；dashboard 攻击面卡已去内部组件枚举，细节只留 runbook。
+   **静态页面门禁（2026-08-15 评审意见「对外尽量少暴露内部信息」）**：consoled 的静态服务带会话门禁——未登录仅放行 `login.html`、`admin-login.html`、`assets/portal.css`、`favicon.ico`，其余页面与 portal.js 一律 302 跳登录（页面源码、内部组件名/策略文案不可匿名抓取，页面存在性亦不可探测）；dashboard 攻击面卡已去内部组件枚举，细节只留 runbook。
+   **管理员独立登录（2026-08-15）**：新增 `/console/admin-login.html`——邮箱（`ADMIN_EMAIL`）+ 密码（`ADMIN_PASSWORD`）+ 可选 TOTP 2FA（`ADMIN_TOTP_SECRET`，RFC 6238/SHA1/6 位/30s，±1 步漂移容错 + 同码防重放），凭据均在 `vps/.env`、由 deploy.sh 注入 `/etc/private-llm/console.env`；登录成功签发与用户登录同一套 `pll_session`（内存会话 + HMAC cookie，8h）。配置 ADMIN_EMAIL 后 master key 不再作为网页登录（未配置则保留旧行为兜底）；管理员登录不依赖 LiteLLM 可达。
    **LiteLLM 1.96.2 管理面实测语义**（consoled 依赖）：`/key/list` 需 `return_full_object=true` 且 `size≤100`（超限 422）；禁用字段是 `blocked`（`/key/block`/`/key/unblock`，payload `{"key":"<sha256哈希>"}`，与 `/key/delete` 的 `{"keys":[…]}` 形状不同）；blocked Key 在鉴权层直接 401（API 与 mcp-hub 的 `/key/info` 验真同步生效，无需额外代码）；`/key/info` 自查不返回 blocked 字段；`/spend/logs` 的 `api_key`/`start_date` 过滤参数实测不可靠 → consoled 全量拉取本地聚合；错误行 = `status=="failure"`（鉴权失败 401 不入日志，控制台错误表已注明口径）。
 
 ## 2. VPS 部署（一次性）
@@ -47,7 +48,7 @@ deploy.sh 幂等；nginx 改动带备份与 `nginx -t` 失败自动回滚（不�
 ### 建用户 Key（C3：管理员创建分发）
 
 ```bash
-# 首选：控制台 https://<域名>/console/ →「用户 Key」页（master key 登录，一次性展示全文）
+# 首选：控制台 https://<域名>/console/ →「用户 Key」页（管理员登录，一次性展示全文）
 # CLI 等价（默认组）：
 source /root/../etc/private-llm/onboardd.env 2>/dev/null || source ~/LLM-Portal/vps/.env
 curl -s http://127.0.0.1:4000/key/generate -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
@@ -110,7 +111,11 @@ install.sh 在站点侧：装 wireguard-tools → `wg genkey`（私钥不出机�
 ## 6. 日常运维
 
 ```bash
-# 日常管理（r6 起唯一入口）：https://<域名>/console/（master key 登录）
+# 日常管理（r6 起唯一入口）：https://<域名>/console/
+#   管理员：/console/admin-login.html（邮箱 + 密码 + 2FA 动态码，凭据在 vps/.env 的
+#           ADMIN_EMAIL/ADMIN_PASSWORD/ADMIN_TOTP_SECRET，deploy.sh 写入 console.env；
+#           配置后 master key 不再作为网页登录方式；轮换 = 改 .env 重跑 deploy.sh）
+#   用户：/console/login.html（分配的访问密钥）
 #   站点/分组/模型别名/用户 Key/用量/外部 MCP 全部在控制台完成；LiteLLM 引擎级配置走下面 SSH
 # 日志
 journalctl -u console -u mcp-hub -u onboardd -f
@@ -124,7 +129,7 @@ cd ~/LLM-Portal/vps && sudo ./deploy.sh   # 幂等升级（含收敛自检；ngi
 
 ## 7. 密钥与安全（C1/C2/C5）
 
-- master key / postgres 密码 / onboard admin token：`vps/.env`（VPS 上 0600，不入库）+ `/etc/private-llm/*.env`（onboardd/mcp-hub/console）。r6 起公网不再有任何接受 master key 的端点（控制台登录在 consoled 内部完成，LiteLLM 管理面仅回环）。
+- master key / postgres 密码 / onboard admin token / 管理员邮箱密码与 TOTP 密钥：`vps/.env`（VPS 上 0600，不入库）+ `/etc/private-llm/*.env`（onboardd/mcp-hub/console）。r6 起公网不再有任何接受 master key 的端点（控制台管理员登录走独立邮箱+密码+2FA 页，master key 仅服务端回环；用户登录用分配的虚拟 Key）。管理员登录连错 5 次/分钟锁定，与用户登录共用限速。
 - WG 私钥：VPS `/var/lib/private-llm/wireguard-private.key`（0600）与 `/etc/wireguard/wg0.conf`（0600）；站点私钥仅站点本机。
 - 用户 Key 永不出网关：mcp-hub 只用它调 `/key/info` 与回环 LiteLLM；上游无鉴权直连不带 Key。
 - 公网面：443/tcp（nginx）、51820/udp（WG）、SSH；其余全部 ufw DROP + 仅回环/compose 网内监听。
