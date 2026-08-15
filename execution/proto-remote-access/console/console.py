@@ -24,6 +24,7 @@
   POST /console/api/models/alias       新建别名（克隆目标全部 deployment）
   GET  /console/api/keys               Key 清单（/key/list 全对象）
   POST /console/api/keys/create        建 Key（一次性返回全文）
+  POST /console/api/keys/update        改备注名/分组/模型白名单（/key/update）
   POST /console/api/keys/block         禁用（/key/block）
   POST /console/api/keys/unblock       启用（/key/unblock）
   POST /console/api/keys/delete        删除（/key/delete）
@@ -1007,6 +1008,43 @@ async def api_keys_create(request: Request) -> Response:
                          "note": "仅此一次完整展示，请立即保存分发"})
 
 
+async def api_keys_update(request: Request) -> Response:
+    """列表页行内改分组 / 编辑弹窗改名与白名单（LiteLLM /key/update，key 传哈希）。"""
+    sess = await require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    try:
+        body = await request.json()
+        token = body["key"]
+    except (ValueError, KeyError):
+        return jerr("bad request: expect {key}", 400)
+    if not re.fullmatch(r"[0-9a-f]{64}", token):
+        return jerr("bad key hash", 400)
+    payload: dict = {"key": token}
+    if "alias" in body:
+        alias = (body.get("alias") or "").strip()
+        if alias:
+            if len(alias) > 64:
+                return jerr("bad alias", 400)
+            payload["key_alias"] = alias
+    if "group" in body:
+        group = body.get("group") or "default"
+        if not GROUP_RE.fullmatch(group):
+            return jerr("bad group name", 400)
+        payload["metadata"] = {"group": group}
+    if "models" in body:
+        models = body.get("models") or []
+        if not isinstance(models, list) or any(not NAME_RE.fullmatch(str(m) or "") for m in models):
+            return jerr("bad models list", 400)
+        payload["models"] = models
+    if len(payload) == 1:
+        return jerr("nothing to update", 400)
+    code, rbody = await ll_json("POST", "/key/update", json=payload)
+    if code != 200:
+        return JSONResponse(rbody if isinstance(rbody, dict) else {"error": str(rbody)[:300]}, status_code=code)
+    return JSONResponse({"ok": True, "note": "分组路由即时生效"})
+
+
 async def api_keys_toggle(request: Request, block: bool) -> Response:
     sess = await require(request)
     if isinstance(sess, JSONResponse):
@@ -1293,6 +1331,7 @@ api_routes = [
     Route("/console/api/models/alias", api_models_alias, methods=["POST"]),
     Route("/console/api/keys", api_keys, methods=["GET"]),
     Route("/console/api/keys/create", api_keys_create, methods=["POST"]),
+    Route("/console/api/keys/update", api_keys_update, methods=["POST"]),
     Route("/console/api/keys/block", api_keys_block, methods=["POST"]),
     Route("/console/api/keys/unblock", api_keys_unblock, methods=["POST"]),
     Route("/console/api/keys/delete", api_keys_delete, methods=["POST"]),
