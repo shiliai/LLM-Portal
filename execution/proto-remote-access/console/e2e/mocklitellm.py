@@ -21,7 +21,21 @@ class H(BaseHTTPRequestHandler):
         elif self.path.startswith('/key/info'):
             self._send({"info": {"key_alias": "x", "metadata": {"group": "default"}, "models": []}})
         elif self.path.startswith('/spend/logs'):
-            self._send({"data": []})
+            import time as _t
+            def mk(i):
+                st = _t.strftime('%Y-%m-%dT%H:%M:%S', _t.localtime(_t.time() - i * 600))
+                ak = 'litellm_proxy_master_key' if i % 5 == 0 else STATE[i % len(STATE)]['token']
+                fail = (i % 9 == 0)
+                return {'startTime': st, 'endTime': st, 'api_key': ak,
+                        'model_group': ['deepseek-v4-flash-0731', 'qwen3.6-35b-fp8'][i % 2],
+                        'call_type': 'messages' if i % 3 == 0 else 'completion',
+                        'prompt_tokens': 1000 + i * 17, 'completion_tokens': 200 + i * 5,
+                        'request_duration_ms': 300 + (i * 173) % 5000,
+                        'status': 'failure' if fail else 'success',
+                        'request_id': 'req-%04d' % i, 'session_id': 'sess-%02d' % (i % 4),
+                        'metadata': ({'error_str': 'upstream connect timeout after 5000ms'}
+                                     if fail else {'usage_object': {'prompt_tokens_details': {'cached_tokens': (i * 37) % 900}}})}
+            self._send({'data': [mk(i) for i in range(30)]})
         else:
             self._send({"data": []})
     def do_POST(self):

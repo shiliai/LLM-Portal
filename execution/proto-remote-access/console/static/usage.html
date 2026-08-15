@@ -51,6 +51,33 @@
     </table>
   </div>
 
+  <!-- 请求明细（逐次，参照 sub2api 日志视图） -->
+  <div class="pf-card flush">
+    <div class="pf-card-head">
+      <div class="pf-card-title" id="rl-title">请求明细</div>
+      <div class="pf-card-extra" id="rl-extra">加载中…</div>
+    </div>
+    <div class="pf-toolbar" style="padding:10px 12px 0">
+      <input class="pf-input" id="rl-search" placeholder="搜索模型 / request_id / 备注…">
+      <select class="pf-select" id="rl-status">
+        <option value="">全部状态</option>
+        <option value="ok">成功</option>
+        <option value="failure">失败</option>
+      </select>
+      <span style="flex:1"></span>
+      <button class="pf-btn sm" id="rl-prev" type="button">‹ 上一页</button>
+      <span class="pf-desc" id="rl-page" style="min-width:64px;text-align:center">—</span>
+      <button class="pf-btn sm" id="rl-next" type="button">下一页 ›</button>
+    </div>
+    <table class="pf-table">
+      <thead>
+        <tr><th>时间</th><th>Key</th><th>模型</th><th>类型</th><th class="num">输入</th><th class="num">缓存读</th><th class="num">输出</th><th class="num">总计</th><th class="num">延迟</th><th>状态</th><th>操作</th></tr>
+      </thead>
+      <tbody id="rl-rows"></tbody>
+    </table>
+    <div class="pf-desc" style="padding:8px 12px">鉴权失败不产生日志行（鉴权层直接 401）；明细最多保留最近 500 条。</div>
+  </div>
+
   <!-- 按 Key 请求占比（纯 CSS 条形图） -->
   <div class="pf-card">
     <div class="pf-card-head"><div class="pf-card-title" id="bar-title">按 Key 的请求占比</div></div>
@@ -67,6 +94,18 @@
       <tbody id="err-rows"></tbody>
     </table>
     <div class="pf-desc" style="padding:8px 12px">错误仅覆盖已入账请求（鉴权失败不产生日志行）。</div>
+  </div>
+
+  <!-- 请求详情抽屉 -->
+  <div class="pf-drawer" id="drawer-reqlog">
+    <div class="pf-drawer-head">
+      <div class="pf-drawer-title">请求详情</div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-drawer-body">
+      <div class="pf-kv" id="rl-detail"></div>
+      <div id="rl-err" style="margin-top:14px"></div>
+    </div>
   </div>
 
 </template>
@@ -146,17 +185,100 @@
     }).join('') || '<tr><td colspan="4" class="pf-desc" style="padding:10px">所选时间范围无已入账错误</td></tr>';
   }
 
+  /* ---------- 请求明细（逐次） ---------- */
+  var RL = [], rlPage = 1, RL_PAGE_SIZE = 20;
+
+  function rlFiltered() {
+    var q = document.getElementById('rl-search').value.trim().toLowerCase();
+    var st = document.getElementById('rl-status').value;
+    return RL.filter(function (r) {
+      if (st && r.status !== st) return false;
+      if (q && (r.model + ' ' + r.request_id + ' ' + r.alias + ' ' + (r.error || '')).toLowerCase().indexOf(q) < 0) return false;
+      return true;
+    });
+  }
+
+  function rlRender() {
+    var list = rlFiltered();
+    var pages = Math.max(1, Math.ceil(list.length / RL_PAGE_SIZE));
+    if (rlPage > pages) rlPage = pages;
+    var slice = list.slice((rlPage - 1) * RL_PAGE_SIZE, rlPage * RL_PAGE_SIZE);
+    var fails = RL.filter(function (r) { return r.status === 'failure'; }).length;
+    document.getElementById('rl-title').textContent = '请求明细';
+    document.getElementById('rl-extra').textContent =
+      '共 ' + fmtN(list.length) + ' 次' + (list.length !== RL.length ? '（总 ' + fmtN(RL.length) + '）' : '') +
+      (fails ? ' · 失败 ' + fails : '');
+    document.getElementById('rl-page').textContent = rlPage + ' / ' + pages;
+    document.getElementById('rl-prev').disabled = rlPage <= 1;
+    document.getElementById('rl-next').disabled = rlPage >= pages;
+    document.getElementById('rl-rows').innerHTML = slice.map(function (r, i) {
+      var idx = (rlPage - 1) * RL_PAGE_SIZE + i;
+      var tt = r.prompt_tokens + r.completion_tokens + r.cached_tokens;
+      return '<tr' + (r.status === 'failure' ? ' class="pf-row-muted"' : '') + '>' +
+        '<td class="mono">' + esc((r.ts || '').replace('T', ' ').slice(5)) + '</td>' +
+        '<td><span class="pf-key">' + esc(r.key) + '</span> ' + esc(r.alias) + '</td>' +
+        '<td class="mono">' + esc(r.model) + '</td>' +
+        '<td>' + esc(r.call_type || '—') + '</td>' +
+        '<td class="num">' + fmtN(r.prompt_tokens) + '</td>' +
+        '<td class="num">' + fmtN(r.cached_tokens) + '</td>' +
+        '<td class="num">' + fmtN(r.completion_tokens) + '</td>' +
+        '<td class="num" style="font-weight:600">' + fmtN(tt) + '</td>' +
+        '<td class="num">' + (r.duration_ms >= 1000 ? (r.duration_ms / 1000).toFixed(1) + ' s' : r.duration_ms + ' ms') + '</td>' +
+        '<td>' + (r.status === 'failure'
+          ? '<span class="pf-chip err">失败</span>'
+          : '<span class="pf-chip ok">成功</span>') + '</td>' +
+        '<td><button class="pf-link js-rl-detail" data-i="' + idx + '">详情</button></td>' +
+      '</tr>';
+    }).join('') || '<tr><td colspan="11"><div class="pf-empty"><div class="pf-empty-icon">▢</div>没有符合条件的请求</div></td></tr>';
+    document.querySelectorAll('.js-rl-detail').forEach(function (btn) {
+      btn.onclick = function () { rlDetail(rlFiltered()[+btn.dataset.i]); };
+    });
+  }
+
+  function rlDetail(r) {
+    var kv = document.getElementById('rl-detail');
+    kv.innerHTML =
+      '<div class="pf-kv-k">时间</div><div class="pf-kv-v mono">' + esc((r.ts || '').replace('T', ' ')) + '</div>' +
+      '<div class="pf-kv-k">Key</div><div class="pf-kv-v"><span class="pf-key">' + esc(r.key) + '</span> ' + esc(r.alias) + '</div>' +
+      '<div class="pf-kv-k">模型</div><div class="pf-kv-v mono">' + esc(r.model) + '</div>' +
+      '<div class="pf-kv-k">调用类型</div><div class="pf-kv-v mono">' + esc(r.call_type || '—') + '</div>' +
+      '<div class="pf-kv-k">状态</div><div class="pf-kv-v">' + (r.status === 'failure' ? '<span class="pf-chip err">失败</span>' : '<span class="pf-chip ok">成功</span>') + '</div>' +
+      '<div class="pf-kv-k">输入 Token</div><div class="pf-kv-v">' + fmtN(r.prompt_tokens) + '</div>' +
+      '<div class="pf-kv-k">缓存读取</div><div class="pf-kv-v">' + fmtN(r.cached_tokens) + '</div>' +
+      '<div class="pf-kv-k">输出 Token</div><div class="pf-kv-v">' + fmtN(r.completion_tokens) + '</div>' +
+      '<div class="pf-kv-k">总 Token</div><div class="pf-kv-v" style="font-weight:600">' + fmtN(r.prompt_tokens + r.completion_tokens + r.cached_tokens) + '</div>' +
+      '<div class="pf-kv-k">延迟</div><div class="pf-kv-v">' + (r.duration_ms >= 1000 ? (r.duration_ms / 1000).toFixed(1) + ' s' : r.duration_ms + ' ms') + '</div>' +
+      '<div class="pf-kv-k">Request ID</div><div class="pf-kv-v mono" style="word-break:break-all">' + esc(r.request_id || '—') + '</div>' +
+      '<div class="pf-kv-k">Session ID</div><div class="pf-kv-v mono" style="word-break:break-all">' + esc(r.session_id || '—') + '</div>';
+    document.getElementById('rl-err').innerHTML = r.error
+      ? '<div class="pf-banner">失败原因：' + esc(r.error) + '</div>' : '';
+    window.pfDrawer('drawer-reqlog');
+  }
+
+  function rlLoad(days) {
+    window.pfApi('GET', '/usage/logs?days=' + days).then(function (d) {
+      RL = d.logs || [];
+      rlPage = 1;
+      rlRender();
+    }).catch(function (e) { window.pfErr(e.error || '请求明细加载失败'); });
+  }
+
   window.pfReady.then(function () {
     function load() {
       var days = document.getElementById('filter-days').value;
       var label = days === '1' ? '今天' : '最近 ' + days + ' 天';
       window.pfApi('GET', '/usage?days=' + days).then(function (d) { render(d, label); })
         .catch(function (e) { window.pfErr(e.error || '用量加载失败'); });
+      rlLoad(days);
     }
     ['filter-key', 'filter-model'].forEach(function (id) {
       document.getElementById(id).addEventListener('change', applyFilter);
     });
     document.getElementById('filter-days').addEventListener('change', load);
+    document.getElementById('rl-search').addEventListener('input', function () { rlPage = 1; rlRender(); });
+    document.getElementById('rl-status').addEventListener('change', function () { rlPage = 1; rlRender(); });
+    document.getElementById('rl-prev').addEventListener('click', function () { if (rlPage > 1) { rlPage--; rlRender(); } });
+    document.getElementById('rl-next').addEventListener('click', function () { rlPage++; rlRender(); });
     load();
   });
 })();
