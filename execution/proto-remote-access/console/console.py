@@ -825,22 +825,36 @@ async def api_my(request: Request) -> Response:
     if isinstance(sess, JSONResponse):
         return sess
     key = sess["key"]
-    _, body = await ll_json("GET", "/key/info", key=key)
-    if not isinstance(body, dict) or "info" not in body:
-        return jerr(str(body)[:200], 502)
-    info = body["info"]
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(f"{MCP_HUB_URL}/mcp/usage", headers={"Authorization": f"Bearer {key}"})
-        mcp = r.json() if r.status_code == 200 else {"tools": {}, "total": 0}
-    except (httpx.HTTPError, ValueError):
-        mcp = {"tools": {}, "total": 0}
+    # master key 不在 LiteLLM key 表中（/key/info 404），其用量以调用日志中的
+    # litellm_proxy_master_key 标识聚合；用户虚拟 Key 走 /key/info 自查
+    if sess["role"] == "admin":
+        alias, group, models = "管理员（master key）", "—", []
+        created, expires, match_key = "", None, "litellm_proxy_master_key"
+        mcp, mcp_note = {"tools": {}, "total": 0}, "master key 不经 MCP 通道（MCP 端点仅接受用户虚拟 Key）"
+    else:
+        _, body = await ll_json("GET", "/key/info", key=key)
+        if not isinstance(body, dict) or "info" not in body:
+            return jerr("用量查询失败：密钥状态异常，请重新登录", 502)
+        info = body["info"]
+        alias = info.get("key_alias") or "（未命名）"
+        group = (info.get("metadata") or {}).get("group") or "default"
+        models = info.get("models") or []
+        created = (info.get("created_at") or "")[:19]
+        expires = info.get("expires")
+        match_key = hashlib.sha256(key.encode()).hexdigest()
+        mcp, mcp_note = {"tools": {}, "total": 0}, ""
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(f"{MCP_HUB_URL}/mcp/usage",
+                                     headers={"Authorization": f"Bearer {key}"})
+            if r.status_code == 200:
+                mcp = r.json()
+        except (httpx.HTTPError, ValueError):
+            pass
     today_tokens = {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0}
     today_models: dict[str, dict] = {}
-    logs = await fetch_logs()
-    kh = hashlib.sha256(key.encode()).hexdigest()
-    for row in logs_since(logs, 1):
-        if str(row.get("api_key") or "") != kh:
+    for row in logs_since(await fetch_logs(), 1):
+        if str(row.get("api_key") or "") != match_key:
             continue
         today_tokens["requests"] += 1
         today_tokens["prompt_tokens"] += int(row.get("prompt_tokens") or 0)
@@ -851,15 +865,17 @@ async def api_my(request: Request) -> Response:
         agg["prompt_tokens"] += int(row.get("prompt_tokens") or 0)
         agg["completion_tokens"] += int(row.get("completion_tokens") or 0)
     return JSONResponse({
-        "alias": info.get("key_alias") or "(未命名)",
+        "role": sess["role"],
+        "alias": alias,
         "key_last4": "…" + key[-4:],
-        "group": (info.get("metadata") or {}).get("group") or "default",
-        "models": info.get("models") or [],
-        "created_at": (info.get("created_at") or "")[:19],
-        "expires": info.get("expires"),
+        "group": group,
+        "models": models,
+        "created_at": created,
+        "expires": expires,
         "today": today_tokens,
         "today_models": sorted(today_models.values(), key=lambda m: -m["requests"]),
         "mcp": mcp,
+        "mcp_note": mcp_note,
     })
 
 
