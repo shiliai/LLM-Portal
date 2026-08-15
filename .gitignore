@@ -17,3 +17,7 @@ build/
 # 浏览器自动化 / 渲染临时产物（本地，不入库）
 .playwright-mcp/
 .superpowers/
+
+# 本地工作产物（截图 / agent 会话目录，不入库）
+.zcode/
+*.png
