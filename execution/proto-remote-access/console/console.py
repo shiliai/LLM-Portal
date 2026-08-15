@@ -1304,7 +1304,10 @@ async def console_static(request: Request) -> Response:
     root = STATIC_DIR.resolve()
     if root not in target.parents or not target.is_file():
         return jerr("not found", 404)
-    return FileResponse(target)
+    # no-cache：允许缓存但必须带 etag 再验证——页面/JS 迭代频繁，避免浏览器启发式
+    # 缓存把旧版页面serve给已部署新代码的用户（2026-08-15 实测踩坑：用户 reload
+    # 命中启发式缓存拿到旧 keys.html，新修复完全未生效）
+    return FileResponse(target, headers={"Cache-Control": "no-cache"})
 
 
 api_routes = [
