@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>我的用量 · 远程模型网关</title>
+<link rel="stylesheet" href="assets/portal.css">
+</head>
+<body data-page="my-usage">
+<template id="page">
+
+  <div class="pf-banner info">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" style="flex:none"><circle cx="8" cy="8" r="6.4"/><path d="M8 4.8v3.8M8 11.2h.01" stroke-width="1.6"/></svg>
+    这是普通用户视角：你只能看到自己这把 Key 的用量与调用记录，无法查看他人 Key 的数据（US-P10）。当前模拟身份：<strong>chris-laptop</strong>。
+  </div>
+
+  <div class="pf-page-head">
+    <div class="pf-desc">数据来自你自己调用 <span class="mono">/key/info</span>（API 用量）与 <span class="mono">/mcp/usage</span>（MCP 调用计数）的结果，口径为请求数 + token 数，不含计费。</div>
+  </div>
+
+  <!-- 我的 Key 信息 -->
+  <div class="pf-grid main-side">
+    <div class="pf-card">
+      <div class="pf-card-head"><div class="pf-card-title">我的 Key</div></div>
+      <div class="pf-kv">
+        <div class="pf-kv-k">备注名</div><div class="pf-kv-v">chris-laptop</div>
+        <div class="pf-kv-k">Key</div><div class="pf-kv-v"><span class="pf-key">sk-gw-…9f3e</span></div>
+        <div class="pf-kv-k">创建时间</div><div class="pf-kv-v mono">2026-07-10</div>
+        <div class="pf-kv-k">状态</div><div class="pf-kv-v"><span class="pf-chip ok">启用</span></div>
+        <div class="pf-kv-k">可用模型</div><div class="pf-kv-v">全部对外模型名（本期未按 Key 限制授权范围）</div>
+      </div>
+    </div>
+
+    <div class="pf-grid cols-2" style="margin-bottom:0">
+      <div class="pf-stat">
+        <div class="pf-stat-label">今日请求（API）</div>
+        <div class="pf-stat-value">1,172</div>
+        <div class="pf-stat-sub">claude-opus-5 740 · gpt-4o 432</div>
+      </div>
+      <div class="pf-stat">
+        <div class="pf-stat-label">今日 Token</div>
+        <div class="pf-stat-value">2.93<small>M</small></div>
+        <div class="pf-stat-sub">输入 2.34M · 输出 0.59M</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- API 用量明细 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head">
+      <div class="pf-card-title">API 用量明细（今日 · /key/info 口径）</div>
+    </div>
+    <table class="pf-table">
+      <thead>
+        <tr><th>模型</th><th class="num">请求数</th><th class="num">输入 Token</th><th class="num">输出 Token</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="mono">claude-opus-5 <span class="pf-chip violet">别名 → deepseek-v4-flash-0731</span></td>
+          <td class="num">740</td>
+          <td class="num">1,480,000</td>
+          <td class="num">370,000</td>
+        </tr>
+        <tr>
+          <td class="mono">gpt-4o <span class="pf-chip violet">别名 → deepseek-v4-flash-0731</span></td>
+          <td class="num">432</td>
+          <td class="num">864,000</td>
+          <td class="num">216,000</td>
+        </tr>
+      </tbody>
+      <tfoot>
+        <tr>
+          <td style="font-weight:600">合计</td>
+          <td class="num" style="font-weight:600">1,172</td>
+          <td class="num" style="font-weight:600">2,344,000</td>
+          <td class="num" style="font-weight:600">586,000</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+
+  <!-- MCP 用量明细 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head">
+      <div class="pf-card-title">MCP 用量明细（今日 · /mcp/usage 口径）</div>
+      <div class="pf-card-extra"><a href="mcp.html">查看 MCP 管理 ›</a></div>
+    </div>
+    <table class="pf-table">
+      <thead>
+        <tr><th>工具</th><th>来源</th><th class="num">调用次数</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="mono">analyze_image</td>
+          <td><span class="pf-chip info">内建</span></td>
+          <td class="num">23</td>
+          <td class="pf-desc">standing on qwen3.6-35b-a3；token 消耗已并入上方 API 账本</td>
+        </tr>
+        <tr>
+          <td class="mono">zhipu_vision_caption</td>
+          <td><span class="pf-chip violet">外部 · zhipu</span></td>
+          <td class="num">4</td>
+          <td class="pf-desc">token 用量不保证可得（外部 MCP 基线口径）</td>
+        </tr>
+        <tr>
+          <td class="mono">zhipu_vision_ocr</td>
+          <td><span class="pf-chip violet">外部 · zhipu</span></td>
+          <td class="num">1</td>
+          <td class="pf-desc">token 用量不保证可得（外部 MCP 基线口径）</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+</template>
+<script src="assets/portal.js"></script>
+</body>
+</html>

@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>站点与公钥 · 远程模型网关</title>
+<link rel="stylesheet" href="assets/portal.css">
+</head>
+<body data-page="sites">
+<template id="page">
+
+  <!-- 页头 -->
+  <div class="pf-page-head">
+    <div class="pf-desc">每个局域网站点以一把 WireGuard 公钥标识身份；公钥可列出、可吊销；隧道断开或吊销后该站点模型立即从路由池摘除（US-P7/P8）。</div>
+    <button class="pf-btn primary" data-modal="modal-addsite" id="btn-open-addsite">新增站点</button>
+  </div>
+
+  <!-- 站点列表 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head">
+      <div class="pf-card-title">站点列表</div>
+      <div class="pf-card-extra">共 3 个 · 2 个在线</div>
+    </div>
+    <table class="pf-table">
+      <thead>
+        <tr>
+          <th>站点名</th><th>公钥指纹</th><th>WG IP</th><th>最近握手</th>
+          <th class="num">模型数</th><th>分组</th><th>状态</th><th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="sites-tbody">
+        <tr data-site-row="hq-office">
+          <td>hq-office</td>
+          <td><span class="pf-key">8f3nJ0kL2mN4…9hJk=</span></td>
+          <td class="mono">10.77.0.11</td>
+          <td class="mono">23 秒前</td>
+          <td class="num">2</td>
+          <td class="site-groups">
+            <span class="pf-chip">default</span>
+            <span class="pf-chip">home</span>
+          </td>
+          <td class="site-status"><span class="pf-chip ok"><span class="pf-dot ok"></span>在线</span></td>
+          <td>
+            <button class="pf-link js-edit-groups" data-site="hq-office">分组</button>
+            <button class="pf-link danger js-revoke-btn"
+              data-site="hq-office" data-wg="10.77.0.11" data-models="2">吊销</button>
+          </td>
+        </tr>
+        <tr data-site-row="lab-2f">
+          <td>lab-2f</td>
+          <td><span class="pf-key">rT9mK2pL5nQ8…5nPqx=</span></td>
+          <td class="mono">10.77.0.12</td>
+          <td class="mono">1 分钟前</td>
+          <td class="num">1</td>
+          <td class="site-groups">
+            <span class="pf-chip">default</span>
+          </td>
+          <td class="site-status"><span class="pf-chip ok"><span class="pf-dot ok"></span>在线</span></td>
+          <td>
+            <button class="pf-link js-edit-groups" data-site="lab-2f">分组</button>
+            <button class="pf-link danger js-revoke-btn"
+              data-site="lab-2f" data-wg="10.77.0.12" data-models="1">吊销</button>
+          </td>
+        </tr>
+        <tr class="pf-row-muted" data-site-row="old-site">
+          <td>old-site</td>
+          <td><span class="pf-key">zA1bC4dE5fG9…A1bCd=</span></td>
+          <td class="mono">10.77.0.9</td>
+          <td class="mono">27 天前</td>
+          <td class="num">0</td>
+          <td class="site-groups"><span class="pf-desc">—</span></td>
+          <td class="site-status"><span class="pf-chip gray">已吊销（2026-07-18）</span></td>
+          <td><button class="pf-link" disabled>已吊销</button></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 新增站点弹窗（两态：表单 → 一次性安装命令） -->
+  <div class="pf-modal" id="modal-addsite" style="width:560px">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title" id="addsite-title">新增站点</div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-modal-body">
+
+      <div id="addsite-form">
+        <div class="pf-form-row">
+          <label class="req">站点名</label>
+          <div>
+            <input class="pf-input mono" id="addsite-name" placeholder="例：shenzhen-lab" value="shenzhen-lab">
+            <div class="pf-desc">仅作标识用途，将出现在站点列表与调用日志中。</div>
+          </div>
+        </div>
+        <div class="pf-form-row">
+          <label class="req">模型清单</label>
+          <div>
+            <div class="pf-desc" style="margin-bottom:8px">格式为「对外模型名:端口」，对应站点机器上已在跑的 OpenAI 兼容模型服务。</div>
+            <input class="pf-input mono" style="margin-bottom:8px" value="deepseek-v4-flash-0731:8890">
+            <input class="pf-input mono" value="qwen3.6-35b-a3:8004">
+          </div>
+        </div>
+        <div class="pf-form-row">
+          <label>WG IP</label>
+          <div class="pf-desc" style="padding-top:6px">自动从 10.77.0.x 段分配下一个可用地址（预计 10.77.0.13），无需手动指定。</div>
+        </div>
+      </div>
+
+      <div id="addsite-result" style="display:none">
+        <div class="pf-banner">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" style="flex:none"><circle cx="8" cy="8" r="6.4"/><path d="M8 4.8v3.8M8 11.2h.01" stroke-width="1.6"/></svg>
+          此命令 <strong>15 分钟内有效</strong>、仅可使用一次；过期或复用后返回 403，需重新执行 <span class="mono">site-add</span> 生成。剩余有效时间：<span class="pf-key" id="addsite-countdown">15:00</span>
+        </div>
+        <div class="pf-code"><pre id="addsite-cmd">curl -fsSL "https://gw.example.com/onboard/install?token=8f2c91ae7b4d0369c5a2e8f104b7d6c3" | sudo bash</pre></div>
+        <div class="pf-kv" style="margin-top:14px">
+          <div class="pf-kv-k">站点名</div><div class="pf-kv-v mono">shenzhen-lab</div>
+          <div class="pf-kv-k">预分配 WG IP</div><div class="pf-kv-v mono">10.77.0.13</div>
+          <div class="pf-kv-k">模型清单</div><div class="pf-kv-v mono">deepseek-v4-flash-0731:8890, qwen3.6-35b-a3:8004</div>
+        </div>
+        <div class="pf-desc" style="margin-top:12px">在该站点机器上以可出站 UDP、可 sudo 的账户执行以上命令。<span class="mono">install.sh</span> 将自动完成：生成 WireGuard 密钥对（私钥不离开该机器）→ 注册公钥 → 建立隧道 → <span class="mono">systemctl enable --now wg-quick@wg0</span> 自启 → 模型端口连通性自检并回显结果；全绿后模型立即进入路由池。</div>
+      </div>
+
+    </div>
+    <div class="pf-modal-foot">
+      <button class="pf-btn" id="addsite-cancel" data-close>取消</button>
+      <button class="pf-btn primary" id="btn-gen-addsite">生成安装命令</button>
+      <button class="pf-btn primary" id="btn-addsite-done" style="display:none">完成</button>
+    </div>
+  </div>
+
+  <!-- 吊销确认弹窗 -->
+  <div class="pf-modal" id="modal-revoke" style="width:460px">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title">吊销站点确认</div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-modal-body">
+      <p style="margin:0 0 12px;font-size:12.5px">确定要吊销站点「<strong id="revoke-site-name">lab-2f</strong>」吗？</p>
+      <div class="pf-banner">
+        吊销后：① 隧道<strong>立即断开</strong>且无法重连；② 该站点全部 <span id="revoke-model-count">1</span> 个模型部署<strong>即刻从路由池摘除</strong>；③ 操作不可逆，需重新执行 <span class="mono">site-add</span> 才能再次接入。
+      </div>
+      <div class="pf-kv">
+        <div class="pf-kv-k">WG IP</div><div class="pf-kv-v mono" id="revoke-wg">10.77.0.12</div>
+        <div class="pf-kv-k">影响范围</div><div class="pf-kv-v">经该站点分流的请求将全部转到其余健康站点；若无其余健康部署，客户端将收到可判读的 503。</div>
+      </div>
+    </div>
+    <div class="pf-modal-foot">
+      <button class="pf-btn" data-close>取消</button>
+      <button class="pf-btn danger" id="btn-revoke-confirm">确认吊销</button>
+    </div>
+  </div>
+
+  <!-- 调整站点分组弹窗（多选，0 个或多个） -->
+  <div class="pf-modal" id="modal-site-groups" style="width:440px">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title">调整站点分组 · <span id="sg-site-name" class="mono"></span></div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-modal-body">
+      <div class="pf-desc" style="margin-bottom:10px">勾选该 provider 所属分组（一个站点可属于 0 个或多个分组）。新分组在「分组」页创建。</div>
+      <div id="sg-checks">
+        <label style="display:block;margin:6px 0"><input type="checkbox" class="sg-cb" value="default"> <span class="pf-chip">default</span> 系统组（全部在线 provider）</label>
+        <label style="display:block;margin:6px 0"><input type="checkbox" class="sg-cb" value="home"> <span class="pf-chip">home</span></label>
+      </div>
+    </div>
+    <div class="pf-modal-foot">
+      <button class="pf-btn" data-close>取消</button>
+      <button class="pf-btn primary" id="btn-sg-save">保存</button>
+    </div>
+  </div>
+
+</template>
+<script src="assets/portal.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+
+  /* ---------- 新增站点：表单 → 结果两态 + 15 分钟倒计时 ---------- */
+  var countdownTimer = null;
+  function resetCountdown() {
+    var left = 15 * 60;
+    var el = document.getElementById('addsite-countdown');
+    clearInterval(countdownTimer);
+    function render() {
+      var m = Math.floor(left / 60), s = left % 60;
+      el.textContent = m + ':' + (s < 10 ? '0' : '') + s;
+    }
+    render();
+    countdownTimer = setInterval(function () {
+      left -= 1;
+      if (left < 0) { clearInterval(countdownTimer); el.textContent = '已过期'; return; }
+      render();
+    }, 1000);
+  }
+
+  function addsiteState(showResult) {
+    document.getElementById('addsite-form').style.display   = showResult ? 'none' : '';
+    document.getElementById('addsite-result').style.display  = showResult ? '' : 'none';
+    document.getElementById('addsite-cancel').style.display  = showResult ? 'none' : '';
+    document.getElementById('btn-gen-addsite').style.display = showResult ? 'none' : '';
+    document.getElementById('btn-addsite-done').style.display = showResult ? '' : 'none';
+    document.getElementById('addsite-title').textContent = showResult ? '安装命令已生成（一次性）' : '新增站点';
+    if (showResult) resetCountdown(); else clearInterval(countdownTimer);
+  }
+  document.getElementById('btn-open-addsite').addEventListener('click', function () { addsiteState(false); });
+  document.getElementById('btn-gen-addsite').addEventListener('click', function () {
+    var name = document.getElementById('addsite-name').value.trim() || 'shenzhen-lab';
+    document.querySelector('#addsite-result .pf-kv-v.mono').textContent = name;
+    addsiteState(true);
+  });
+  document.getElementById('btn-addsite-done').addEventListener('click', function () {
+    pfModalClose(); pfToast('安装命令已复制历史记录（原型不做持久化）'); addsiteState(false);
+  });
+
+  /* ---------- 吊销确认 ---------- */
+  var pendingRevokeRow = null;
+  document.querySelectorAll('.js-revoke-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var site = btn.dataset.site;
+      pendingRevokeRow = document.querySelector('[data-site-row="' + site + '"]');
+      document.getElementById('revoke-site-name').textContent = site;
+      document.getElementById('revoke-wg').textContent = btn.dataset.wg;
+      document.getElementById('revoke-model-count').textContent = btn.dataset.models;
+      pfModal('modal-revoke');
+    });
+  });
+  document.getElementById('btn-revoke-confirm').addEventListener('click', function () {
+    if (pendingRevokeRow) {
+      pendingRevokeRow.classList.add('pf-row-muted');
+      pendingRevokeRow.querySelector('.site-status').innerHTML = '<span class="pf-chip gray">已吊销（刚刚）</span>';
+      var actionCell = pendingRevokeRow.querySelector('td:last-child');
+      actionCell.innerHTML = '<button class="pf-link" disabled>已吊销</button>';
+    }
+    pfModalClose();
+    pfToast('站点已吊销，隧道已断开');
+  });
+
+  /* ---------- 调整站点分组（多选，回写该行 chips） ---------- */
+  var sgRow = null;
+  document.querySelectorAll('.js-edit-groups').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      sgRow = document.querySelector('[data-site-row="' + btn.dataset.site + '"]');
+      document.getElementById('sg-site-name').textContent = btn.dataset.site;
+      var current = {};
+      if (sgRow) sgRow.querySelectorAll('.site-groups .pf-chip').forEach(function (c) { current[c.textContent.trim()] = true; });
+      document.querySelectorAll('.sg-cb').forEach(function (cb) { cb.checked = !!current[cb.value]; });
+      pfModal('modal-site-groups');
+    });
+  });
+  document.getElementById('btn-sg-save').addEventListener('click', function () {
+    if (sgRow) {
+      var html = '';
+      document.querySelectorAll('.sg-cb').forEach(function (cb) {
+        if (cb.checked) html += '<span class="pf-chip">' + cb.value + '</span> ';
+      });
+      sgRow.querySelector('.site-groups').innerHTML = html || '<span class="pf-desc">—</span>';
+    }
+    pfModalClose();
+    pfToast('站点分组已更新');
+  });
+});
+</script>
+</body>
+</html>

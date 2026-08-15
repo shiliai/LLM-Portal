@@ -1,0 +1,8 @@
+[
+  {
+    "name": "zhipu",
+    "url": "https://open.bigmodel.cn/api/mcp/vision_mcp_server/mcp",
+    "api_key": "REPLACE_WITH_ZHIPU_KEY",
+    "prefix": "zhipu_"
+  }
+]

@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>用量总览 · 远程模型网关</title>
+<link rel="stylesheet" href="assets/portal.css">
+</head>
+<body data-page="usage">
+<template id="page">
+
+  <div class="pf-page-head">
+    <div class="pf-desc">管理员用量视图汇总全部 Key 的请求数与 token 消耗（取上游 usage 字段，不含计费），可按 Key / 模型筛选（US-P9）。</div>
+  </div>
+
+  <!-- 筛选栏 -->
+  <div class="pf-card">
+    <div class="pf-toolbar">
+      <select class="pf-select" id="filter-key">
+        <option value="">全部 Key</option>
+        <option value="默认管理员测试">默认管理员测试（…a1b2）</option>
+        <option value="chris-laptop">chris-laptop（…9f3e）</option>
+        <option value="家人共用">家人共用（…77c0，已禁用）</option>
+      </select>
+      <select class="pf-select" id="filter-model">
+        <option value="">全部模型</option>
+        <option value="deepseek-v4-flash-0731">deepseek-v4-flash-0731</option>
+        <option value="qwen3.6-35b-a3">qwen3.6-35b-a3</option>
+        <option value="claude-opus-5">claude-opus-5（别名）</option>
+        <option value="gpt-4o">gpt-4o（别名）</option>
+      </select>
+      <select class="pf-select">
+        <option>今天</option>
+        <option>最近 7 天</option>
+        <option>最近 30 天</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- 明细表 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head">
+      <div class="pf-card-title">用量明细（今日）</div>
+      <div class="pf-card-extra">合计 1,842 次 · 输入 3.68M · 输出 0.92M</div>
+    </div>
+    <table class="pf-table" id="usage-table">
+      <thead>
+        <tr><th>Key</th><th>模型</th><th class="num">请求数</th><th class="num">输入 Token</th><th class="num">输出 Token</th></tr>
+      </thead>
+      <tbody>
+        <tr data-key="默认管理员测试" data-model="deepseek-v4-flash-0731">
+          <td><span class="pf-key">sk-gw-…a1b2</span> 默认管理员测试</td>
+          <td class="mono">deepseek-v4-flash-0731</td>
+          <td class="num">612</td>
+          <td class="num">1,224,000</td>
+          <td class="num">306,000</td>
+        </tr>
+        <tr data-key="默认管理员测试" data-model="qwen3.6-35b-a3">
+          <td><span class="pf-key">sk-gw-…a1b2</span> 默认管理员测试</td>
+          <td class="mono">qwen3.6-35b-a3</td>
+          <td class="num">58</td>
+          <td class="num">116,000</td>
+          <td class="num">29,000</td>
+        </tr>
+        <tr data-key="chris-laptop" data-model="claude-opus-5">
+          <td><span class="pf-key">sk-gw-…9f3e</span> chris-laptop</td>
+          <td class="mono">claude-opus-5 <span class="pf-chip violet">别名</span></td>
+          <td class="num">740</td>
+          <td class="num">1,480,000</td>
+          <td class="num">370,000</td>
+        </tr>
+        <tr data-key="chris-laptop" data-model="gpt-4o">
+          <td><span class="pf-key">sk-gw-…9f3e</span> chris-laptop</td>
+          <td class="mono">gpt-4o <span class="pf-chip violet">别名</span></td>
+          <td class="num">432</td>
+          <td class="num">864,000</td>
+          <td class="num">216,000</td>
+        </tr>
+      </tbody>
+      <tfoot>
+        <tr>
+          <td colspan="2" style="font-weight:600">合计</td>
+          <td class="num" style="font-weight:600">1,842</td>
+          <td class="num" style="font-weight:600">3,684,000</td>
+          <td class="num" style="font-weight:600">921,000</td>
+        </tr>
+      </tfoot>
+      <tbody id="usage-empty-row" style="display:none">
+        <tr><td colspan="5"><div class="pf-empty"><div class="pf-empty-icon">▢</div>没有符合筛选条件的用量记录</div></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 按 Key 请求占比（纯 CSS 条形图） -->
+  <div class="pf-card">
+    <div class="pf-card-head"><div class="pf-card-title">按 Key 的请求占比（今日）</div></div>
+    <div class="pf-bar-item">
+      <div class="pf-bar-label">chris-laptop<div class="pf-desc">…9f3e</div></div>
+      <div class="pf-bar-track"><span class="pf-bar-fill" style="width:100%"></span></div>
+      <div class="pf-bar-value">1,172 次</div>
+    </div>
+    <div class="pf-bar-item">
+      <div class="pf-bar-label">默认管理员测试<div class="pf-desc">…a1b2</div></div>
+      <div class="pf-bar-track"><span class="pf-bar-fill violet" style="width:57%"></span></div>
+      <div class="pf-bar-value">670 次</div>
+    </div>
+    <div class="pf-bar-item">
+      <div class="pf-bar-label pf-muted">家人共用<div class="pf-desc">…77c0 · 已禁用</div></div>
+      <div class="pf-bar-track"><span class="pf-bar-fill" style="width:0%;background:#e8e8e8"></span></div>
+      <div class="pf-bar-value pf-muted">0 次</div>
+    </div>
+  </div>
+
+  <!-- 近期错误 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head"><div class="pf-card-title">近期错误</div></div>
+    <table class="pf-table">
+      <thead>
+        <tr><th>时间</th><th>Key</th><th>请求模型</th><th>状态</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="mono">14:52:07</td>
+          <td><span class="pf-key">sk-gw-…77c0</span></td>
+          <td class="mono">deepseek-v4-flash-0731</td>
+          <td><span class="pf-chip err">401</span></td>
+          <td class="pf-desc">Key 已禁用（家人共用）</td>
+        </tr>
+        <tr>
+          <td class="mono">14:30:15</td>
+          <td><span class="pf-key">sk-gw-…9f3e</span></td>
+          <td class="mono">gpt-4.1</td>
+          <td><span class="pf-chip err">404</span></td>
+          <td class="pf-desc">模型不存在（未注册的对外模型名）</td>
+        </tr>
+        <tr>
+          <td class="mono">13:58:42</td>
+          <td><span class="pf-key">sk-gw-…a1b2</span></td>
+          <td class="mono">qwen3.6-35b-a3</td>
+          <td><span class="pf-chip err">503</span></td>
+          <td class="pf-desc">全部站点不可用（唯一部署临时不可达，未无限挂起）</td>
+        </tr>
+        <tr>
+          <td class="mono">11:12:39</td>
+          <td><span class="pf-key">sk-gw-…77c0</span></td>
+          <td class="mono">deepseek-v4-flash-0731</td>
+          <td><span class="pf-chip err">401</span></td>
+          <td class="pf-desc">Key 已禁用后仍尝试调用</td>
+        </tr>
+        <tr>
+          <td class="mono">09:47:02</td>
+          <td><span class="pf-key">sk-gw-…9f3e</span></td>
+          <td class="mono">claude-opus-6</td>
+          <td><span class="pf-chip err">404</span></td>
+          <td class="pf-desc">模型不存在（对外名拼写错误，未误路由）</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+</template>
+<script src="assets/portal.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  var keySel = document.getElementById('filter-key');
+  var modelSel = document.getElementById('filter-model');
+  var rows = document.querySelectorAll('#usage-table tbody:first-of-type tr');
+  var emptyRow = document.getElementById('usage-empty-row');
+
+  function applyFilter() {
+    var k = keySel.value, m = modelSel.value;
+    var visibleCount = 0;
+    rows.forEach(function (tr) {
+      var match = (!k || tr.dataset.key === k) && (!m || tr.dataset.model === m);
+      tr.style.display = match ? '' : 'none';
+      if (match) visibleCount++;
+    });
+    emptyRow.style.display = visibleCount === 0 ? '' : 'none';
+  }
+  keySel.addEventListener('change', applyFilter);
+  modelSel.addEventListener('change', applyFilter);
+});
+</script>
+</body>
+</html>

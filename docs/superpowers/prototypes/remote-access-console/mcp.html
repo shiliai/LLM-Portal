@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MCP 管理 · 远程模型网关</title>
+<link rel="stylesheet" href="assets/portal.css">
+</head>
+<body data-page="mcp">
+<template id="page">
+
+  <div class="pf-page-head">
+    <div class="pf-desc">客户端以 <span class="mono">https://gw.example.com/mcp</span> + 与 API 相同的 Key 注册网关 MCP（Streamable HTTP）；网关聚合内建视觉工具与已注册外部 MCP 工具，用户的 Key 只用于网关鉴权与记账，永不发往任何上游（US-P4/C5）。</div>
+    <button class="pf-btn primary" data-modal="modal-newmcp">注册外部 MCP</button>
+  </div>
+
+  <!-- 内建工具 -->
+  <div class="pf-card">
+    <div class="pf-card-head">
+      <div class="pf-card-title">内建工具</div>
+      <div class="pf-card-extra"><span class="pf-chip info">网关托管</span></div>
+    </div>
+    <div class="pf-dep-item" style="padding:10px 0">
+      <div class="pf-dep-main">
+        <strong class="mono">analyze_image(image_url, question)</strong>
+        <span class="pf-chip gray">standing on qwen3.6-35b-a3</span>
+      </div>
+      <span class="pf-chip ok"><span class="pf-dot ok"></span>可用</span>
+    </div>
+    <div class="pf-kv" style="margin-top:10px">
+      <div class="pf-kv-k">凭据边界</div><div class="pf-kv-v">网关以调用者自己的 Key 回调回环 <span class="mono">/v1/chat/completions</span>（model=qwen3.6-35b-a3）；私有 qwen 无鉴权上游，出站不带任何 Key（C5）。</div>
+      <div class="pf-kv-k">本地图片</div><div class="pf-kv-v">先经 <span class="mono">POST /mcp/upload</span>（同一 Key）换取限时临时 URL，再调用工具；toolcall 参数只含路径/URL 短字符串，base64 转换发生在 mcp-hub 进程内。</div>
+      <div class="pf-kv-k">用量归属</div><div class="pf-kv-v">模型消耗计入调用者自己的 Key，与 API 通道共用同一账本（与 US-P10 口径一致）。</div>
+      <div class="pf-kv-k">客户端兼容</div><div class="pf-kv-v">契约 = Streamable HTTP + 标准 <span class="mono">Authorization: Bearer</span>（与 API 同一把 Key）+ 小写下划线工具名；Claude Code / Hermes / DeepSeek Harness / Pi（先装 pi-mcp-adapter 扩展）四类客户端均可接入，接入示例见 runbook。</div>
+    </div>
+  </div>
+
+  <!-- 外部 MCP 注册表 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head">
+      <div class="pf-card-title">外部 MCP 注册（US-P12）</div>
+      <div class="pf-card-extra">共 1 个</div>
+    </div>
+    <table class="pf-table">
+      <thead>
+        <tr><th>名称</th><th>URL</th><th>凭据</th><th>工具前缀</th><th>状态</th><th>操作</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>zhipu vision-mcp-server</td>
+          <td class="mono">https://open.bigmodel.cn/api/mcp/vision</td>
+          <td><span class="pf-chip ok">已保存</span> <span class="pf-key">尾 9c2d</span></td>
+          <td class="mono">zhipu_</td>
+          <td><span class="pf-chip ok"><span class="pf-dot ok"></span>正常</span></td>
+          <td>
+            <button class="pf-link" data-toast="演示环境：重载未实际执行">重载</button>
+            <button class="pf-link danger" data-toast="演示环境：移除未实际执行">移除</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="pf-desc">凭据文件权限 0600、不入库；管理员编辑注册表后重载生效；凭据失效或服务不可达时调用返回可判读的 MCP 结构化错误（透传上游状态码与摘要）。</div>
+
+  <!-- tools/list 预览 -->
+  <div class="pf-card">
+    <div class="pf-card-head">
+      <div class="pf-card-title">聚合 tools/list 预览</div>
+      <div class="pf-card-extra">内建 1 个 · 外部 2 个（前缀防冲突）</div>
+    </div>
+    <div class="pf-code"><pre>{
+  "tools": [
+    { "name": "analyze_image", "source": "built-in", "description": "识别图片并回答问题（standing on qwen3.6-35b-a3）" },
+    { "name": "zhipu_vision_caption", "source": "zhipu vision-mcp-server", "description": "生成图片描述" },
+    { "name": "zhipu_vision_ocr", "source": "zhipu vision-mcp-server", "description": "图片文字识别" }
+  ]
+}</pre></div>
+  </div>
+
+  <!-- 按 Key 调用计数 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head"><div class="pf-card-title">按 Key 调用计数（今日）</div></div>
+    <table class="pf-table">
+      <thead>
+        <tr><th>Key</th><th class="num">analyze_image</th><th class="num">zhipu_vision_caption</th><th class="num">zhipu_vision_ocr</th><th class="num">合计</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="pf-key">sk-gw-…a1b2</span> 默认管理员测试</td>
+          <td class="num">12</td>
+          <td class="num">0</td>
+          <td class="num">0</td>
+          <td class="num" style="font-weight:600">12</td>
+        </tr>
+        <tr>
+          <td><span class="pf-key">sk-gw-…9f3e</span> chris-laptop</td>
+          <td class="num">23</td>
+          <td class="num">4</td>
+          <td class="num">1</td>
+          <td class="num" style="font-weight:600">28</td>
+        </tr>
+        <tr class="pf-row-muted">
+          <td><span class="pf-key">sk-gw-…77c0</span> 家人共用</td>
+          <td class="num">0</td>
+          <td class="num">0</td>
+          <td class="num">0</td>
+          <td class="num">0（已禁用）</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 上传接口说明 -->
+  <div class="pf-card">
+    <div class="pf-card-head"><div class="pf-card-title">本地图片上传接口</div></div>
+    <div class="pf-kv" style="margin-bottom:12px">
+      <div class="pf-kv-k">入口</div><div class="pf-kv-v mono">POST /mcp/upload</div>
+      <div class="pf-kv-k">鉴权</div><div class="pf-kv-v">与 API/MCP 同一把 Key；无效 Key 拒绝</div>
+      <div class="pf-kv-k">有效期</div><div class="pf-kv-v">临时 URL 随机不可猜路径，30 分钟 TTL 自动清理</div>
+      <div class="pf-kv-k">限制</div><div class="pf-kv-v">类型 jpg / png / webp / gif；大小 ≤ 10MB；超限或类型非法返回 413 / 400</div>
+    </div>
+    <div class="pf-code"><pre>curl -X POST https://gw.example.com/mcp/upload \
+  -H "Authorization: Bearer sk-gw-****************************9f3e" \
+  -F "file=@screenshot.png"
+
+# 响应
+{ "url": "https://gw.example.com/mcp/f/8k2n... .png", "expires_in": 1800 }</pre></div>
+  </div>
+
+  <!-- 注册外部 MCP 弹窗 -->
+  <div class="pf-modal" id="modal-newmcp">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title">注册外部 MCP</div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-modal-body">
+      <div class="pf-form-row">
+        <label class="req">名称</label>
+        <div><input class="pf-input" placeholder="例：zhipu vision-mcp-server"></div>
+      </div>
+      <div class="pf-form-row">
+        <label class="req">URL</label>
+        <div><input class="pf-input mono" placeholder="https://…"></div>
+      </div>
+      <div class="pf-form-row">
+        <label class="req">API Key</label>
+        <div>
+          <input class="pf-input" type="password" placeholder="该外部服务的访问凭据" autocomplete="off">
+          <div class="pf-desc">保存后加密存储，不再回显；文件权限 0600，不入库。</div>
+        </div>
+      </div>
+      <div class="pf-form-row">
+        <label class="req">工具前缀</label>
+        <div>
+          <input class="pf-input mono" placeholder="例：zhipu_">
+          <div class="pf-desc">聚合 tools/list 时用前缀防止与内建工具或其他外部 MCP 命名冲突；前缀限小写字母/数字/下划线（`[a-z0-9_]`），保证各客户端侧工具名合法。</div>
+        </div>
+      </div>
+    </div>
+    <div class="pf-modal-foot">
+      <button class="pf-btn" data-close>取消</button>
+      <button class="pf-btn primary" id="btn-create-mcp">保存并重载</button>
+    </div>
+  </div>
+
+</template>
+<script src="assets/portal.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  document.getElementById('btn-create-mcp').addEventListener('click', function () {
+    pfModalClose();
+    pfToast('已保存，MCP 注册表已重载（原型不做持久化）');
+  });
+});
+</script>
+</body>
+</html>

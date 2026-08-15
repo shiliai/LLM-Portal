@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>仪表盘 · 远程模型网关</title>
+<link rel="stylesheet" href="assets/portal.css">
+</head>
+<body data-page="dashboard">
+<template id="page">
+
+  <!-- 统计卡行 -->
+  <div class="pf-grid cols-4">
+    <div class="pf-stat">
+      <div class="pf-stat-label">今日请求</div>
+      <div class="pf-stat-value" id="stat-req">—</div>
+      <div class="pf-stat-sub" id="stat-req-sub">加载中…</div>
+    </div>
+    <div class="pf-stat">
+      <div class="pf-stat-label">Token 消耗（今日）</div>
+      <div class="pf-stat-value" id="stat-token">—</div>
+      <div class="pf-stat-sub" id="stat-token-sub">&nbsp;</div>
+    </div>
+    <div class="pf-stat">
+      <div class="pf-stat-label">站点隧道</div>
+      <div class="pf-stat-value" id="stat-sites">—</div>
+      <div class="pf-stat-sub" id="stat-sites-sub">&nbsp;</div>
+    </div>
+    <div class="pf-stat">
+      <div class="pf-stat-label">模型部署状态</div>
+      <div class="pf-stat-value" id="stat-deps">—</div>
+      <div class="pf-stat-sub" id="stat-deps-sub">&nbsp;</div>
+    </div>
+  </div>
+
+  <div class="pf-grid main-side">
+    <!-- 站点隧道状态 -->
+    <div class="pf-card">
+      <div class="pf-card-head">
+        <div class="pf-card-title">站点隧道状态</div>
+        <div class="pf-card-extra"><a href="sites.html">管理站点 ›</a></div>
+      </div>
+      <div id="site-rows"></div>
+    </div>
+
+    <!-- 公网攻击面 -->
+    <div class="pf-card">
+      <div class="pf-card-head">
+        <div class="pf-card-title">公网攻击面</div>
+        <div class="pf-card-extra"><span class="pf-chip ok">C1/C2 基线</span></div>
+      </div>
+      <div class="pf-surface-row">
+        <div class="pf-surface-main">
+          <span class="pf-surface-icon">443</span>
+          <div>
+            <div class="pf-surface-title">443/tcp · HTTPS 入口</div>
+            <div class="pf-desc">唯一公网入口（API / MCP / 站点接入 / 控制台）</div>
+          </div>
+        </div>
+        <span class="pf-chip ok">开放</span>
+      </div>
+      <div class="pf-surface-row">
+        <div class="pf-surface-main">
+          <span class="pf-surface-icon" style="font-size:10px">51820</span>
+          <div>
+            <div class="pf-surface-title">51820/udp · WireGuard</div>
+            <div class="pf-desc">站点隧道；仅已注册密钥的站点可建联</div>
+          </div>
+        </div>
+        <span class="pf-chip ok">开放</span>
+      </div>
+      <div class="pf-desc" style="border-top:1px solid #f0f0f0;padding-top:10px;margin-top:2px">
+        内部组件均不直接对外；攻击面与收敛策略详见 runbook（部署仓库）。
+      </div>
+    </div>
+  </div>
+
+  <!-- 模型部署健康 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head">
+      <div class="pf-card-title">模型 Deployment 状态（近 24h 请求成败）</div>
+      <div class="pf-card-extra"><a href="models.html">查看模型与别名 ›</a></div>
+    </div>
+    <table class="pf-table">
+      <thead>
+        <tr><th>对外模型名</th><th>站点</th><th>api_base</th><th>限流 RPM/TPM</th><th>近 24h</th><th>状态</th></tr>
+      </thead>
+      <tbody id="dep-rows"></tbody>
+    </table>
+  </div>
+
+  <!-- 最近错误 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head">
+      <div class="pf-card-title">最近错误</div>
+      <div class="pf-card-extra"><a href="usage.html">查看用量与错误 ›</a></div>
+    </div>
+    <table class="pf-table">
+      <thead>
+        <tr><th>时间</th><th>Key</th><th>模型</th><th>说明</th></tr>
+      </thead>
+      <tbody id="err-rows"></tbody>
+    </table>
+    <div class="pf-desc" style="padding:8px 12px">近期错误仅覆盖已入账请求（鉴权失败不产生日志行）。</div>
+  </div>
+
+</template>
+<script src="assets/portal.js"></script>
+<script>
+(function () {
+  'use strict';
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function fmtN(n) { return Number(n || 0).toLocaleString('zh-CN'); }
+  function fmtM(n) { return n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'K' : String(n || 0); }
+  function ago(sec) {
+    if (sec === null || sec === undefined) return '未知';
+    if (sec < 0) return '从未握手';
+    if (sec < 60) return sec + ' 秒前';
+    if (sec < 3600) return Math.round(sec / 60) + ' 分钟前';
+    if (sec < 86400) return Math.round(sec / 3600) + ' 小时前';
+    return Math.round(sec / 86400) + ' 天前';
+  }
+  function siteNameOf(apiBase, sites) {
+    var host = ((apiBase || '').split('//')[1] || '').split(':')[0];
+    for (var i = 0; i < sites.length; i++) if (sites[i].wg_ip === host) return sites[i].name;
+    return host;
+  }
+
+  window.pfReady.then(function () {
+    window.pfApi('GET', '/overview').then(function (d) {
+      var t = d.totals;
+      document.getElementById('stat-req').textContent = fmtN(t.requests);
+      document.getElementById('stat-req-sub').textContent = '错误 ' + fmtN(t.errors) + ' 次';
+      document.getElementById('stat-token').textContent = fmtM(t.prompt_tokens + t.completion_tokens + (t.cached_tokens || 0));
+      document.getElementById('stat-token-sub').textContent =
+        '输入 ' + fmtM(t.prompt_tokens) + ' · 缓存读取 ' + fmtM(t.cached_tokens || 0) + ' · 输出 ' + fmtM(t.completion_tokens);
+      document.getElementById('stat-sites').innerHTML = d.sites.online + '<small>/' + d.sites.total + '</small>';
+      document.getElementById('stat-sites-sub').textContent = '隧道在线';
+      document.getElementById('stat-deps').innerHTML = d.deployments.healthy + '<small>/' + d.deployments.total + '</small>';
+      var bad = d.deployments.total - d.deployments.healthy;
+      document.getElementById('stat-deps-sub').textContent = bad ? bad + ' 个待关注' : '全部健康';
+
+      var lockSvg = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="1.8" y="5.4" width="12.4" height="7.4" rx="1.2"/><path d="M4.6 5.4V4a3.4 3.4 0 0 1 6.8 0v1.4"/></svg>';
+      document.getElementById('site-rows').innerHTML = d.sites.rows.map(function (s) {
+        var online = s.status === 'online';
+        var revoked = s.status === 'revoked';
+        return '<div class="pf-surface-row">' +
+          '<div class="pf-surface-main">' +
+            '<span class="pf-surface-icon"' + (revoked ? ' style="background:#fafafa;color:#bfbfbf"' : '') + '>' + lockSvg + '</span>' +
+            '<div>' +
+              '<div class="pf-surface-title' + (revoked ? ' pf-muted' : '') + '">' + esc(s.name) + ' <span class="pf-muted mono">' + esc(s.wg_ip) + '</span></div>' +
+              '<div class="pf-desc">' + (revoked ? '已吊销 · 隧道无法重连' : '最近握手 ' + ago(s.handshake) + ' · ' + s.deployments + ' 个模型部署') + '</div>' +
+            '</div>' +
+          '</div>' +
+          '<span class="pf-chip ' + (online ? 'ok' : revoked ? 'gray' : 'warn') + '">' + (online ? '<span class="pf-dot ok"></span>在线' : revoked ? '已吊销' : esc(s.status)) + '</span>' +
+        '</div>';
+      }).join('') || '<div class="pf-desc" style="padding:10px 12px">暂无站点</div>';
+
+      document.getElementById('dep-rows').innerHTML = d.deployments.rows.map(function (r) {
+        var chip = r.state === '健康' ? '<span class="pf-chip ok"><span class="pf-dot ok"></span>健康</span>'
+          : r.state === '近期异常' ? '<span class="pf-chip warn"><span class="pf-dot warn"></span>近期异常</span>'
+          : '<span class="pf-chip gray">' + esc(r.state) + '</span>';
+        var lim = (r.rpm == null ? '—' : r.rpm) + ' / ' + (r.tpm == null ? '—' : fmtN(r.tpm));
+        return '<tr>' +
+          '<td>' + esc(r.model) + '</td>' +
+          '<td>' + esc(siteNameOf(r.api_base, d.sites.rows)) + '</td>' +
+          '<td class="mono">' + esc((r.api_base || '').replace(/^https?:\/\//, '')) + '</td>' +
+          '<td class="num mono">' + lim + '</td>' +
+          '<td class="num">' + fmtN(r.requests) + ' 次' + (r.failures ? ' / 败 ' + r.failures : '') + '</td>' +
+          '<td>' + chip + '</td>' +
+        '</tr>';
+      }).join('') || '<tr><td colspan="6" class="pf-desc" style="padding:10px">暂无 deployment</td></tr>';
+
+      document.getElementById('err-rows').innerHTML = d.recent_errors.map(function (e) {
+        return '<tr>' +
+          '<td class="mono">' + esc((e.time || '').replace('T', ' ').slice(5)) + '</td>' +
+          '<td><span class="pf-key">' + esc(e.key) + '</span></td>' +
+          '<td>' + esc(e.model) + '</td>' +
+          '<td class="pf-desc">' + esc(e.detail) + '</td>' +
+        '</tr>';
+      }).join('') || '<tr><td colspan="4" class="pf-desc" style="padding:10px">今日无已入账错误</td></tr>';
+    }).catch(function (e) { window.pfErr(e.error || '加载失败'); });
+  });
+})();
+</script>
+</body>
+</html>

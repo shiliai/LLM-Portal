@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>仪表盘 · 远程模型网关</title>
+<link rel="stylesheet" href="assets/portal.css">
+</head>
+<body data-page="dashboard">
+<template id="page">
+
+  <!-- 统计卡行 -->
+  <div class="pf-grid cols-4">
+    <div class="pf-stat">
+      <div class="pf-stat-label">今日请求</div>
+      <div class="pf-stat-value">1,842</div>
+      <div class="pf-stat-sub"><span class="up">↑ 9%</span> 较昨日</div>
+    </div>
+    <div class="pf-stat">
+      <div class="pf-stat-label">Token 消耗（今日）</div>
+      <div class="pf-stat-value">4.60<small>M</small></div>
+      <div class="pf-stat-sub">输入 3.68M · 输出 0.92M</div>
+    </div>
+    <div class="pf-stat">
+      <div class="pf-stat-label">站点隧道</div>
+      <div class="pf-stat-value">2<small>/3</small></div>
+      <div class="pf-stat-sub">在线 · 1 个已吊销（old-site）</div>
+    </div>
+    <div class="pf-stat">
+      <div class="pf-stat-label">模型部署健康</div>
+      <div class="pf-stat-value">2<small>/3</small></div>
+      <div class="pf-stat-sub"><span class="down">1 个冷却中</span>（lab-2f · deepseek）</div>
+    </div>
+  </div>
+
+  <div class="pf-grid main-side">
+    <!-- 站点隧道状态 -->
+    <div class="pf-card">
+      <div class="pf-card-head">
+        <div class="pf-card-title">站点隧道状态</div>
+        <div class="pf-card-extra"><a href="sites.html">管理站点 ›</a></div>
+      </div>
+
+      <div class="pf-surface-row">
+        <div class="pf-surface-main">
+          <span class="pf-surface-icon">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="1.8" y="5.4" width="12.4" height="7.4" rx="1.2"/><path d="M4.6 5.4V4a3.4 3.4 0 0 1 6.8 0v1.4"/></svg>
+          </span>
+          <div>
+            <div class="pf-surface-title">hq-office <span class="pf-muted mono">10.77.0.11</span></div>
+            <div class="pf-desc">最近握手 23 秒前 · 2 个模型部署</div>
+          </div>
+        </div>
+        <span class="pf-chip ok"><span class="pf-dot ok"></span>在线</span>
+      </div>
+
+      <div class="pf-surface-row">
+        <div class="pf-surface-main">
+          <span class="pf-surface-icon">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="1.8" y="5.4" width="12.4" height="7.4" rx="1.2"/><path d="M4.6 5.4V4a3.4 3.4 0 0 1 6.8 0v1.4"/></svg>
+          </span>
+          <div>
+            <div class="pf-surface-title">lab-2f <span class="pf-muted mono">10.77.0.12</span></div>
+            <div class="pf-desc">最近握手 1 分钟前 · 1 个模型部署</div>
+          </div>
+        </div>
+        <span class="pf-chip ok"><span class="pf-dot ok"></span>在线</span>
+      </div>
+
+      <div class="pf-surface-row">
+        <div class="pf-surface-main">
+          <span class="pf-surface-icon" style="background:#fafafa;color:#bfbfbf">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="1.8" y="5.4" width="12.4" height="7.4" rx="1.2"/><path d="M4.6 5.4V4a3.4 3.4 0 0 1 6.8 0v1.4"/></svg>
+          </span>
+          <div>
+            <div class="pf-surface-title pf-muted">old-site <span class="mono">10.77.0.9</span></div>
+            <div class="pf-desc">已吊销（2026-07-18）· 隧道无法重连</div>
+          </div>
+        </div>
+        <span class="pf-chip gray">已吊销</span>
+      </div>
+    </div>
+
+    <!-- 公网攻击面 -->
+    <div class="pf-card">
+      <div class="pf-card-head">
+        <div class="pf-card-title">公网攻击面</div>
+        <div class="pf-card-extra"><span class="pf-chip ok">C1/C2 基线</span></div>
+      </div>
+      <div class="pf-surface-row">
+        <div class="pf-surface-main">
+          <span class="pf-surface-icon">443</span>
+          <div>
+            <div class="pf-surface-title">443/tcp · Caddy</div>
+            <div class="pf-desc">唯一 HTTPS 入口，自动证书</div>
+          </div>
+        </div>
+        <span class="pf-chip ok">开放</span>
+      </div>
+      <div class="pf-surface-row">
+        <div class="pf-surface-main">
+          <span class="pf-surface-icon" style="font-size:10px">51820</span>
+          <div>
+            <div class="pf-surface-title">51820/udp · WireGuard</div>
+            <div class="pf-desc">未注册公钥的探测包内核静默丢弃</div>
+          </div>
+        </div>
+        <span class="pf-chip ok">开放</span>
+      </div>
+      <div class="pf-desc" style="border-top:1px solid #f0f0f0;padding-top:10px;margin-top:2px">
+        LiteLLM、Postgres、mcp-hub、onboardd 均只绑定 <span class="mono">127.0.0.1</span>，不接受公网直连；模型服务端口不暴露公网。
+      </div>
+    </div>
+  </div>
+
+  <!-- 模型部署健康 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head">
+      <div class="pf-card-title">模型 Deployment 健康</div>
+      <div class="pf-card-extra"><a href="models.html">查看模型与别名 ›</a></div>
+    </div>
+    <table class="pf-table">
+      <thead>
+        <tr><th>对外模型名</th><th>站点</th><th>api_base</th><th>限流 RPM/TPM</th><th>状态</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>deepseek-v4-flash-0731</td>
+          <td>hq-office</td>
+          <td class="mono">10.77.0.11:8890</td>
+          <td class="num mono">120 / 300,000</td>
+          <td><span class="pf-chip ok"><span class="pf-dot ok"></span>健康</span></td>
+        </tr>
+        <tr>
+          <td>deepseek-v4-flash-0731</td>
+          <td>lab-2f</td>
+          <td class="mono">10.77.0.12:8890</td>
+          <td class="num mono">60 / 150,000</td>
+          <td><span class="pf-chip warn"><span class="pf-dot warn"></span>冷却中（43s）</span></td>
+        </tr>
+        <tr>
+          <td>qwen3.6-35b-a3</td>
+          <td>hq-office</td>
+          <td class="mono">10.77.0.11:8004</td>
+          <td class="num mono">60 / 120,000</td>
+          <td><span class="pf-chip ok"><span class="pf-dot ok"></span>健康</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 最近错误 -->
+  <div class="pf-card flush">
+    <div class="pf-card-head">
+      <div class="pf-card-title">最近错误</div>
+      <div class="pf-card-extra"><a href="usage.html">查看用量与错误 ›</a></div>
+    </div>
+    <table class="pf-table">
+      <thead>
+        <tr><th>时间</th><th>Key</th><th>模型</th><th>状态</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="mono">14:52:07</td>
+          <td><span class="pf-key">sk-gw-…77c0</span></td>
+          <td>deepseek-v4-flash-0731</td>
+          <td><span class="pf-chip err">401</span></td>
+          <td class="pf-desc">Key 已禁用（家人共用）</td>
+        </tr>
+        <tr>
+          <td class="mono">14:30:15</td>
+          <td><span class="pf-key">sk-gw-…9f3e</span></td>
+          <td class="mono">gpt-4.1</td>
+          <td><span class="pf-chip err">404</span></td>
+          <td class="pf-desc">模型不存在（未注册的对外模型名）</td>
+        </tr>
+        <tr>
+          <td class="mono">13:58:42</td>
+          <td><span class="pf-key">sk-gw-…a1b2</span></td>
+          <td>qwen3.6-35b-a3</td>
+          <td><span class="pf-chip err">503</span></td>
+          <td class="pf-desc">全部站点不可用（唯一部署临时不可达）</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+</template>
+<script src="assets/portal.js"></script>
+</body>
+</html>

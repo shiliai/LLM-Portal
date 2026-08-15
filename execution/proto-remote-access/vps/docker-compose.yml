@@ -1,0 +1,157 @@
+# private-llm 网关全容器栈（#7 容器化：一个 compose file 管 7 服务，docker 组用户可部署；issue #9 增 compat）
+# 上游引用一律用容器名（compose 项目共享 external 网络时，裸服务名会与其他项目同名服务冲突，
+# 实测被解析到 sub2api 的 postgres——沿用 litellm DATABASE_URL 的结论）。
+# 对外仅由既有 nginx-sub2api 容器经共享网络反代（nginx/private-llm.conf，deploy.sh 注入）；
+# 127.0.0.1 端口发布仅供本机 CLI / 冒烟 / 调试，不暴露公网。
+#
+# 安全边界：console/onboardd 挂 docker.sock（经 docker exec 管理 wg sidecar / 重启 mcp-hub），
+# 挂 sock 的容器 ≈ 宿主机 root——只给这两个管理面容器，有意取舍（见 runbook §7）。
+name: private-llm
+
+services:
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: litellm
+    restart: unless-stopped
+    # BBR：litellm→站点 vLLM 的内层 TCP 走 wg 隧道（跨境 ~25% 晚高峰丢包），
+    # CUBIC 会把随机丢包当拥塞退避成 ~4KB/s；BBR 对随机丢包鲁棒（sysctl 为 per-netns，须在容器上设）
+    sysctls:
+      net.ipv4.tcp_congestion_control: bbr
+      net.ipv4.tcp_rmem: 4096 87380 16000000
+      net.ipv4.tcp_wmem: 4096 65536 16000000
+    ports:
+      - "127.0.0.1:4000:4000"
+    volumes:
+      - ./litellm:/app/proxy:ro
+    command: ["--config", "/app/proxy/config.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      DATABASE_URL: postgresql://litellm:${POSTGRES_PASSWORD}@private-llm-postgres:5432/litellm
+      STORE_MODEL_IN_DB: "True"
+    networks:
+      - default
+      - shared
+    depends_on:
+      - postgres
+
+  # 协议兼容层（issue #9 / US-13 us13-v1）：nginx 三条 API 路径经此转 LiteLLM。
+  # 无状态、不落盘、不挂 sock、不持密钥（鉴权头原样透传，鉴权/路由/记账仍归 litellm）
+  compat:
+    build: ../compat
+    container_name: private-llm-compat
+    restart: unless-stopped
+    environment:
+      LITELLM_BASE: http://litellm:4000
+    ports:
+      - "127.0.0.1:8400:8400"   # 本机冒烟/调试
+    networks:
+      - default
+      - shared
+    depends_on:
+      - litellm
+
+  postgres:
+    image: postgres:18-alpine
+    container_name: private-llm-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: litellm
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  mcp-hub:
+    build: ../mcp-hub
+    container_name: private-llm-mcp-hub
+    restart: unless-stopped
+    environment:
+      LITELLM_BASE: http://litellm:4000
+      PUBLIC_BASE: https://${DOMAIN}
+      MCP_VISION_MODEL: ${MCP_VISION_MODEL:-qwen3.6-35b-fp8}
+    volumes:
+      # 状态（usage.db + uploads）落宿主机，容器重建不丢
+      - /var/lib/private-llm/mcp-hub:/var/lib/private-llm/mcp-hub
+      # consoled 写、mcp-hub 读（单文件 bind：write_text 截断写不换 inode，重启不失效）
+      - /etc/private-llm/external-mcp.json:/etc/private-llm/external-mcp.json
+    ports:
+      - "127.0.0.1:8200:8200"
+    networks:
+      - default
+      - shared
+
+  onboardd:
+    build: ../onboardd
+    container_name: private-llm-onboardd
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN}
+      LITELLM_BASE: http://litellm:4000
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      ONBOARD_ADMIN_TOKEN: ${ONBOARD_ADMIN_TOKEN}
+      WG_PORT: ${WG_PORT:-51820}
+      WG_VPS_IP: ${WG_VPS_IP:-10.77.0.1}
+      # wg0 在宿主机 netns（wireguard sidecar 托管），经 docker.sock exec 操作
+      WG_EXEC: docker exec private-llm-wireguard wg
+    volumes:
+      - /var/lib/private-llm/onboardd:/var/lib/private-llm/onboardd
+      - /var/lib/private-llm/wireguard-public.key:/var/lib/private-llm/wireguard-public.key:ro
+      # peer 持久化回写（与 wireguard sidecar 共享同一宿主机文件）
+      - /etc/wireguard/wg0.conf:/etc/wireguard/wg0.conf
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "127.0.0.1:8100:8100"   # site-add 等 CLI 走本机回环
+    networks:
+      - default
+      - shared
+
+  console:
+    build: ../console
+    container_name: private-llm-console
+    restart: unless-stopped
+    environment:
+      LITELLM_BASE: http://litellm:4000
+      ONBOARDD_URL: http://private-llm-onboardd:8100
+      MCP_HUB_URL: http://private-llm-mcp-hub:8200
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      ONBOARD_ADMIN_TOKEN: ${ONBOARD_ADMIN_TOKEN}
+      MCP_VISION_MODEL: ${MCP_VISION_MODEL:-qwen3.6-35b-fp8}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ADMIN_TOTP_SECRET: ${ADMIN_TOTP_SECRET:-}
+      # 站点握手状态查询 / mcp-hub 重启（宿主机语义默认值见 console.py）
+      WG_EXEC: docker exec private-llm-wireguard wg
+      MCP_RESTART_CMD: docker restart private-llm-mcp-hub
+    volumes:
+      - /var/lib/private-llm/console:/var/lib/private-llm/console
+      # 只读用量账本（mcp-hub 写、consoled 聚合读）
+      - /var/lib/private-llm/mcp-hub:/var/lib/private-llm/mcp-hub:ro
+      # 外部 MCP 注册表（consoled 写）
+      - /etc/private-llm:/etc/private-llm
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "127.0.0.1:8300:8300"
+    networks:
+      - default
+      - shared
+
+  wireguard:
+    build: ./wireguard
+    container_name: private-llm-wireguard
+    restart: unless-stopped
+    # host 网络：wg0 创建在宿主机网络命名空间——litellm 容器到站点（10.77.0.0/24）
+    # 的路由经宿主机默认网关进 wg0，模型不变；NET_ADMIN 供 wg-quick/ip 操作接口
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - /etc/wireguard/wg0.conf:/etc/wireguard/wg0.conf
+
+volumes:
+  pgdata:
+
+networks:
+  # nginx-sub2api 容器所在的 compose 网络（deploy.sh 自动探测并注入 NGINX_SHARED_NETWORK）
+  shared:
+    external: true
+    name: ${NGINX_SHARED_NETWORK:-docker_default}
