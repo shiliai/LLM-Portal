@@ -5,7 +5,10 @@
 set -euo pipefail
 
 ONBOARD=${ONBOARDD_URL:-http://127.0.0.1:8100}
-ADMIN_TOKEN=$(grep -E '^ONBOARD_ADMIN_TOKEN=' /etc/private-llm/onboardd.env | cut -d= -f2-)
+# #7 容器化后 /etc/private-llm 不再放 env 文件：回退到源码目录 vps/.env
+ENV_FILE=/etc/private-llm/onboardd.env
+[ -f "$ENV_FILE" ] || ENV_FILE="$HOME/private-llm-src/vps/.env"
+ADMIN_TOKEN=$(grep -E '^ONBOARD_ADMIN_TOKEN=' "$ENV_FILE" | cut -d= -f2-)
 
 [ $# -eq 1 ] || { sed -n '2,5p' "$0"; exit 1; }
 curl -fsS -X POST "$ONBOARD/onboard/admin/revoke" \
