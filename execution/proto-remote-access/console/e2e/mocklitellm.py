@@ -27,6 +27,16 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get('content-length') or 0)
         body = json.loads(self.rfile.read(n) or b'{}')
+        if self.path.startswith('/key/generate'):
+            import secrets as _s, hashlib as _h, time as _t
+            key = 'sk-' + _s.token_urlsafe(24)
+            h = _h.sha256(key.encode()).hexdigest()
+            STATE.append({"token": h, "key_name": None,
+                          "key_alias": body.get("key_alias"),
+                          "metadata": body.get("metadata") or {},
+                          "models": body.get("models") or [], "blocked": None,
+                          "created_at": _t.strftime("%Y-%m-%dT%H:%M:%S")})
+            return self._send({"key": key, "token": h})
         if self.path.startswith('/key/update'):
             for k in STATE:
                 info = k.get('key_info', k)

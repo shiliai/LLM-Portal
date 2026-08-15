@@ -23,7 +23,8 @@
   GET  /console/api/models             模型与 deployment（直选/别名判定）
   POST /console/api/models/alias       新建别名（克隆目标全部 deployment）
   GET  /console/api/keys               Key 清单（/key/list 全对象）
-  POST /console/api/keys/create        建 Key（一次性返回全文）
+  POST /console/api/keys/create        建 Key（一次性返回全文；明文入加密保险库，可再查）
+  POST /console/api/keys/reveal        管理员查看 Key 明文（保险库解密；旧 Key 未入库则 404）
   POST /console/api/keys/update        改备注名/分组/模型白名单（/key/update）
   POST /console/api/keys/block         禁用（/key/block）
   POST /console/api/keys/unblock       启用（/key/unblock）
@@ -90,6 +91,10 @@ STATE_DIR = Path(os.environ.get("CONSOLE_DATA", "/var/lib/private-llm/console"))
 SECRET_PATH = STATE_DIR / "console.secret"
 # 页面启用的 2FA 密钥（#8）：{enabled, secret, pending}；优先于 env 预置
 TOTP_STATE_PATH = STATE_DIR / "totp.json"
+# Key 明文保险库（管理员可再查）：明文经 Fernet 加密落 sqlite，密钥文件独立 0600。
+# 安全边界变化见 runbook §7——网关成为密钥保管者，VPS 失陷即密钥失陷；轮换 = 删库重签
+VAULT_DB = STATE_DIR / "keyvault.db"
+VAULT_KEY_PATH = STATE_DIR / "keyvault.key"
 SESSION_TTL = 8 * 3600
 LOGIN_FAIL_LIMIT, LOGIN_WINDOW = 5, 60
 HANDSHAKE_ONLINE = 180  # 最近握手 3 分钟内视为在线
@@ -237,6 +242,53 @@ def active_totp() -> tuple[str, str]:
     if st.get("enabled") and st.get("secret"):
         return st["secret"], "state"
     return (ADMIN_TOTP_SECRET, "env") if ADMIN_TOTP_SECRET else ("", "")
+
+
+# ---------------------------------------------------------------- Key 明文保险库
+
+try:
+    from cryptography.fernet import Fernet
+except ImportError:            # 容器镜像经 fastmcp 传递依赖必有；本地裸跑提示
+    Fernet = None
+
+if Fernet is not None:
+    if VAULT_KEY_PATH.exists():
+        _vault_fernet = Fernet(VAULT_KEY_PATH.read_bytes().strip())
+    else:
+        _vault_key = Fernet.generate_key()
+        VAULT_KEY_PATH.write_bytes(_vault_key + b"\n")
+        os.chmod(VAULT_KEY_PATH, 0o600)
+        _vault_fernet = Fernet(_vault_key)
+    with sqlite3.connect(VAULT_DB) as _conn:
+        _conn.execute("CREATE TABLE IF NOT EXISTS keys ("
+                      "token TEXT PRIMARY KEY, cipher TEXT NOT NULL, created_at INTEGER NOT NULL)")
+else:
+    _vault_fernet = None
+    print("!! cryptography 未安装，Key 明文保险库不可用（reveal 将一律 404）", file=sys.stderr)
+
+
+def vault_store(token_hash: str, plaintext: str) -> None:
+    if _vault_fernet is None:
+        return
+    with sqlite3.connect(VAULT_DB) as conn:
+        conn.execute("INSERT OR REPLACE INTO keys (token, cipher, created_at) VALUES (?,?,?)",
+                     (token_hash, _vault_fernet.encrypt(plaintext.encode()).decode(), int(time.time())))
+
+
+def vault_get(token_hash: str) -> str:
+    if _vault_fernet is None:
+        return ""
+    try:
+        with sqlite3.connect(VAULT_DB) as conn:
+            row = conn.execute("SELECT cipher FROM keys WHERE token=?", (token_hash,)).fetchone()
+    except sqlite3.Error:
+        return ""
+    if row is None:
+        return ""
+    try:
+        return _vault_fernet.decrypt(row[0].encode()).decode()
+    except Exception:           # 密钥文件轮换后旧密文不可解
+        return ""
 
 
 def _start_session(role: str, key: str) -> Response:
@@ -1002,10 +1054,30 @@ async def api_keys_create(request: Request) -> Response:
     code, rbody = await ll_json("POST", "/key/generate", json=payload)
     if code != 200:
         return JSONResponse(rbody if isinstance(rbody, dict) else {"error": str(rbody)[:300]}, status_code=code)
+    plaintext = (rbody or {}).get("key") or (rbody or {}).get("token") or ""
+    if plaintext:
+        vault_store(hashlib.sha256(plaintext.encode()).hexdigest(), plaintext)
     return JSONResponse({"ok": True,
-                         "key": (rbody or {}).get("key") or (rbody or {}).get("token"),
+                         "key": plaintext,
                          "alias": alias or "(未命名)", "group": group, "models": models,
-                         "note": "仅此一次完整展示，请立即保存分发"})
+                         "note": "已同时存入加密保险库，可随时在「使用」中查看"})
+
+
+async def api_keys_reveal(request: Request) -> Response:
+    """管理员查看 Key 明文（保险库解密）。旧 Key（保险库启用前创建）只有哈希，404。"""
+    sess = await require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    try:
+        token = (await request.json())["key"]
+    except (ValueError, KeyError):
+        return jerr("bad request: expect {key}", 400)
+    if not re.fullmatch(r"[0-9a-f]{64}", token):
+        return jerr("bad key hash", 400)
+    plaintext = vault_get(token)
+    if not plaintext:
+        return jerr("该 Key 明文不在保险库（创建于保险库启用前或密钥已轮换），请禁用后重新签发", 404)
+    return JSONResponse({"key": plaintext})
 
 
 async def api_keys_update(request: Request) -> Response:
@@ -1334,6 +1406,7 @@ api_routes = [
     Route("/console/api/models/alias", api_models_alias, methods=["POST"]),
     Route("/console/api/keys", api_keys, methods=["GET"]),
     Route("/console/api/keys/create", api_keys_create, methods=["POST"]),
+    Route("/console/api/keys/reveal", api_keys_reveal, methods=["POST"]),
     Route("/console/api/keys/update", api_keys_update, methods=["POST"]),
     Route("/console/api/keys/block", api_keys_block, methods=["POST"]),
     Route("/console/api/keys/unblock", api_keys_unblock, methods=["POST"]),

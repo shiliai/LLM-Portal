@@ -87,9 +87,9 @@
         </div>
       </div>
       <div id="newkey-result" style="display:none">
-        <div class="pf-banner">密钥全文仅此一次展示，关闭后只能看到尾 4 位。</div>
+        <div class="pf-banner">密钥已存入加密保险库——之后随时可在「使用」中取回明文。</div>
         <div class="pf-code"><pre id="newkey-full"></pre></div>
-        <div class="pf-desc">请立即复制并妥善保存；系统不存储密钥明文，遗失后只能禁用并重新签发。</div>
+        <div class="pf-desc">请复制分发；亦可在「安全设置」启用管理员两步验证以加强控制台防护。</div>
       </div>
     </div>
     <div class="pf-modal-foot">
@@ -138,7 +138,7 @@
                placeholder="粘贴完整密钥（sk-…）以代入下方配置">
         <button class="pf-btn" id="btn-use-show" type="button" title="显示/隐藏明文">显示</button>
       </div>
-      <div class="pf-desc" style="margin-bottom:6px">系统不存储密钥明文（列表只显示尾 4 位）；本标签页内创建或粘贴过的密钥会被自动代入，关闭标签即清除。</div>
+      <div class="pf-desc" style="margin-bottom:6px">密钥明文由网关加密保管，「使用」时自动取回代入（仅管理员可见）；此功能启用前创建的旧 Key 未入库，可手动粘贴，本标签页内会记住。</div>
 
       <div class="pf-tabs">
         <button class="pf-tab active" data-tab="cc" type="button">Claude Code</button>
@@ -323,7 +323,15 @@
       };
     });
     document.querySelectorAll('.js-use-key').forEach(function (btn) {
-      btn.onclick = function () { openUse(btn.dataset.alias, '', btn.dataset.last4); };
+      btn.onclick = function () {
+        var alias = btn.dataset.alias, last4 = btn.dataset.last4;
+        // 保险库优先：管理员随时可取回明文；旧 Key 未入库则退回本页会话记忆
+        window.pfApi('POST', '/keys/reveal', { key: btn.dataset.token }).then(function (d) {
+          openUse(alias, d.key, last4);
+        }).catch(function () {
+          openUse(alias, cachedKey(last4), last4);
+        });
+      };
     });
   }
 
