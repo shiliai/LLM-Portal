@@ -1,0 +1,12 @@
+# 开发/测试依赖（issue #10）：跑仓库根 `pytest` / `make test` 所需。
+# 服务运行时依赖见各服务目录的 requirements.txt；这里是与版本对齐的合集，
+# `python3 -m pip install -r requirements-dev.txt` 后即可执行全部单测。
+
+pytest>=8                 # 单测运行器（console/onboardd/mcp-hub 的 test_*.py 与 compat 的 unittest 风格用例）
+starlette>=0.40           # 三服务的 ASGI 框架；单测用其 TestClient 进程内起服务
+httpx>=0.27               # 服务回环客户端；TestClient 依赖（单测里被 testutil 桩替身接管）
+uvicorn>=0.30             # 服务运行入口（单测不依赖，保持与服务 requirements 一致）
+segno>=1.6                # console 2FA 二维码（console.py import 即用）
+cryptography>=42          # console Key 明文保险库（Fernet，console.py import 即用）
+fastmcp>=2.11             # mcp-hub MCP 服务端/客户端（本地验证过 3.4.7）
+python-multipart>=0.0.9   # mcp-hub /mcp/upload 表单解析（starlette request.form 需要）

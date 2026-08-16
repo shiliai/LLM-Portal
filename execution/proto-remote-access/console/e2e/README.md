@@ -15,10 +15,12 @@
 
 ```bash
 # 一次性准备（本目录）
-npm init -y && npm install playwright && npx playwright install chromium
-python3 -m venv venv && venv/bin/pip install starlette uvicorn httpx segno
+# playwright 版本已固定在 package.json；浏览器二进制装到 ~/.cache/ms-playwright
+npm install && npx playwright install chromium
+python3 -m venv .venv && .venv/bin/pip install starlette uvicorn httpx segno cryptography
 
 # 导出生产形状数据（VPS 上）→ 拷到本目录 keylist.json
+# （缺省可用 mocklitellm.py 内置合成夹具，可跳过本步先跑起来）
 ssh your-vps 'cd ~/LLM-Portal/vps && set -a; . ./.env; set +a; \
   curl -s "http://127.0.0.1:4000/key/list?return_full_object=true" \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY"' > keylist.json
@@ -28,10 +30,12 @@ python3 mocklitellm.py &                      # 127.0.0.1:4100
 env CONSOLE_PORT=8399 CONSOLE_DATA=/tmp/cdata LITELLM_BASE=http://127.0.0.1:4100 \
     LITELLM_MASTER_KEY=sk-test-master ONBOARD_ADMIN_TOKEN=tok \
     ADMIN_EMAIL=admin@test.local ADMIN_PASSWORD=test-pass-1 \
-    ../venv/bin/python ../console.py &        # venv 指向 console 依赖
+    .venv/bin/python ../console.py &          # .venv 指 console 依赖
 
-node keys-e2e.js                              # 断言输出 + 截图 r*.png
+node keys-e2e.js                              # 断言输出 + 截图 r*.png（= npm run keys）
 ```
+
+其余脚本同理：`npm run keys-memory` / `keys-vault` / `usage-redesign` / `usage-reqlog`。
 
 ## 已知桩缺口（断言时留意）
 

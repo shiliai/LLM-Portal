@@ -1,0 +1,77 @@
+# Dependabot：周更依赖（issue #10 开源准备）
+# 三个 ecosystem × 多目录（Dependabot 的 directory 是相对仓库根的路径，每个含依赖清单的目录一条）
+version: 2
+updates:
+  # GitHub Actions workflow 里引用的 action 版本（.github/workflows/）
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(ci)"
+
+  # Python 依赖：四个自写服务各一份 requirements.txt
+  - package-ecosystem: "pip"
+    directory: "/execution/proto-remote-access/console"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: "pip"
+    directory: "/execution/proto-remote-access/onboardd"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: "pip"
+    directory: "/execution/proto-remote-access/mcp-hub"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: "pip"
+    directory: "/execution/proto-remote-access/compat"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Docker 镜像基础镜像：五个含 Dockerfile 的目录
+  # （compose 里的 litellm/postgres/nginx/certbot 镜像 tag 为手动固定，Dependabot 不覆盖 compose）
+  - package-ecosystem: "docker"
+    directory: "/execution/proto-remote-access/console"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: "docker"
+    directory: "/execution/proto-remote-access/onboardd"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: "docker"
+    directory: "/execution/proto-remote-access/mcp-hub"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: "docker"
+    directory: "/execution/proto-remote-access/compat"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: "docker"
+    directory: "/execution/proto-remote-access/vps/wireguard"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"

@@ -1,52 +1,50 @@
-# CLAUDE.md
+# CLAUDE.md / AGENTS 约定
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+本文件为 AI 编码助手（Claude Code 等）在本仓库工作时的指引。
 
 ## 项目定位
 
-面向**中小企业**的自部署统一 AI 网关（LLM-portal），参考产品：token.love（见 `planning/02-working/token_love_product_spec.md`）。
+面向**中小企业**的自部署统一 AI 网关（LLM-portal）：公网 VPS 入口 + WireGuard 多站点隧道，
+让散布在多个内网的私有推理模型以 OpenAI / Anthropic 兼容 API 统一对外，并提供虚拟 Key、
+分组路由、用量计量与管理控制台。参考产品：token.love（见 `planning/02-working/`）。
 
-当前处于**规划/设计阶段**：尚无可构建的代码，暂无 build/lint/test 命令；代码落地到 `execution/` 后在此补充。
+当前状态：proto-remote-access MVP 已上线运行（见 `execution/proto-remote-access/README.md`），
+需求基线以 `planning/03-core/user_story_baseline_r4.md` 为准。
 
-## 产品目标（MVP 核心能力）
+## 常用命令
 
-1. **模型映射**：对外暴露统一模型名，映射到不同上游供应商/模型。
-2. **路由转换**：OpenAI API ↔ Anthropic API 双向协议转换（请求/响应/流式/工具调用）。
-3. **System Prompt 修改**：网关层对 system prompt 的注入、改写、追加策略。
-4. **缓存管理**：响应缓存 / prompt cache 的策略与管理。
+| 命令 | 用途 |
+|------|------|
+| `make test` | 全部 pytest 单测（compat + console + onboardd + mcp-hub） |
+| `make lint` | 全部入库 .py 的 py_compile 语法检查 |
+| `make compose-validate` | vps/docker-compose.yml 配置校验（不启动容器） |
+| `make test-e2e` | console Playwright E2E 运行说明（需真实浏览器，不进 CI） |
 
-需求基线与设计决策以 `planning/03-core/` 中已确认的文档为准；未落入 03-core 的内容一律视为未确认。
+新环境：`python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt`，
+然后 `make test PYTHON=.venv/bin/python`。
 
 ## 目录约定
 
 | 目录 | 用途 | 规则 |
 |------|------|------|
-| `planning/01-raw/` | 原始资料（外部代码库、原始文档等） | **已 gitignore**。仅在需要查找细节时查看；第一轮提炼完成后不再读取 |
-| `planning/02-working/` | 已提炼过的资料 | 作为**项目设计阶段**的输入 |
-| `planning/03-core/` | 已确认的权威资料 | **开发阶段**直接使用，以此为准 |
-| `execution/` | 开发执行工作区 | 代码与实现产物 |
+| `planning/01-raw/` | 原始资料（外部代码库等） | **已 gitignore**，不入库 |
+| `planning/02-working/` | 已提炼的资料 | 作为设计阶段的输入 |
+| `planning/03-core/` | 已确认的权威资料 | 开发阶段直接使用，以此为准 |
+| `execution/` | 开发执行产物 | 代码与实现（当前主体在 `execution/proto-remote-access/`） |
+| `docs/superpowers/` | 设计稿与高保真原型 | 设计依据 |
 
 工作流：`01-raw`（提炼）→ `02-working`（设计确认）→ `03-core`（开发依据）。
+未落入 `03-core/` 的内容一律视为未确认；基线只通过「升版」演进。
 
 ## 原始资料研究流程（外部代码库/大型文档）
 
-研究外部代码库时**不要在主会话直接抓取或通读**（避免污染主上下文），改用 subagent：
-
-1. 轻量调研优先用 **zread MCP**（get_repo_structure / read_file / search_doc），无需克隆即可查结构、读文件、搜文档。
-2. 需要深入研究时，由 agent 将代码库浅克隆到 `planning/01-raw/<项目名>/`（`git clone --depth 1`），在该目录内研究。**克隆后立即删除库内的 `CLAUDE.md` 与 `.claude/`**，防止其规则被自动加载、污染本项目上下文。
-3. **模型选择按任务复杂度**：下载、清点、提取 README 要点等简单任务用 **haiku**；需要理解架构/机制/跨文件推理的研究用 **sonnet**。
-4. agent 的交付物是**提炼后的结论**，写入 `planning/02-working/<主题>.md`；主会话只消费提炼结果，不读原始库。
-5. `01-raw` 不入库，提炼完成后仅在需要细节时回查。
-
-### Subagent 派发方式（认证约束，重要）
-
-本机 `claude` 经 dev-toolchain 封装（见 `workspaces/dev-lite/dev-toolchain/shell/claude.sh`）：`claude_<provider>` 函数把 `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` 以**内联环境变量**注入 `claude` 子进程，token 不写入 `~/.claude/settings.json`。认证只存在于当前进程的环境链中，因此派发 agent 必须走能继承该环境的路径：
-
-- ✅ **Agent 工具内置 subagent + 同步模式**（`general-purpose`、`Explore` 等，传 `model: haiku|sonnet`，**必须 `run_in_background: false`**）：同步派发在主进程内运行、共享主会话 API 连接（已实测验证）。注意：**后台模式（默认）会另起独立 claude 进程，认证丢失，必报 Not logged in**——后台派发已实测失败，不要用。
-- ✅ **Bash 派发 headless CLI**：`claude -p "<任务>" --model sonnet|haiku`。Bash 子进程继承内联注入的认证变量（已实测验证）。**需要后台/并行的长任务走这条路**（Bash 工具的 run_in_background 安全，环境仍被继承），结果写入文件供主会话消费；直接调用不含 `CLAUDE_DEFAULT_ARGS`，需要放权时自行追加参数。
-- ❌ **Agent 工具后台模式（默认）、FleetView `claude` agent 类型、agent-teams teammates**：这些路径起独立进程且不继承内联认证变量，必报「Not logged in · Please run /login」。封装修复前不要使用。
+研究外部代码库时不要在主会话直接通读（避免污染上下文），改用 subagent：
+浅克隆到 `planning/01-raw/<项目名>/`（`git clone --depth 1`，不入库），交付物为提炼后的
+结论并写入 `planning/02-working/<主题>.md`；主会话只消费提炼结果。
 
 ## 其他约定
 
-- 默认分支：`main`。
-- 本机配置了 **privacy-filter 提交钩子**：提交若被 PII 检测拦截，按其生成的补丁（`.git/privacy-filter/*.patch`）脱敏后提交；不要用 `--no-verify` 绕过。
+- 默认分支：`main`；提交信息遵循 Conventional Commits（中文描述可）。
+- **红线：任何真实密钥、真实域名/IP、内网拓扑不得入库**——示例一律用 `example.com`、
+  `192.0.2.x`（TEST-NET）、`REPLACE_ME` 占位（见 CONTRIBUTING.md）。
+- 代码注释用中文，解释「为什么」并保留取舍背景（本仓库的重要决策大量记录在注释里）。
