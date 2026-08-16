@@ -89,7 +89,8 @@ else
   COMPOSE_PROFILES="--profile edge"
   [ "$EDGE_MODE" = standalone ] && COMPOSE_PROFILES="$COMPOSE_PROFILES --profile tls"
 fi
-docker compose up -d --build $COMPOSE_PROFILES
+# --profile 是 compose 全局 flag，须置于子命令前（up 之后挂 --profile 在部分版本报 unknown flag）
+docker compose $COMPOSE_PROFILES up -d --build
 sleep 3
 docker compose ps
 
