@@ -34,11 +34,19 @@ from starlette.responses import JSONResponse, PlainTextResponse, Response
 from starlette.routing import Route
 
 DOMAIN = os.environ.get("DOMAIN", "llm-portal.example.com")
+# offload 模式（TLS 在上游设备终结）：对外基地址通常带高位端口（https://域名:8080），
+# 站点 install/register 回调地址用它；站点 wg Endpoint 指向网关可达地址（内网部署=内网 IP，
+# 上游反代不转发 UDP）。standalone/external 两模式下三者一致，均无需设置。
+# rstrip：容忍 .env 里 PUBLIC_BASE 末尾误带 /（否则 install_command 拼出 //onboard/…）
+PUBLIC_BASE = os.environ.get("PUBLIC_BASE", f"https://{DOMAIN}").rstrip("/")
+WG_ENDPOINT_HOST = os.environ.get("WG_ENDPOINT_HOST", DOMAIN)
 WG_CONF = Path(os.environ.get("WG_CONF", "/etc/wireguard/wg0.conf"))
 WG_IFACE = os.environ.get("WG_IFACE", "wg0")
 WG_EXEC = shlex.split(os.environ.get("WG_EXEC", "wg"))
 WG_PORT = os.environ.get("WG_PORT", "51820")
 WG_SUBNET_PREFIX = os.environ.get("WG_SUBNET_PREFIX", "10.77.0")  # 站点 IP 从 .11 递增
+WG_ALLOWED = f"{WG_SUBNET_PREFIX}.0/24"                          # 站点侧 AllowedIPs（整段进隧道）
+GW_WG_IP = os.environ.get("WG_VPS_IP", "10.77.0.1")             # 网关自身 wg 地址（install.sh 自检 ping）
 LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://127.0.0.1:4000")
 LITELLM_MASTER_KEY = os.environ["LITELLM_MASTER_KEY"]
 ADMIN_TOKEN = os.environ["ONBOARD_ADMIN_TOKEN"]
@@ -101,9 +109,11 @@ async def install(request: Request) -> Response:
     if row is None or row["used"] or row["expires_at"] < time.time():
         return PlainTextResponse("invalid, expired or used token\n", status_code=403)
     ports = " ".join(str(m["port"]) for m in json.loads(row["models"]))
-    script = (INSTALL_SH.format(token=token, endpoint=f"https://{DOMAIN}")
+    script = (INSTALL_SH.format(token=token, endpoint=PUBLIC_BASE)
               .replace("__VPS_PUBLIC_KEY__", vps_public_key())
-              .replace("__WG_ENDPOINT__", f"{DOMAIN}:{WG_PORT}")
+              .replace("__WG_ENDPOINT__", f"{WG_ENDPOINT_HOST}:{WG_PORT}")
+              .replace("__WG_ALLOWED__", WG_ALLOWED)
+              .replace("__GW_WG_IP__", GW_WG_IP)
               .replace("__MODEL_PORTS__", ports))
     return PlainTextResponse(script, media_type="text/x-shellscript")
 
@@ -143,8 +153,8 @@ async def register(request: Request) -> Response:
         "MTU = 1280                    # 跨境链路大 UDP 包丢弃率高，1280 实测吞吐 3-6 倍于默认 1420\n"
         "[Peer]\n"
         f"PublicKey = {vps_public_key()}\n"
-        f"Endpoint = {DOMAIN}:{WG_PORT}\n"
-        "AllowedIPs = 10.77.0.0/24\n"
+        f"Endpoint = {WG_ENDPOINT_HOST}:{WG_PORT}\n"
+        f"AllowedIPs = {WG_ALLOWED}\n"
         "PersistentKeepalive = 25\n"
     )
     return JSONResponse({"wg_ip": wg_ip, "wg_config": conf})
@@ -223,7 +233,7 @@ async def admin_token(request: Request) -> Response:
     return JSONResponse({
         "token": token,
         "expires_in": TOKEN_TTL,
-        "install_command": f'curl -fsSL "https://{DOMAIN}/onboard/install?token={token}" | sudo bash',
+        "install_command": f'curl -fsSL "{PUBLIC_BASE}/onboard/install?token={token}" | sudo bash',
     })
 
 
@@ -341,7 +351,7 @@ MTU = 1280
 [Peer]
 PublicKey = __VPS_PUB__
 Endpoint = __ENDPOINT_WG__
-AllowedIPs = 10.77.0.0/24
+AllowedIPs = __WG_ALLOWED__
 PersistentKeepalive = 25
 EOF
 sed -i "s|__WG_IP__|$WG_IP|; s|__VPS_PUB__|__VPS_PUBLIC_KEY__|; s|__ENDPOINT_WG__|__WG_ENDPOINT__|" /etc/wireguard/wg0.conf
@@ -362,7 +372,7 @@ sysctl --system >/dev/null
 
 echo "-- self-check"
 OK=1
-if ping -c 2 -W 3 10.77.0.1 >/dev/null 2>&1; then PING=pass; else PING=fail; OK=0; fi
+if ping -c 2 -W 3 __GW_WG_IP__ >/dev/null 2>&1; then PING=pass; else PING=fail; OK=0; fi
 PORTS="__MODEL_PORTS__"
 for P in $PORTS; do
   if curl -sf -m 5 "http://127.0.0.1:$P/v1/models" >/dev/null; then eval "PORT_$P=pass"; else eval "PORT_$P=fail"; OK=0; fi

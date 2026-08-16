@@ -1,10 +1,13 @@
 # private-llm 网关全容器栈（#7 容器化：一个 compose file 管 7 服务，docker 组用户可部署；issue #9 增 compat）
 # 上游引用一律用容器名（compose 项目共享 external 网络时，裸服务名会与其他项目同名服务冲突，
 # 实测被解析到 sub2api 的 postgres——沿用 litellm DATABASE_URL 的结论）。
-# 对外入口两种模式（deploy.sh 按 .env 的 EDGE_MODE 选择）：
-#   standalone（默认）：--profile edge 起 edge-nginx + edge-certbot，80/443 由本栈发布，
-#                      不依赖任何既有容器/目录布局；
-#   external：反代到既有 nginx 容器（共享网络 + 注入 server 块，见 deploy.sh external 分支）。
+# 对外入口三种模式（deploy.sh 按 .env 的 EDGE_MODE 选择）：
+#   standalone（默认）：--profile edge --profile tls 起 edge-nginx + edge-certbot，
+#                      80/443 由本栈发布，不依赖任何既有容器/目录布局；
+#   external：反代到既有 nginx 容器（共享网络 + 注入 server 块，见 deploy.sh external 分支）；
+#   offload：TLS 由上游设备（防火墙反代等）终结，仅起 edge-nginx（HTTP-only，
+#            nginx/private-llm-offload.conf），certbot 不启用——外部 URL 形如
+#            https://<域名>:<高位端口>/，须在 .env 设 PUBLIC_BASE 同步该地址。
 # 127.0.0.1 端口发布仅供本机 CLI / 冒烟 / 调试，不暴露公网。
 #
 # 安全边界：console/onboardd 挂 docker.sock（经 docker exec 管理 wg sidecar / 重启 mcp-hub），
@@ -66,7 +69,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: litellm
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # postgres 18+ 规范挂载点（镜像默认 PGDATA=/var/lib/postgresql/18/docker，须落在卷内；
+      # 挂 …/data 会被 entrypoint 拒启）。注意：从旧布局（…/data）迁来需一次性 pg_dump 恢复
+      - pgdata:/var/lib/postgresql
 
   mcp-hub:
     build: ../mcp-hub
@@ -74,7 +79,8 @@ services:
     restart: unless-stopped
     environment:
       LITELLM_BASE: http://litellm:4000
-      PUBLIC_BASE: https://${DOMAIN}
+      # offload 模式外部 URL 带高位端口（https://域名:8080），与 DOMAIN 裸域名不同，允许显式覆盖
+      PUBLIC_BASE: ${PUBLIC_BASE:-https://${DOMAIN}}
       MCP_VISION_MODEL: ${MCP_VISION_MODEL:-qwen3.6-35b-fp8}
     volumes:
       # 状态（usage.db + uploads）落宿主机，容器重建不丢
@@ -93,11 +99,15 @@ services:
     restart: unless-stopped
     environment:
       DOMAIN: ${DOMAIN}
+      # offload 模式:install/register 回调与站点 wg Endpoint 的地址语义（见 onboardd.py 头注）
+      PUBLIC_BASE: ${PUBLIC_BASE:-https://${DOMAIN}}
+      WG_ENDPOINT_HOST: ${WG_ENDPOINT_HOST:-${DOMAIN}}
       LITELLM_BASE: http://litellm:4000
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
       ONBOARD_ADMIN_TOKEN: ${ONBOARD_ADMIN_TOKEN}
       WG_PORT: ${WG_PORT:-51820}
       WG_VPS_IP: ${WG_VPS_IP:-10.77.0.1}
+      WG_SUBNET_PREFIX: ${WG_SUBNET_PREFIX:-10.77.0}
       # wg0 在宿主机 netns（wireguard sidecar 托管），经 docker.sock exec 操作
       WG_EXEC: docker exec private-llm-wireguard wg
     volumes:
@@ -173,11 +183,12 @@ services:
     networks:
       - shared
 
-  # edge-certbot：12h 续期循环（webroot 复用 edge-nginx 的 80 端口 ACME 路径）
+  # edge-certbot：12h 续期循环（webroot 复用 edge-nginx 的 80 端口 ACME 路径）。
+  # profile 独立于 edge-nginx（"tls"）：offload 模式只起 edge-nginx 不续证书
   edge-certbot:
     image: certbot/certbot:v5.7.0
     container_name: private-llm-edge-certbot
-    profiles: ["edge"]
+    profiles: ["tls"]
     restart: unless-stopped
     volumes:
       - /var/lib/private-llm/edge/letsencrypt:/etc/letsencrypt

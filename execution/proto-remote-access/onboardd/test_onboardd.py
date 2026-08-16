@@ -208,3 +208,55 @@ def test_admin_revoke_unknown_site_404(onboardd):
                            json={"site": "ghost"})
     assert resp.status_code == 404
     assert "unknown site" in resp.json()["error"]
+
+
+# --------------------------------------- offload 地址解耦（PUBLIC_BASE/WG_ENDPOINT_HOST/WG_SUBNET_PREFIX）
+
+@pytest.fixture
+def onboardd_offload(tmp_path):
+    """offload 模式 env 组合：高位端口 PUBLIC_BASE（带尾斜杠，验证归一化）、
+    wg Endpoint 指向网关内网 IP、独立网段前缀。"""
+    data = tmp_path / "odata-offload"
+    pub = tmp_path / "wireguard-public.key"
+    pub.write_text("VPSWGPUBLICKEYBASE64PLACEHOLDER==\n")
+    return load_service(ONBOARDD_DIR / "onboardd.py", {
+        "ONBOARDD_DATA": str(data),
+        "LITELLM_MASTER_KEY": "sk-master-unit",
+        "ONBOARD_ADMIN_TOKEN": ADMIN_TOKEN,
+        "VPS_PUBLIC_KEY_PATH": str(pub),
+        "WG_EXEC": "wg-absent",
+        "PUBLIC_BASE": "https://llm.example.com:8443/",    # 尾斜杠应被 rstrip
+        "WG_ENDPOINT_HOST": "192.168.88.22",
+        "WG_SUBNET_PREFIX": "10.78.0",
+        "WG_VPS_IP": "10.78.0.1",
+    })
+
+
+def test_offload_env_shapes_install_command_and_script(onboardd_offload):
+    """env 解耦逐项落地：install_command 用 PUBLIC_BASE（归一化后无 //），
+    预分配 wg_ip 用新前缀，下发脚本的回调地址/wg Endpoint/AllowedIPs/自检 ping 全随 env。"""
+    mod = onboardd_offload
+    with TestClient(mod.app) as client:
+        resp = _issue(client, site="lan-site")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["install_command"] == \
+        f'curl -fsSL "https://llm.example.com:8443/onboard/install?token={body["token"]}" | sudo bash'
+    with sqlite3.connect(mod.DB_PATH) as conn:
+        row = conn.execute("SELECT wg_ip FROM tokens WHERE token=?",
+                           (body["token"],)).fetchone()
+    assert row[0].startswith("10.78.0.")
+    with TestClient(mod.app) as client:
+        script = client.get("/onboard/install", params={"token": body["token"]}).text
+    assert 'ENDPOINT="https://llm.example.com:8443"' in script
+    assert "s|__ENDPOINT_WG__|192.168.88.22:51820|" in script
+    assert "AllowedIPs = 10.78.0.0/24" in script
+    assert "ping -c 2 -W 3 10.78.0.1 " in script
+
+
+def test_default_env_keeps_legacy_addresses(onboardd):
+    """不设新 env 时行为与旧版逐字节一致（standalone/external 兼容性锚点）。"""
+    assert onboardd.PUBLIC_BASE == f"https://{onboardd.DOMAIN}"
+    assert onboardd.WG_ENDPOINT_HOST == onboardd.DOMAIN
+    assert onboardd.WG_ALLOWED == "10.77.0.0/24"
+    assert onboardd.GW_WG_IP == "10.77.0.1"
