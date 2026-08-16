@@ -18,9 +18,9 @@ from starlette.testclient import TestClient
 from testutil import install_litellm_stub, load_service
 
 MCP_HUB_DIR = Path(__file__).parent
-VALID_KEY = "sk-mcp-valid-0001"
-DISABLED_KEY = "sk-mcp-disabled-02"
-BAD_KEY = "sk-mcp-bad-0003"
+VALID_KEY = "testkey-valid-0001"
+DISABLED_KEY = "testkey-disabled-02"
+BAD_KEY = "testkey-bad-0003"
 
 
 def _handler(method, path, bearer, json_body):
