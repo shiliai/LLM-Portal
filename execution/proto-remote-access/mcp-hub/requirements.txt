@@ -1,4 +1,4 @@
 fastmcp>=3.4.7,<4   # PYSEC-2026-2475/2476 修复于 3.2.0;本地与 console 容器以 3.4.7 验证
-uvicorn>=0.30
+uvicorn>=0.52.2
 python-multipart>=0.0.32
-httpx>=0.27
+httpx>=0.28.1

@@ -10,7 +10,14 @@ updates:
     commit-message:
       prefix: "chore(ci)"
 
-  # Python 依赖：四个自写服务各一份 requirements.txt
+  # Python 依赖：四个自写服务各一份 requirements.txt + 根目录开发/测试依赖
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+
   - package-ecosystem: "pip"
     directory: "/execution/proto-remote-access/console"
     schedule:
