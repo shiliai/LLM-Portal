@@ -3,9 +3,12 @@
 # #7 容器化：7 服务全 compose——litellm/compat/postgres/mcp-hub/onboardd/console + wireguard sidecar
 #   （host 网络，wg0 仍在宿主机 netns，站点路由模型不变）；onboardd/consoled 经 docker.sock
 #   管理 wg peer / 重启 mcp-hub（挂 sock 的容器 ≈ 宿主机 root，仅管理面容器，见 runbook §7）。
+# 对外入口 EDGE_MODE（.env）：standalone（默认）= 本栈 edge-nginx/edge-certbot 发布 80/443，
+#   全新 VPS 零既有依赖；external = 注入既有 nginx 容器（需 EDGE_NGINX_CONTAINER /
+#   NGINX_CONF_DIR / CERTBOT_DIR），流程同旧版。
 # 步骤：[一次性迁移退役 systemd] → 引导 wg 密钥与配置（docker 执行，免 sudo）→ compose build/up
-#       → LE 证书（首次）→ nginx server 块注入既有 nginx-sub2api（备份 + 回滚）→ 冒烟 + 收敛自检。
-# 宿主机一次性前置（需 sudo，见 runbook §2）：ufw allow 51820/udp（+ 云安全组 443/tcp、51820/udp）、
+#       → LE 证书 → nginx 站点（渲染 nginx/private-llm.conf）→ 冒烟 + 收敛自检。
+# 宿主机一次性前置（需 sudo，见 runbook §2）：放行 80/443/tcp、51820/udp（防火墙 + 云安全组）、
 #   BBR sysctl（/etc/sysctl.d/99-private-llm-tunnel.conf）。
 set -euo pipefail
 
@@ -65,49 +68,87 @@ docker run --rm -v "$ETC_DIR":/e private-llm-wireguard \
 [ "$(cat /proc/sys/net/ipv4/tcp_congestion_control)" = bbr ] \
   || echo "   note: 宿主机未启 BBR（一次性 sudo，见 runbook §2 前置）——跨境吞吐会显著劣化"
 
-echo "== [3/7] compose 构建 + 启动（6 服务；一个 compose file 管全部，升级 = 重跑本步骤）"
-# 探测 nginx-sub2api 所在网络并注入 compose（历史 .env 可能未写 NGINX_SHARED_NETWORK，
-# 旧版 deploy.sh 即为动态探测 + 行内传参；此处置于 up 之前，build 不依赖网络）
-SHARED_NET=$(docker inspect nginx-sub2api --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}' | head -1)
-[ -n "$SHARED_NET" ] || { echo "cannot detect nginx-sub2api network"; exit 1; }
-export NGINX_SHARED_NETWORK="$SHARED_NET"
-docker compose up -d --build
+echo "== [3/7] compose 构建 + 启动（核心服务；一个 compose file 管全部，升级 = 重跑本步骤）"
+EDGE_MODE=${EDGE_MODE:-standalone}           # standalone=自带 edge-nginx/certbot；external=注入既有 nginx 容器
+EDGE_NGINX_CONTAINER=${EDGE_NGINX_CONTAINER:-}
+if [ "$EDGE_MODE" = external ]; then
+  # 探测既有 nginx 容器所在网络并注入 compose（历史 .env 可能未写 NGINX_SHARED_NETWORK）
+  [ -n "$EDGE_NGINX_CONTAINER" ] || { echo "EDGE_MODE=external 需在 .env 设 EDGE_NGINX_CONTAINER（既有 nginx 容器名）"; exit 1; }
+  SHARED_NET=$(docker inspect "$EDGE_NGINX_CONTAINER" --format '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{"\n"}}{{end}}' | head -1)
+  [ -n "$SHARED_NET" ] || { echo "cannot detect $EDGE_NGINX_CONTAINER network"; exit 1; }
+  export NGINX_SHARED_NETWORK="$SHARED_NET"
+  COMPOSE_PROFILES=""
+else
+  # standalone：入口网络由本脚本创建；80/443 由 edge-nginx 发布，不依赖任何既有布局
+  SHARED_NET=${NGINX_SHARED_NETWORK:-private-llm-edge}
+  docker network inspect "$SHARED_NET" >/dev/null 2>&1 || docker network create "$SHARED_NET"
+  export NGINX_SHARED_NETWORK="$SHARED_NET"
+  COMPOSE_PROFILES="--profile edge"
+fi
+docker compose up -d --build $COMPOSE_PROFILES
 sleep 3
 docker compose ps
 
 echo "== [4/7] letsencrypt certificate ($DOMAIN)"
-NGINX_CONF_DIR=REDACTED-HOME/docker/nginx
-CERTBOT_DIR=REDACTED-HOME/docker/certbot
-LE_DIR="$CERTBOT_DIR/conf/live/$DOMAIN"
-if [ ! -f "$LE_DIR/fullchain.pem" ]; then
-  docker run --rm -v "$CERTBOT_DIR/conf:/etc/letsencrypt" -v "$CERTBOT_DIR/www:/var/www/certbot" \
-    certbot/certbot certonly --webroot -w /var/www/certbot --cert-name "$DOMAIN" -d "$DOMAIN" \
-    --non-interactive --agree-tos --keep-until-expiring
-  # 纳入每日续期任务
-  LINE="certonly_webroot $DOMAIN -d $DOMAIN"
-  grep -qF "$LINE" "$CERTBOT_DIR/renew.sh" || sed -i "s|^log \"Reloading nginx-sub2api|$LINE\nlog \"Reloading nginx-sub2api|" "$CERTBOT_DIR/renew.sh"
+EDGE_DIR=$STATE_DIR/edge
+if [ "$EDGE_MODE" = external ]; then
+  : "${NGINX_CONF_DIR:?EDGE_MODE=external 需在 .env 设 NGINX_CONF_DIR（既有 nginx 容器配置目录）}"
+  : "${CERTBOT_DIR:?EDGE_MODE=external 需在 .env 设 CERTBOT_DIR（既有 certbot webroot/letsencrypt 目录）}"
+  if [ ! -f "$CERTBOT_DIR/conf/live/$DOMAIN/fullchain.pem" ]; then
+    docker run --rm -v "$CERTBOT_DIR/conf:/etc/letsencrypt" -v "$CERTBOT_DIR/www:/var/www/certbot" \
+      certbot/certbot:v5.7.0 certonly --webroot -w /var/www/certbot --cert-name "$DOMAIN" -d "$DOMAIN" \
+      --non-interactive --agree-tos --keep-until-expiring
+    # 纳入既有续期任务（若宿主机 renew.sh 存在）
+    if [ -f "$CERTBOT_DIR/renew.sh" ]; then
+      LINE="certonly_webroot $DOMAIN -d $DOMAIN"
+      grep -qF "$LINE" "$CERTBOT_DIR/renew.sh" || sed -i "s|^log \"Reloading $EDGE_NGINX_CONTAINER|$LINE\nlog \"Reloading $EDGE_NGINX_CONTAINER|" "$CERTBOT_DIR/renew.sh"
+    fi
+  fi
+else
+  # standalone：状态目录经 bootstrap 容器建（/var/lib 直建需 sudo）；首签走 80 端口 bootstrap 配置
+  docker run --rm -v "$EDGE_DIR":/edge alpine sh -c 'mkdir -p /edge/nginx/conf.d /edge/letsencrypt /edge/www'
+  render_nginx() { sed -e "s|{{LITELLM_UPSTREAM}}|litellm:4000|g" -e "s|{{COMPAT_UPSTREAM}}|private-llm-compat:8400|g" \
+      -e "s|{{DOMAIN}}|$DOMAIN|g" nginx/private-llm.conf; }
+  if [ ! -f "$EDGE_DIR/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then
+    render_nginx | sed -e '/listen 443 ssl/,$d' > "$EDGE_DIR/nginx/conf.d/private-llm.conf"   # 首签：仅 80 的 ACME+跳转
+    docker compose --profile edge up -d edge-nginx
+    sleep 2
+    docker compose run --rm --entrypoint certbot edge-certbot certonly --webroot -w /var/www/certbot \
+      --cert-name "$DOMAIN" -d "$DOMAIN" --non-interactive --agree-tos --keep-until-expiring
+  fi
+  render_nginx > "$EDGE_DIR/nginx/conf.d/private-llm.conf"
+  docker compose --profile edge up -d edge-nginx
+  docker exec private-llm-edge-nginx nginx -t
+  docker exec private-llm-edge-nginx nginx -s reload
 fi
 
-echo "== [5/7] nginx site (into nginx-sub2api)"
+echo "== [5/7] nginx site"
 # 中间产物走 mktemp：/var/lib/private-llm 与历史 /tmp 固定名文件均为旧 root 部署所建，docker 组用户不可写
 RENDERED=$(mktemp) && STRIPPED=$(mktemp) && trap 'rm -f "$RENDERED" "$STRIPPED"' EXIT
 sed -e "s|{{LITELLM_UPSTREAM}}|litellm:4000|g" \
     -e "s|{{COMPAT_UPSTREAM}}|private-llm-compat:8400|g" \
+    -e "s|{{DOMAIN}}|$DOMAIN|g" \
     nginx/private-llm.conf > "$RENDERED"
-cp "$NGINX_CONF_DIR/nginx.conf" "$NGINX_CONF_DIR/nginx.conf.backup-$(date +%Y%m%d-%H%M%S)"
-# 幂等：先移除旧块再追加。注意必须保留 inode 原地写（cat > / >>）——此文件被单文件 bind-mount 进
-# nginx 容器，sed -i 会换 inode，容器内仍是旧内容、reload 也不生效（2026-08-14 实测踩坑，需重启容器才恢复）
-awk '/# BEGIN private-llm/,/# END private-llm/{next}1' "$NGINX_CONF_DIR/nginx.conf" > "$STRIPPED"
-cat "$STRIPPED" > "$NGINX_CONF_DIR/nginx.conf"
-{ echo "# BEGIN private-llm (managed by private-llm deploy.sh)"; cat "$RENDERED"; echo "# END private-llm"; } >> "$NGINX_CONF_DIR/nginx.conf"
-if ! docker exec nginx-sub2api nginx -t 2>/dev/null; then
-  echo "!! nginx config test failed; rendering diagnostics:"; docker exec nginx-sub2api nginx -t || true
-  # 回滚：删除刚追加的块
-  sed -i '/# BEGIN private-llm/,/# END private-llm/d' "$NGINX_CONF_DIR/nginx.conf"
-  docker exec nginx-sub2api nginx -t && docker exec nginx-sub2api nginx -s reload && echo "(rolled back, existing sites intact)" || echo "!! manual fix needed in $NGINX_CONF_DIR/nginx.conf"
-  exit 1
+if [ "$EDGE_MODE" = external ]; then
+  # 幂等：先移除旧块再追加。注意必须保留 inode 原地写（cat > / >>）——此文件被单文件 bind-mount 进
+  # nginx 容器，sed -i 会换 inode，容器内仍是旧内容、reload 也不生效（2026-08-14 实测踩坑，需重启容器才恢复）
+  cp "$NGINX_CONF_DIR/nginx.conf" "$NGINX_CONF_DIR/nginx.conf.backup-$(date +%Y%m%d-%H%M%S)"
+  awk '/# BEGIN private-llm/,/# END private-llm/{next}1' "$NGINX_CONF_DIR/nginx.conf" > "$STRIPPED"
+  cat "$STRIPPED" > "$NGINX_CONF_DIR/nginx.conf"
+  { echo "# BEGIN private-llm (managed by private-llm deploy.sh)"; cat "$RENDERED"; echo "# END private-llm"; } >> "$NGINX_CONF_DIR/nginx.conf"
+  if ! docker exec "$EDGE_NGINX_CONTAINER" nginx -t 2>/dev/null; then
+    echo "!! nginx config test failed; rendering diagnostics:"; docker exec "$EDGE_NGINX_CONTAINER" nginx -t || true
+    # 回滚：删除刚追加的块
+    sed -i '/# BEGIN private-llm/,/# END private-llm/d' "$NGINX_CONF_DIR/nginx.conf"
+    docker exec "$EDGE_NGINX_CONTAINER" nginx -t && docker exec "$EDGE_NGINX_CONTAINER" nginx -s reload && echo "(rolled back, existing sites intact)" || echo "!! manual fix needed in $NGINX_CONF_DIR/nginx.conf"
+    exit 1
+  fi
+  docker exec "$EDGE_NGINX_CONTAINER" nginx -s reload
+else
+  # standalone 已在 [4/7] 渲染并 reload，此处仅校验
+  diff -q "$RENDERED" "$EDGE_DIR/nginx/conf.d/private-llm.conf" >/dev/null || echo "   note: conf 与 [4/7] 渲染不一致（刚渲染过即无碍）"
+  docker exec private-llm-edge-nginx nginx -t || { echo "!! edge-nginx 配置校验失败（$EDGE_DIR/nginx/conf.d/private-llm.conf）"; exit 1; }
 fi
-docker exec nginx-sub2api nginx -s reload
 
 echo "== [6/7] site CLI (site-add / site-revoke / site-list)"
 # 用户级安装（免 sudo）；调用 127.0.0.1:8100 回环 onboardd，与容器化部署兼容

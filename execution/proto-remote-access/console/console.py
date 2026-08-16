@@ -38,7 +38,9 @@
   GET  /console/api/mcp/tools          聚合 tools/list 预览（直连各外部 MCP）
   GET  /console/api/mcp/usage?days=N   按 Key 工具调用计数（usage.db）
 
-会话：sqlite 落盘（容器重建/重部署不掉线；key 永不进 cookie，cookie 只放 sid+HMAC）；
+会话：sqlite 落盘（容器重建/重部署不掉线；cookie 只放 sid+HMAC）；会话表只存
+Key 的 sha256 哈希与尾 4 位——完整用户 Key 与 master key 均不落 sessions.db
+（管理员会话不含任何密钥，管理面回环一律用进程 env 里的 master key）；
 登录限速；变更类请求要求 X-Requested-With 头。LiteLLM 1.96.2 语义（设计 §12 r6 spike 结论）：
 /key/list 需 return_full_object、禁用字段 blocked、tags 在 litellm_params、
 /spend/logs 过滤参数不可靠故全量拉取本地聚合。
@@ -110,8 +112,33 @@ else:
 
 SESSIONS_DB = STATE_DIR / "sessions.db"            # 会话落盘：容器重建/重部署不掉线
 with sqlite3.connect(SESSIONS_DB) as _conn:
-    _conn.execute("CREATE TABLE IF NOT EXISTS sessions ("
-                  "sid TEXT PRIMARY KEY, role TEXT NOT NULL, key TEXT NOT NULL, exp REAL NOT NULL)")
+    _cols = {r[1] for r in _conn.execute("PRAGMA table_info(sessions)")}
+    if not _cols:                                  # 全新部署
+        _conn.execute("CREATE TABLE sessions ("
+                      "sid TEXT PRIMARY KEY, role TEXT NOT NULL, "
+                      "key_hash TEXT NOT NULL DEFAULT '', key_last4 TEXT NOT NULL DEFAULT '', "
+                      "exp REAL NOT NULL)")
+    elif "key" in _cols:                           # 旧schema 存完整 Key → 迁移为哈希
+        _rows = _conn.execute("SELECT sid, role, key, exp FROM sessions").fetchall()
+        _conn.execute("DROP TABLE sessions")
+        _conn.execute("CREATE TABLE sessions ("
+                      "sid TEXT PRIMARY KEY, role TEXT NOT NULL, "
+                      "key_hash TEXT NOT NULL DEFAULT '', key_last4 TEXT NOT NULL DEFAULT '', "
+                      "exp REAL NOT NULL)")
+        _conn.executemany(
+            "INSERT INTO sessions (sid, role, key_hash, key_last4, exp) VALUES (?,?,?,?,?)",
+            [(sid, role,
+              "" if role == "admin" else hashlib.sha256(key.encode()).hexdigest(),
+              "" if role == "admin" else key[-4:], exp)
+             for sid, role, key, exp in _rows])
+        print(f"!! sessions.db 已迁移：{len(_rows)} 个会话的完整密钥清除（仅保留哈希），"
+              "建议轮换曾有会话落盘的 Key", file=sys.stderr)
+    else:
+        _conn.execute("CREATE TABLE IF NOT EXISTS sessions ("
+                      "sid TEXT PRIMARY KEY, role TEXT NOT NULL, "
+                      "key_hash TEXT NOT NULL DEFAULT '', key_last4 TEXT NOT NULL DEFAULT '', "
+                      "exp REAL NOT NULL)")
+os.chmod(SESSIONS_DB, 0o600)                       # 显式收紧：会话库含哈希，不随 umask 走
 _login_fails: dict[str, list] = {}      # ip -> [window_start, fail_count]
 _totp_used: dict[int, float] = {}       # TOTP timestep -> 使用时刻（防同一动态码重放）
 NAME_RE = re.compile(r"[a-zA-Z0-9_-]{1,32}")
@@ -160,10 +187,11 @@ def session_of(request: Request) -> dict | None:
     if not hmac.compare_digest(sign(sid), sig):
         return None
     with sqlite3.connect(SESSIONS_DB) as conn:
-        row = conn.execute("SELECT role, key, exp FROM sessions WHERE sid=?", (sid,)).fetchone()
-    if row is None or row[2] < time.time():
+        row = conn.execute("SELECT role, key_hash, key_last4, exp FROM sessions WHERE sid=?",
+                           (sid,)).fetchone()
+    if row is None or row[3] < time.time():
         return None
-    return {"role": row[0], "key": row[1]}
+    return {"role": row[0], "key_hash": row[1], "key_last4": row[2]}
 
 
 def client_ip(request: Request) -> str:
@@ -266,6 +294,7 @@ if Fernet is not None:
     with sqlite3.connect(VAULT_DB) as _conn:
         _conn.execute("CREATE TABLE IF NOT EXISTS keys ("
                       "token TEXT PRIMARY KEY, cipher TEXT NOT NULL, created_at INTEGER NOT NULL)")
+    os.chmod(VAULT_DB, 0o600)
 else:
     _vault_fernet = None
     print("!! cryptography 未安装，Key 明文保险库不可用（reveal 将一律 404）", file=sys.stderr)
@@ -295,13 +324,13 @@ def vault_get(token_hash: str) -> str:
         return ""
 
 
-def _start_session(role: str, key: str) -> Response:
+def _start_session(role: str, key_hash: str = "", key_last4: str = "") -> Response:
     sid = secrets.token_urlsafe(24)
     exp = time.time() + SESSION_TTL
     with sqlite3.connect(SESSIONS_DB) as conn:
         conn.execute("DELETE FROM sessions WHERE exp < ?", (time.time() - 3600,))   # 顺手清过期
-        conn.execute("INSERT INTO sessions (sid, role, key, exp) VALUES (?,?,?,?)",
-                     (sid, role, key, exp))
+        conn.execute("INSERT INTO sessions (sid, role, key_hash, key_last4, exp) VALUES (?,?,?,?,?)",
+                     (sid, role, key_hash, key_last4, exp))
     resp = JSONResponse({"ok": True, "role": role})
     resp.set_cookie("pll_session", f"{sid}.{sign(sid)}", max_age=SESSION_TTL,
                     httponly=True, secure=True, samesite="lax", path="/console")
@@ -340,8 +369,8 @@ async def api_admin_login(request: Request) -> Response:
             win[1] += 1
         return jerr("邮箱、密码或动态码错误", 401)
     _login_fails.pop(ip, None)
-    # 管理接口本就以服务端 env 里的 master key 回环调 LiteLLM，会话不再另存管理员口令
-    return _start_session("admin", LITELLM_MASTER_KEY)
+    # 管理接口本就以服务端 env 里的 master key 回环调 LiteLLM；管理会话不存任何密钥
+    return _start_session("admin")
 
 
 # ---------------------------------------------------------------- 2FA 管理（#8，admin）
@@ -446,7 +475,9 @@ async def api_login(request: Request) -> Response:
             win[1] += 1
         return jerr("invalid key", 401)
     _login_fails.pop(ip, None)
-    return _start_session(role, key)
+    # 会话只落哈希 + 尾 4 位（展示用）；后续自查经 master key + 哈希对账
+    kh = hashlib.sha256(key.encode()).hexdigest() if role == "user" else ""
+    return _start_session(role, kh, key[-4:] if role == "user" else "")
 
 
 async def api_logout(request: Request) -> Response:
@@ -465,12 +496,13 @@ async def api_me(request: Request) -> Response:
         return sess
     alias, group = "", ""
     if sess["role"] == "user":
-        _, body = await ll_json("GET", "/key/info", key=sess["key"])
-        info = (body or {}).get("info", {}) if isinstance(body, dict) else {}
-        alias = info.get("key_alias") or ""
-        group = (info.get("metadata") or {}).get("group") or "default"
+        for k in await key_list_full():
+            if k.get("token") == sess["key_hash"]:
+                alias = k.get("key_alias") or ""
+                group = (k.get("metadata") or {}).get("group") or "default"
+                break
     return JSONResponse({"role": sess["role"], "alias": alias, "group": group,
-                         "key_last4": sess["key"][-4:]})
+                         "key_last4": sess["key_last4"] or "—"})
 
 
 # ---------------------------------------------------------------- 数据源辅助
@@ -1263,37 +1295,40 @@ async def api_keys_unblock(request: Request) -> Response:
 
 # ---------------------------------------------------------------- 用户自查（user 角色）
 
+def _my_mcp_usage(key_hash: str) -> dict:
+    """按会话 Key 哈希直读 mcp-hub 用量账本（usage 库只存 16 位哈希前缀），
+    不再持完整 Key 回调 mcp-hub。"""
+    try:
+        with sqlite3.connect(f"file:{MCP_USAGE_DB}?mode=ro", uri=True) as db:
+            rows = db.execute("SELECT tool, COUNT(*) FROM usage WHERE key_hash = ? GROUP BY tool",
+                              (key_hash[:16],)).fetchall()
+    except sqlite3.Error:
+        return {"tools": {}, "total": 0}
+    tools = {tool: n for tool, n in rows}
+    return {"tools": tools, "total": sum(tools.values())}
+
+
 async def api_my(request: Request) -> Response:
     sess = await require(request, role="any")
     if isinstance(sess, JSONResponse):
         return sess
-    key = sess["key"]
-    # master key 不在 LiteLLM key 表中（/key/info 404），其用量以调用日志中的
-    # litellm_proxy_master_key 标识聚合；用户虚拟 Key 走 /key/info 自查
+    # master key 不在 LiteLLM key 表中，其用量以调用日志中的 litellm_proxy_master_key
+    # 标识聚合；用户虚拟 Key 经 master key 拉全量 Key 表按哈希对账（会话不持完整 Key）
     if sess["role"] == "admin":
         alias, group, models = "管理员（master key）", "—", []
         created, expires, match_key = "", None, "litellm_proxy_master_key"
         mcp, mcp_note = {"tools": {}, "total": 0}, "master key 不经 MCP 通道（MCP 端点仅接受用户虚拟 Key）"
     else:
-        _, body = await ll_json("GET", "/key/info", key=key)
-        if not isinstance(body, dict) or "info" not in body:
-            return jerr("用量查询失败：密钥状态异常，请重新登录", 502)
-        info = body["info"]
+        info = next((k for k in await key_list_full() if k.get("token") == sess["key_hash"]), None)
+        if info is None:
+            return jerr("用量查询失败：密钥已删除或状态异常，请重新登录", 502)
         alias = info.get("key_alias") or "（未命名）"
         group = (info.get("metadata") or {}).get("group") or "default"
         models = info.get("models") or []
         created = (info.get("created_at") or "")[:19]
         expires = info.get("expires")
-        match_key = hashlib.sha256(key.encode()).hexdigest()
-        mcp, mcp_note = {"tools": {}, "total": 0}, ""
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(f"{MCP_HUB_URL}/mcp/usage",
-                                     headers={"Authorization": f"Bearer {key}"})
-            if r.status_code == 200:
-                mcp = r.json()
-        except (httpx.HTTPError, ValueError):
-            pass
+        match_key = sess["key_hash"]
+        mcp, mcp_note = _my_mcp_usage(sess["key_hash"]), ""
     today_tokens = {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0}
     today_models: dict[str, dict] = {}
     for row in logs_since(await fetch_logs(), 1):
@@ -1314,7 +1349,7 @@ async def api_my(request: Request) -> Response:
     return JSONResponse({
         "role": sess["role"],
         "alias": alias,
-        "key_last4": "…" + key[-4:],
+        "key_last4": "…" + sess["key_last4"] if sess["key_last4"] else "—",
         "group": group,
         "models": models,
         "created_at": created,
