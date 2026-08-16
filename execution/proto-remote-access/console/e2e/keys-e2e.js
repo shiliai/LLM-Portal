@@ -29,7 +29,7 @@ const BASE = 'http://127.0.0.1:8399';
 
   console.log('== 2b. Chrome 静默 autofill 不得成为筛选状态');
   const initialKeyRows = await page.locator('.js-use-key').count();
-  await page.locator('#f-search').evaluate((el) => { el.value = 'chris.whq@gmail.com'; });
+  await page.locator('#f-search').evaluate((el) => { el.value = 'autofill@example.com'; });
   await page.click('#btn-refresh');
   await page.waitForTimeout(600);
   const rowsAfterSilentAutofill = await page.locator('.js-use-key').count();
@@ -62,7 +62,7 @@ const BASE = 'http://127.0.0.1:8399';
     '| first row group now:', await page.locator('.js-group').first().inputValue());
 
   console.log('== 5. 复现关键场景:搜索框粘完整密钥后 reload(浏览器恢复表单值?)');
-  await page.fill('#f-search', 'sk-REDACTED-ROTATED-2026-08-16');
+  await page.fill('#f-search', 'sk-e2eFixtureKey000000000000');
   await page.waitForTimeout(300);
   console.log('paste detected, search now:', JSON.stringify(await page.locator('#f-search').inputValue()),
     '| modal open:', await page.locator('#modal-usekey.open').count());

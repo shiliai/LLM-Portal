@@ -1,0 +1,92 @@
+# GitHub issue 表单：Bug 报告（中文）
+# 语法参考 https://docs.github.com/zh/communities/using-templates-to-encourage-useful-issues-and-pull-requests/syntax-for-issue-forms
+name: Bug 报告
+description: 报告一个可复现的问题（安全漏洞勿用此表单，走 SECURITY.md 私有流程）
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请尽量填全以下信息，方便快速定位。
+        **注意**：涉及密钥/凭据/内网信息的内容请脱敏后再贴（用 `REPLACE_ME`、`example.com` 等占位）。
+
+  # ---- 现象 ----
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 现象
+      description: 发生了什么？与期望行为的差别是什么？
+      placeholder: |
+        例如：调用 /v1/chat/completions 时流式响应在 ~60s 后中断，期望持续到生成结束。
+    validations:
+      required: true
+
+  # ---- 复现步骤 ----
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 最小复现步骤 / 命令 / 请求样例（模型名、端点路径可保留，凭据务必脱敏）。
+      placeholder: |
+        1. 部署后 site-add 注册站点 …
+        2. curl https://example.com/v1/chat/completions -H "authorization: Bearer $GW_KEY" …
+        3. 观察到 …
+    validations:
+      required: true
+
+  # ---- 版本 ----
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: commit 哈希或分支名（`git log -1 --oneline`），以及 LiteLLM 镜像版本（若改动过）。
+      placeholder: "main @ 4a5ba6a（LiteLLM v1.96.2）"
+    validations:
+      required: true
+
+  # ---- 部署模式 ----
+  - type: dropdown
+    id: edge-mode
+    attributes:
+      label: 部署模式
+      description: 对应 vps/.env 的 EDGE_MODE（详见 execution/proto-remote-access/docs/runbook.md）。
+      options:
+        - standalone（本栈 edge-nginx + edge-certbot 发布 80/443）
+        - external（注入既有 nginx 容器）
+        - 未部署 / 只跑测试
+        - 其他 / 不确定
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: 涉及组件
+      multiple: true
+      options:
+        - litellm（网关核心）
+        - compat（协议兼容层）
+        - console（管理控制台）
+        - onboardd / site-tools（站点接入）
+        - mcp-hub（MCP 端点）
+        - wireguard（隧道）
+        - nginx / deploy.sh（边缘与部署）
+        - 其他
+
+  # ---- 附加信息 ----
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 附加信息
+      description: 相关容器日志（`docker compose logs <服务>`）、报错堆栈等；可选。
+      placeholder: 贴日志前请再次确认已脱敏（Key、域名、IP）。
+
+  - type: checkboxes
+    id: sanity
+    attributes:
+      label: 自查
+      options:
+        - label: 我已确认输出中不包含任何真实密钥 / 内网信息
+          required: true
+        - label: 这不是安全漏洞（安全问题我走 SECURITY.md 私有报告）
+          required: true

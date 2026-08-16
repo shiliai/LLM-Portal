@@ -1,10 +1,26 @@
-"""mock LiteLLM:回放生产形状的 /key/list,支持 /key/update 改内存状态"""
-import json, sys
+"""mock LiteLLM:回放生产形状的 /key/list,支持 /key/update 改内存状态。
+数据来源:环境变量 KEYLIST_JSON 指向导出文件;缺省用内置合成夹具(与生产同形状,
+含密钥哈希/别名/分组/禁用态,不依赖任何生产导出数据)。"""
+import hashlib, json, os, secrets, sys, time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-STATE = json.load(open('/tmp/e2e/keylist.json'))
-if isinstance(STATE, dict):
-    STATE = STATE.get('keys', STATE.get('data', []))
+_fixture_path = os.environ.get("KEYLIST_JSON")
+if _fixture_path and os.path.exists(_fixture_path):
+    STATE = json.load(open(_fixture_path))
+    if isinstance(STATE, dict):
+        STATE = STATE.get('keys', STATE.get('data', []))
+else:
+    if _fixture_path:
+        print(f'warning: KEYLIST_JSON={_fixture_path} 不存在,回退内置合成夹具', file=sys.stderr)
+    _aliases = ['site-a-cli', 'home-only', 'e2e-user', 'ci-runner']
+    _groups = ['default', 'home', 'default', 'lab']
+    STATE = []
+    for _alias, _group in zip(_aliases, _groups):
+        _tok = hashlib.sha256(('sk-fixture-' + _alias).encode()).hexdigest()
+        STATE.append({"token": _tok, "key_name": None, "key_alias": _alias,
+                      "metadata": {"group": _group}, "models": [],
+                      "blocked": None if _alias != 'home-only' else False,
+                      "created_at": "2026-08-15T08:00:00"})
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -31,7 +47,7 @@ class H(BaseHTTPRequestHandler):
                 return {'startTime': st,
                         'completionStartTime': (start + _dt.timedelta(milliseconds=tft)).strftime('%Y-%m-%dT%H:%M:%S.000000Z'),
                         'endTime': st, 'api_key': ak,
-                        'requester_ip_address': ['198.51.100.7', '192.0.2.20', '172.18.0.2'][i % 3],
+                        'requester_ip_address': ['198.51.100.7', '203.0.113.12', '192.0.2.20'][i % 3],
                         'model_group': ['deepseek-v4-flash-0731', 'qwen3.6-35b-fp8'][i % 2],
                         'call_type': 'messages' if i % 3 == 0 else 'completion',
                         'prompt_tokens': 1000 + i * 17, 'completion_tokens': 200 + i * 5,

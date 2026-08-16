@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """private-llm 网关 vs 直连 基准（自包含，可反复跑）。
 测：隧道丢包、直连冷/热、网关热（8K/32K token 量级）、短请求 keep-alive 开销。
-判定口径：网关增量（gw_warm - direct_warm）是否 ≈ 1-2 RTT（跨境 RTT≈170ms）。"""
-import http.client, json, ssl, time, urllib.request
+判定口径：网关增量（gw_warm - direct_warm）是否 ≈ 1-2 RTT（跨境 RTT≈170ms）。
+用法：GW_KEY / GW_BASE / DIRECT_BASE 环境变量注入真实值（勿把真实 Key 写进脚本）。"""
+import http.client, json, os, ssl, time, urllib.parse, urllib.request
 
-KEY = "sk-REDACTED-ROTATED-2026-08-16"
-GW = "https://llm-portal.example.com"
-DIRECT = "http://192.0.2.10:8890"
+KEY = os.environ.get("GW_KEY", "sk-REPLACE_ME")
+GW = os.environ.get("GW_BASE", "https://llm-portal.example.com")
+DIRECT = os.environ.get("DIRECT_BASE", "http://192.0.2.10:8890")
+GW_HOST = urllib.parse.urlparse(GW).hostname
 
 def post(url, headers, body, timeout=600):
     req = urllib.request.Request(url, data=body, headers=headers)
@@ -24,7 +26,7 @@ def bench(tag, reps):
     dc = post(DIRECT + "/v1/chat/completions", H, body)
     dw = post(DIRECT + "/v1/chat/completions", H, body)
     ctx = ssl.create_default_context()
-    conn = http.client.HTTPSConnection("llm-portal.example.com", context=ctx, timeout=600)
+    conn = http.client.HTTPSConnection(GW_HOST, context=ctx, timeout=600)
     gws = []
     for _ in range(3):
         t0 = time.time()
@@ -42,7 +44,7 @@ bench("32k", 3200)
 body = json.dumps({"model": "deepseek-v4-flash-0731", "stream": False, "max_tokens": 5,
                    "messages": [{"role": "user", "content": "回复OK"}]}).encode()
 ctx = ssl.create_default_context()
-conn = http.client.HTTPSConnection("llm-portal.example.com", context=ctx, timeout=120)
+conn = http.client.HTTPSConnection(GW_HOST, context=ctx, timeout=120)
 ts = []
 for _ in range(5):
     t0 = time.time()

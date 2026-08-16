@@ -1,0 +1,18 @@
+# gitleaks 忽略清单(issue #10):以下命中均已人工确认为占位/演示/合成数据,非真实凭据。
+# - docs/superpowers/prototypes/*:高保真原型里的示例 curl 与 sk-portal-*/sk-gw-* 演示串
+# - console/e2e/keys-memory-e2e.js:Playwright 合成夹具 sk-e2eTestKey*
+# - mcp-hub/test_mcp_hub.py:单测合成夹具 testkey-*
+# - docs/bench-gateway.py(历史提交):filter-repo 替换后的 sk-REDACTED-ROTATED 占位
+# - .github/ISSUE_TEMPLATE/bug_report.yml:issue 模板中的示例请求头占位
+
+06eb3ca812c6cdbb6251cf80402a993aaf52348f:docs/superpowers/prototypes/llm-portal-console/credentials.html:curl-auth-header:51
+06eb3ca812c6cdbb6251cf80402a993aaf52348f:docs/superpowers/prototypes/llm-portal-console/credentials.html:curl-auth-header:69
+06eb3ca812c6cdbb6251cf80402a993aaf52348f:docs/superpowers/prototypes/llm-portal-console/wizard.html:curl-auth-header:216
+06eb3ca812c6cdbb6251cf80402a993aaf52348f:docs/superpowers/prototypes/llm-portal-console/wizard.html:curl-auth-header:222
+4ff2be52716e415364ee2a618db0a2d1c430dd95:docs/superpowers/prototypes/remote-access-console/sites.html:generic-api-key:104
+614e68106c4d4825a205819070c07828f262a9c9:execution/proto-remote-access/mcp-hub/test_mcp_hub.py:generic-api-key:21
+b4f7a3952eb771625ad5ea83cb28bc2410627019:execution/proto-remote-access/console/e2e/keys-memory-e2e.js:generic-api-key:22
+b4f7a3952eb771625ad5ea83cb28bc2410627019:execution/proto-remote-access/console/e2e/keys-memory-e2e.js:generic-api-key:4
+e3813f6842f2b0a5e1d8248abdfe9e6e4938ed14:execution/proto-remote-access/docs/bench-gateway.py:generic-api-key:7
+f136eb89bf76a607fb236c8c0c36f3a097e74e1d:.github/ISSUE_TEMPLATE/bug_report.yml:curl-auth-header:32
+f136eb89bf76a607fb236c8c0c36f3a097e74e1d:execution/proto-remote-access/mcp-hub/test_mcp_hub.py:generic-api-key:21

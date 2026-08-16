@@ -1,16 +1,21 @@
 # private-llm 网关全容器栈（#7 容器化：一个 compose file 管 7 服务，docker 组用户可部署；issue #9 增 compat）
 # 上游引用一律用容器名（compose 项目共享 external 网络时，裸服务名会与其他项目同名服务冲突，
 # 实测被解析到 sub2api 的 postgres——沿用 litellm DATABASE_URL 的结论）。
-# 对外仅由既有 nginx-sub2api 容器经共享网络反代（nginx/private-llm.conf，deploy.sh 注入）；
+# 对外入口两种模式（deploy.sh 按 .env 的 EDGE_MODE 选择）：
+#   standalone（默认）：--profile edge 起 edge-nginx + edge-certbot，80/443 由本栈发布，
+#                      不依赖任何既有容器/目录布局；
+#   external：反代到既有 nginx 容器（共享网络 + 注入 server 块，见 deploy.sh external 分支）。
 # 127.0.0.1 端口发布仅供本机 CLI / 冒烟 / 调试，不暴露公网。
 #
 # 安全边界：console/onboardd 挂 docker.sock（经 docker exec 管理 wg sidecar / 重启 mcp-hub），
-# 挂 sock 的容器 ≈ 宿主机 root——只给这两个管理面容器，有意取舍（见 runbook §7）。
+# 挂 sock 的容器 ≈ 宿主机 root——只给这两个管理面容器，有意取舍（见 runbook §7）；
+# compat 无状态不落盘，以非 root（10001）运行。
 name: private-llm
 
 services:
   litellm:
-    image: ghcr.io/berriai/litellm:main-stable
+    # 固定版本 tag（issue #10）：与开发/验证基线 LiteLLM 1.96.2 一致，避免 main-stable 滚动漂移
+    image: ghcr.io/berriai/litellm:v1.96.2
     container_name: litellm
     restart: unless-stopped
     # BBR：litellm→站点 vLLM 的内层 TCP 走 wg 隧道（跨境 ~25% 晚高峰丢包），
@@ -40,6 +45,8 @@ services:
     build: ../compat
     container_name: private-llm-compat
     restart: unless-stopped
+    # 无状态服务以非 root 运行（issue #10 最小权限收敛）
+    user: "10001:10001"
     environment:
       LITELLM_BASE: http://litellm:4000
     ports:
@@ -51,7 +58,7 @@ services:
       - litellm
 
   postgres:
-    image: postgres:18-alpine
+    image: postgres:18.6-alpine
     container_name: private-llm-postgres
     restart: unless-stopped
     environment:
@@ -147,11 +154,42 @@ services:
     volumes:
       - /etc/wireguard/wg0.conf:/etc/wireguard/wg0.conf
 
+  # ---- standalone 边缘（EDGE_MODE=standalone；--profile edge 启用）----
+  # edge-nginx：80/443 单入口（渲染后的 nginx/private-llm.conf 挂 conf.d）。
+  # 每 6h reload 一次以拾取 certbot 续期的新证书（无 docker.sock 的标准做法）。
+  edge-nginx:
+    image: nginx:1.28.3-alpine3.23
+    container_name: private-llm-edge-nginx
+    profiles: ["edge"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/lib/private-llm/edge/nginx/conf.d:/etc/nginx/conf.d:ro
+      - /var/lib/private-llm/edge/letsencrypt:/etc/letsencrypt:ro
+      - /var/lib/private-llm/edge/www:/var/www/certbot:ro
+    entrypoint: ["sh", "-c", "nginx -g 'daemon off;' & NGINX_PID=$$!; while :; do sleep 6h; nginx -s reload; done & wait $$NGINX_PID"]
+    networks:
+      - shared
+
+  # edge-certbot：12h 续期循环（webroot 复用 edge-nginx 的 80 端口 ACME 路径）
+  edge-certbot:
+    image: certbot/certbot:v5.7.0
+    container_name: private-llm-edge-certbot
+    profiles: ["edge"]
+    restart: unless-stopped
+    volumes:
+      - /var/lib/private-llm/edge/letsencrypt:/etc/letsencrypt
+      - /var/lib/private-llm/edge/www:/var/www/certbot
+    entrypoint: ["sh", "-c", "trap exit TERM; while :; do certbot renew --quiet; sleep 12h & wait $${!}; done"]
+
 volumes:
   pgdata:
 
 networks:
-  # nginx-sub2api 容器所在的 compose 网络（deploy.sh 自动探测并注入 NGINX_SHARED_NETWORK）
+  # 对外入口网络：standalone 模式 deploy.sh 自动创建（默认 private-llm-edge）；
+  # external 模式为既有 nginx 容器所在的 compose 网络（docker inspect 查）
   shared:
     external: true
-    name: ${NGINX_SHARED_NETWORK:-docker_default}
+    name: ${NGINX_SHARED_NETWORK:-private-llm-edge}

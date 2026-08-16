@@ -1,0 +1,152 @@
+# CI：push / PR 到 main 触发（issue #10 开源准备）
+# 五个 job：
+#   unit-tests      根目录 pytest（测试配置/测试文件由配套 PR 提供；requirements-dev.txt 同理，
+#                   两者落地前用兜底 pip install 保证本 job 可独立跑通）
+#   py-syntax       全部 git 跟踪的 .py 文件过 py_compile 语法编译
+#   compose-validate docker compose config 校验 vps/ 部署物（默认 + edge profile 两种模式）
+#   secrets-scan    gitleaks 全 git 历史密钥扫描
+#   deps-audit      pip-audit 对四个服务的 requirements 逐个审计
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 同一 PR 的旧 push 不必跑完（省额度）；主分支按需保留
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# 权限最小化：密钥扫描等 job 只需读仓库内容
+permissions:
+  contents: read
+
+jobs:
+  # ---- 1/5 单元测试 ----
+  unit-tests:
+    name: 单元测试（pytest）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # 一次性合并安装 dev + 四个服务的依赖（统一解析,避免顺序安装造成
+      # 版本区间不同的包先升后降、留下混装残留——fastmcp 2/3 混装即 import 崩溃）
+      - name: 安装依赖（dev + 四个服务 requirements 合并解析）
+        run: |
+          python -m pip install \
+            -r requirements-dev.txt \
+            -r execution/proto-remote-access/console/requirements.txt \
+            -r execution/proto-remote-access/onboardd/requirements.txt \
+            -r execution/proto-remote-access/mcp-hub/requirements.txt \
+            -r execution/proto-remote-access/compat/requirements.txt
+
+      - name: 运行测试（仓库根目录）
+        run: python -m pytest
+
+  # ---- 2/5 Python 语法编译 ----
+  py-syntax:
+    name: Python 语法检查（py_compile）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # git ls-files 只编译入库文件（忽略本地未跟踪脚本）；
+      # 任何一个文件语法错误都会使 xargs 以非零退出
+      - name: py_compile 全部入库 .py 文件
+        run: |
+          count=$(git ls-files '*.py' | wc -l)
+          echo "共 $count 个 .py 文件待编译检查"
+          [ "$count" -gt 0 ] || { echo "未发现任何 .py 文件，异常"; exit 1; }
+          git ls-files '*.py' | xargs python -m py_compile
+
+  # ---- 3/5 compose 配置校验 ----
+  compose-validate:
+    name: docker compose 配置校验
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ubuntu-latest 自带 docker + compose v2，无需安装；此处仅确认可用
+      - name: 检查 docker / compose 可用
+        run: |
+          docker version
+          docker compose version
+
+      # 默认模式（EDGE_MODE=standalone 但不启用 edge profile）：7 个核心服务
+      # --env-file .env.example：用占位环境变量渲染，不需要真实 .env
+      # （本地已用 docker compose v5.0.2 验证两种模式均通过）
+      - name: 校验 compose（默认模式）
+        working-directory: execution/proto-remote-access/vps
+        run: docker compose --env-file .env.example config --quiet
+
+      # edge profile：额外渲染 edge-nginx / edge-certbot（standalone 入口形态）
+      - name: 校验 compose（COMPOSE_PROFILES=edge）
+        working-directory: execution/proto-remote-access/vps
+        env:
+          COMPOSE_PROFILES: edge
+        run: docker compose --env-file .env.example config --quiet
+
+  # ---- 4/5 密钥扫描 ----
+  secrets-scan:
+    name: 密钥扫描（gitleaks 全历史）
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 拉全历史（等价于 git fetch --unshallow），
+      # gitleaks 才能扫全部历史提交而不只是浅克隆可见的部分
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 直接运行 gitleaks 二进制扫 git 全历史（不用 gitleaks-action：其对本组织仓库
+      # 要求商业许可）。GitHub 原生 secret scanning 另在仓库设置开启，互为补充。
+      # 版本 pin（v8.30.1）；升级时同步改 URL 两处版本号。
+      - name: gitleaks 全历史扫描
+        run: |
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks git . --redact --no-banner --exit-code 1
+
+  # ---- 5/5 依赖安全审计 ----
+  deps-audit:
+    name: 依赖审计（pip-audit）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装 pip-audit
+        run: python -m pip install pip-audit
+
+      # 对四个服务的 requirements 逐个审计（-r 模式会独立解析依赖树并查 OSV/PyPI 漏洞库）
+      # continue-on-error: false（默认即不允许失败）——发现漏洞 CI 即红；
+      # 注意 pip-audit 存在误报可能（尤其 fastmcp 等快速迭代包的传递依赖）：
+      # 经评估确认为误报/不可利用时，在对应 step 加 --ignore-vuln <ID> 并注明理由
+      - name: 审计 console 依赖
+        continue-on-error: false
+        run: pip-audit -r execution/proto-remote-access/console/requirements.txt
+
+      - name: 审计 onboardd 依赖
+        continue-on-error: false
+        run: pip-audit -r execution/proto-remote-access/onboardd/requirements.txt
+
+      - name: 审计 mcp-hub 依赖
+        continue-on-error: false
+        run: pip-audit -r execution/proto-remote-access/mcp-hub/requirements.txt
+
+      - name: 审计 compat 依赖
+        continue-on-error: false
+        run: pip-audit -r execution/proto-remote-access/compat/requirements.txt
