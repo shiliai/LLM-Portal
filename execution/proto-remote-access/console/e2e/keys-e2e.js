@@ -3,7 +3,8 @@ const { chromium } = require('playwright');
 const BASE = 'http://127.0.0.1:8399';
 
 (async () => {
-  const browser = await chromium.launch();
+  // PW_CHROME：显式指定本机 Chromium 可执行文件（playwright 缓存 revision 不匹配时用）
+  const browser = await chromium.launch(process.env.PW_CHROME ? { executablePath: process.env.PW_CHROME } : {});
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await ctx.newPage();
   const errors = [];
