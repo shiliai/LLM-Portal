@@ -51,7 +51,7 @@
 前置：一台公网 VPS（域名解析到位、放行 80/443/tcp 与 51820/udp）、docker 组权限用户。
 
 ```bash
-git clone <本仓库> && cd LLM-portal/execution/proto-remote-access/vps
+git clone https://github.com/shiliai/LLM-Portal.git && cd LLM-Portal/execution/proto-remote-access/vps
 cp .env.example .env && vi .env     # 填 LITELLM_MASTER_KEY / POSTGRES_PASSWORD / DOMAIN / ADMIN_* 等
 ./deploy.sh                         # 幂等：wg 引导 + compose + 证书 + nginx + 冒烟收敛自检
 ```
