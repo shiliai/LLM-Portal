@@ -99,6 +99,9 @@ services:
     restart: unless-stopped
     environment:
       DOMAIN: ${DOMAIN}
+      # offload 模式:install/register 回调与站点 wg Endpoint 的地址语义（见 onboardd.py 头注）
+      PUBLIC_BASE: ${PUBLIC_BASE:-https://${DOMAIN}}
+      WG_ENDPOINT_HOST: ${WG_ENDPOINT_HOST:-${DOMAIN}}
       LITELLM_BASE: http://litellm:4000
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
       ONBOARD_ADMIN_TOKEN: ${ONBOARD_ADMIN_TOKEN}

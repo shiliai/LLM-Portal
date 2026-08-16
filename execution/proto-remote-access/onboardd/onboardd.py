@@ -34,6 +34,11 @@ from starlette.responses import JSONResponse, PlainTextResponse, Response
 from starlette.routing import Route
 
 DOMAIN = os.environ.get("DOMAIN", "llm-portal.example.com")
+# offload 模式（TLS 在上游设备终结）：对外基地址通常带高位端口（https://域名:8080），
+# 站点 install/register 回调地址用它；站点 wg Endpoint 指向网关可达地址（内网部署=内网 IP，
+# 上游反代不转发 UDP）。standalone/external 两模式下三者一致，均无需设置。
+PUBLIC_BASE = os.environ.get("PUBLIC_BASE", f"https://{DOMAIN}")
+WG_ENDPOINT_HOST = os.environ.get("WG_ENDPOINT_HOST", DOMAIN)
 WG_CONF = Path(os.environ.get("WG_CONF", "/etc/wireguard/wg0.conf"))
 WG_IFACE = os.environ.get("WG_IFACE", "wg0")
 WG_EXEC = shlex.split(os.environ.get("WG_EXEC", "wg"))
@@ -101,9 +106,9 @@ async def install(request: Request) -> Response:
     if row is None or row["used"] or row["expires_at"] < time.time():
         return PlainTextResponse("invalid, expired or used token\n", status_code=403)
     ports = " ".join(str(m["port"]) for m in json.loads(row["models"]))
-    script = (INSTALL_SH.format(token=token, endpoint=f"https://{DOMAIN}")
+    script = (INSTALL_SH.format(token=token, endpoint=PUBLIC_BASE)
               .replace("__VPS_PUBLIC_KEY__", vps_public_key())
-              .replace("__WG_ENDPOINT__", f"{DOMAIN}:{WG_PORT}")
+              .replace("__WG_ENDPOINT__", f"{WG_ENDPOINT_HOST}:{WG_PORT}")
               .replace("__MODEL_PORTS__", ports))
     return PlainTextResponse(script, media_type="text/x-shellscript")
 
@@ -143,7 +148,7 @@ async def register(request: Request) -> Response:
         "MTU = 1280                    # 跨境链路大 UDP 包丢弃率高，1280 实测吞吐 3-6 倍于默认 1420\n"
         "[Peer]\n"
         f"PublicKey = {vps_public_key()}\n"
-        f"Endpoint = {DOMAIN}:{WG_PORT}\n"
+        f"Endpoint = {WG_ENDPOINT_HOST}:{WG_PORT}\n"
         "AllowedIPs = 10.77.0.0/24\n"
         "PersistentKeepalive = 25\n"
     )
@@ -223,7 +228,7 @@ async def admin_token(request: Request) -> Response:
     return JSONResponse({
         "token": token,
         "expires_in": TOKEN_TTL,
-        "install_command": f'curl -fsSL "https://{DOMAIN}/onboard/install?token={token}" | sudo bash',
+        "install_command": f'curl -fsSL "{PUBLIC_BASE}/onboard/install?token={token}" | sudo bash',
     })
 
 
