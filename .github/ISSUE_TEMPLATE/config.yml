@@ -1,9 +1,6 @@
 # issue 侧栏联系入口
 blank_issues_enabled: false
 contact_links:
-  - name: 使用讨论 / 提问（GitHub Discussions）
-    url: https://github.com/shiliai/LLM-Portal/discussions
-    about: 部署与使用问题请先到 Discussions 问答区检索/提问。
   - name: 部署与运维手册（runbook）
     url: https://github.com/shiliai/LLM-Portal/blob/main/execution/proto-remote-access/docs/runbook.md
     about: 部署步骤、验收表、常见故障——多数部署问题可先查 runbook。
