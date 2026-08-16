@@ -36,23 +36,12 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      # 根目录 pytest 依赖两份「配套 PR」产物：
-      #   a) requirements-dev.txt（测试依赖清单）——落地前先用兜底清单保证可跑
-      #   b) pytest 配置 + 测试文件（使根目录 pytest 可发现 execution/ 下测试）
-      - name: 安装测试依赖
-        run: |
-          if [ -f requirements-dev.txt ]; then
-            python -m pip install -r requirements-dev.txt
-          else
-            echo "requirements-dev.txt 尚未落地，使用兜底依赖清单"
-            python -m pip install pytest httpx starlette segno cryptography uvicorn
-          fi
-
-      # 四个自写服务的运行依赖（console/onboardd/mcp-hub/compat 测试共用一个环境，
-      # 约束彼此兼容：starlette>=0.40、fastmcp>=2.11,<3 等，实测可同时满足）
-      - name: 安装服务依赖
+      # 一次性合并安装 dev + 四个服务的依赖（统一解析,避免顺序安装造成
+      # 版本区间不同的包先升后降、留下混装残留——fastmcp 2/3 混装即 import 崩溃）
+      - name: 安装依赖（dev + 四个服务 requirements 合并解析）
         run: |
           python -m pip install \
+            -r requirements-dev.txt \
             -r execution/proto-remote-access/console/requirements.txt \
             -r execution/proto-remote-access/onboardd/requirements.txt \
             -r execution/proto-remote-access/mcp-hub/requirements.txt \
