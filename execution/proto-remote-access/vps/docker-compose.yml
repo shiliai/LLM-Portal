@@ -1,10 +1,13 @@
 # private-llm 网关全容器栈（#7 容器化：一个 compose file 管 7 服务，docker 组用户可部署；issue #9 增 compat）
 # 上游引用一律用容器名（compose 项目共享 external 网络时，裸服务名会与其他项目同名服务冲突，
 # 实测被解析到 sub2api 的 postgres——沿用 litellm DATABASE_URL 的结论）。
-# 对外入口两种模式（deploy.sh 按 .env 的 EDGE_MODE 选择）：
-#   standalone（默认）：--profile edge 起 edge-nginx + edge-certbot，80/443 由本栈发布，
+# 对外入口三种模式（deploy.sh 按 .env 的 EDGE_MODE 选择）：
+#   standalone（默认）：--profile edge+tls 起 edge-nginx + edge-certbot，80/443 由本栈发布，
 #                      不依赖任何既有容器/目录布局；
-#   external：反代到既有 nginx 容器（共享网络 + 注入 server 块，见 deploy.sh external 分支）。
+#   external：反代到既有 nginx 容器（共享网络 + 注入 server 块，见 deploy.sh external 分支）；
+#   offload：TLS 由上游设备（防火墙反代等）终结，仅起 edge-nginx（HTTP-only，
+#            nginx/private-llm-offload.conf），certbot 不启用——外部 URL 形如
+#            https://<域名>:<高位端口>/，须在 .env 设 PUBLIC_BASE 同步该地址。
 # 127.0.0.1 端口发布仅供本机 CLI / 冒烟 / 调试，不暴露公网。
 #
 # 安全边界：console/onboardd 挂 docker.sock（经 docker exec 管理 wg sidecar / 重启 mcp-hub），
@@ -74,7 +77,8 @@ services:
     restart: unless-stopped
     environment:
       LITELLM_BASE: http://litellm:4000
-      PUBLIC_BASE: https://${DOMAIN}
+      # offload 模式外部 URL 带高位端口（https://域名:8080），与 DOMAIN 裸域名不同，允许显式覆盖
+      PUBLIC_BASE: ${PUBLIC_BASE:-https://${DOMAIN}}
       MCP_VISION_MODEL: ${MCP_VISION_MODEL:-qwen3.6-35b-fp8}
     volumes:
       # 状态（usage.db + uploads）落宿主机，容器重建不丢
@@ -173,11 +177,12 @@ services:
     networks:
       - shared
 
-  # edge-certbot：12h 续期循环（webroot 复用 edge-nginx 的 80 端口 ACME 路径）
+  # edge-certbot：12h 续期循环（webroot 复用 edge-nginx 的 80 端口 ACME 路径）。
+  # profile 独立于 edge-nginx（"tls"）：offload 模式只起 edge-nginx 不续证书
   edge-certbot:
     image: certbot/certbot:v5.7.0
     container_name: private-llm-edge-certbot
-    profiles: ["edge"]
+    profiles: ["tls"]
     restart: unless-stopped
     volumes:
       - /var/lib/private-llm/edge/letsencrypt:/etc/letsencrypt
