@@ -29,7 +29,7 @@ jobs:
     name: 单元测试（pytest）
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
@@ -55,7 +55,7 @@ jobs:
     name: Python 语法检查（py_compile）
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
@@ -75,7 +75,7 @@ jobs:
     name: docker compose 配置校验
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # ubuntu-latest 自带 docker + compose v2，无需安装；此处仅确认可用
       - name: 检查 docker / compose 可用
@@ -104,7 +104,7 @@ jobs:
     steps:
       # fetch-depth: 0 拉全历史（等价于 git fetch --unshallow），
       # gitleaks 才能扫全部历史提交而不只是浅克隆可见的部分
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -122,7 +122,7 @@ jobs:
     name: 依赖审计（pip-audit）
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v5
         with:
