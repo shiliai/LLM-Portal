@@ -1,12 +1,12 @@
-# issue 侧栏联系入口（占位：开源上线时由维护者替换为真实链接）
+# issue 侧栏联系入口
 blank_issues_enabled: false
 contact_links:
   - name: 使用讨论 / 提问（GitHub Discussions）
-    url: https://github.com/OWNER/REPO/discussions
-    about: 部署与使用问题请先到 Discussions 问答区检索/提问（链接占位，待维护者替换）。
+    url: https://github.com/shiliai/LLM-Portal/discussions
+    about: 部署与使用问题请先到 Discussions 问答区检索/提问。
   - name: 部署与运维手册（runbook）
-    url: https://github.com/OWNER/REPO/blob/main/execution/proto-remote-access/docs/runbook.md
+    url: https://github.com/shiliai/LLM-Portal/blob/main/execution/proto-remote-access/docs/runbook.md
     about: 部署步骤、验收表、常见故障——多数部署问题可先查 runbook。
   - name: 安全漏洞报告
-    url: https://github.com/OWNER/REPO/security/advisories/new
+    url: https://github.com/shiliai/LLM-Portal/security/advisories/new
     about: 安全问题勿开公开 issue，请走私有 Security Advisory（见 SECURITY.md）。
