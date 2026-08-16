@@ -65,6 +65,18 @@ class H(BaseHTTPRequestHandler):
                     if 'models' in body: info['models'] = body['models']
                     return self._send({"key": body.get('key'), "updated": True})
             return self._send({"error": "not found"}, 404)
+        if self.path.startswith('/key/block') or self.path.startswith('/key/unblock'):
+            blocked = self.path.startswith('/key/block')
+            for k in STATE:
+                info = k.get('key_info', k)
+                if info.get('token') == body.get('key'):
+                    info['blocked'] = blocked
+                    return self._send({**info, 'blocked': blocked})
+            return self._send({"error": "not found"}, 404)
+        if self.path.startswith('/key/delete'):
+            gone = set(body.get('keys') or [])
+            STATE[:] = [k for k in STATE if (k.get('key_info', k)).get('token') not in gone]
+            return self._send({"ok": True})
         self._send({"ok": True})
 
 HTTPServer(('127.0.0.1', 4100), H).serve_forever()
