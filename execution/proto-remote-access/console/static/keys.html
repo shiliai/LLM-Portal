@@ -11,6 +11,7 @@
   #modal-usekey .pf-modal-body { max-height: 62vh; overflow-y: auto; }
   .use-key-row { display: flex; gap: 8px; align-items: center; margin: 4px 0 14px; }
   .use-key-row .pf-input { flex: 1; }
+  .use-key-masked { -webkit-text-security: disc; }
   .use-os { margin: 2px 0 2px; }
   .use-blk { margin-top: 12px; }
   .use-blk-label { font-size: 12px; color: #595959; margin-bottom: 2px; }
@@ -28,7 +29,8 @@
 
   <!-- 工具栏：搜索 + 分组/状态筛选 + 刷新 + 新建 -->
   <div class="pf-toolbar" style="margin-bottom:12px">
-    <input class="pf-input" id="f-search" placeholder="搜索备注名或尾 4 位…">
+    <input class="pf-input" id="f-search" type="search" name="key-filter-query" autocomplete="off"
+           autocapitalize="none" spellcheck="false" placeholder="搜索备注名或尾 4 位…">
     <select class="pf-select" id="f-group"><option value="">全部分组</option></select>
     <select class="pf-select" id="f-status">
       <option value="">全部状态</option>
@@ -134,7 +136,8 @@
     <div class="pf-modal-body">
       <div class="pf-desc" style="margin-bottom:10px">选择客户端与系统，把以下配置写入终端或对应配置文件即可接入网关；网关地址已按当前域名代入。</div>
       <div class="use-key-row">
-        <input class="pf-input mono" id="use-key" type="password" autocomplete="off" spellcheck="false"
+        <input class="pf-input mono use-key-masked" id="use-key" type="text" name="api-key-config-value"
+               autocomplete="off" autocapitalize="none" spellcheck="false" data-lpignore="true" data-1p-ignore
                placeholder="粘贴完整密钥（sk-…）以代入下方配置">
         <button class="pf-btn" id="btn-use-show" type="button" title="显示/隐藏明文">显示</button>
       </div>
@@ -225,10 +228,11 @@
 
   var allKeys = [];
   var allGroups = [];
+  var searchQuery = '';
 
   /* ---------- 列表渲染 + 筛选 ---------- */
   function visibleKeys() {
-    var q = $('f-search').value.trim().toLowerCase();
+    var q = searchQuery;
     var g = $('f-group').value, st = $('f-status').value;
     return allKeys.filter(function (k) {
       if (q) {
@@ -245,6 +249,8 @@
   }
 
   function render() {
+    // Chrome 密码管理器可能静默改写搜索框；DOM 不是筛选状态的权威来源。
+    $('f-search').value = searchQuery;
     var keys = visibleKeys();
     var enabled = allKeys.filter(function (k) { return !k.blocked; }).length;
     $('keys-extra').textContent = allKeys.length === keys.length
@@ -426,7 +432,7 @@
     var k = key || (last4 ? cachedKey(last4) : '');
     if (k) rememberKey(k);
     $('use-key').value = k;
-    $('use-key').type = 'password';
+    $('use-key').classList.add('use-key-masked');
     $('btn-use-show').textContent = '显示';
     fillUse();
     window.pfModal('modal-usekey');
@@ -461,11 +467,13 @@
       var v = this.value.trim();
       if (/^sk-[A-Za-z0-9_-]{16,}$/.test(v)) {
         this.value = '';            // 完整密钥不是搜索词：转入「使用」弹窗并带入
+        searchQuery = '';
         openUseByKey(v);
         window.pfToast('检测到完整密钥，已代入「使用密钥」弹窗');
         render();
         return;
       }
+      searchQuery = v.toLowerCase();
       render();
     });
     $('f-group').addEventListener('input', render);
@@ -477,8 +485,8 @@
       fillUse();
     });
     $('btn-use-show').addEventListener('click', function () {
-      var show = $('use-key').type === 'password';
-      $('use-key').type = show ? 'text' : 'password';
+      var show = $('use-key').classList.contains('use-key-masked');
+      $('use-key').classList.toggle('use-key-masked', !show);
       $('btn-use-show').textContent = show ? '隐藏' : '显示';
     });
 

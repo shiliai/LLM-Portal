@@ -26,6 +26,27 @@ const BASE = 'http://127.0.0.1:8399';
   console.log('rows:', await page.locator('#keys-tbody tr').count(),
     '|', await page.locator('#keys-extra').textContent());
 
+  console.log('== 2b. Chrome 静默 autofill 不得成为筛选状态');
+  const initialKeyRows = await page.locator('.js-use-key').count();
+  await page.locator('#f-search').evaluate((el) => { el.value = 'chris.whq@gmail.com'; });
+  await page.click('#btn-refresh');
+  await page.waitForTimeout(600);
+  const rowsAfterSilentAutofill = await page.locator('.js-use-key').count();
+  console.log('silent autofill + refresh rows:', rowsAfterSilentAutofill,
+    '| search:', JSON.stringify(await page.locator('#f-search').inputValue()));
+  if (!initialKeyRows || rowsAfterSilentAutofill !== initialKeyRows) {
+    console.error('ASSERT FAIL: 静默 autofill 不应改变 Key 筛选结果'); process.exitCode = 1;
+  }
+
+  console.log('== 2c. 真实 input 仍应更新筛选状态');
+  await page.fill('#f-search', '不存在的词');
+  await page.waitForTimeout(200);
+  if (await page.locator('.js-use-key').count()) {
+    console.error('ASSERT FAIL: 真实搜索输入应过滤 Key 列表'); process.exitCode = 1;
+  }
+  await page.fill('#f-search', '');
+  await page.waitForTimeout(200);
+
   console.log('== 3. 点击行内分组下拉(只点开不选择,再点别处关闭)');
   await page.locator('.js-group:not([disabled])').first().click();
   await page.waitForTimeout(300);
@@ -66,8 +87,17 @@ const BASE = 'http://127.0.0.1:8399';
   await page.waitForTimeout(200);
   await page.locator('.js-use-key').first().click();
   await page.waitForTimeout(400);
+  const initialUseKeyState = await page.locator('#use-key').evaluate((el) => ({
+    type: el.type,
+    masked: el.classList.contains('use-key-masked'),
+    textSecurity: getComputedStyle(el).webkitTextSecurity
+  }));
   console.log('modal open:', await page.locator('#modal-usekey.open').count(),
-    '| focused is use-key:', await page.evaluate(() => document.activeElement && document.activeElement.id));
+    '| focused is use-key:', await page.evaluate(() => document.activeElement && document.activeElement.id),
+    '| field:', JSON.stringify(initialUseKeyState));
+  if (initialUseKeyState.type !== 'text' || !initialUseKeyState.masked || initialUseKeyState.textSecurity !== 'disc') {
+    console.error('ASSERT FAIL: API Key 输入应保持 text 类型并默认视觉掩码'); process.exitCode = 1;
+  }
   await page.screenshot({ path: '/tmp/e2e/r3-usekey.png' });
   await page.keyboard.press('Escape');   // 关闭使用弹窗，避免遮罩挡住后续行内操作
 
@@ -141,7 +171,12 @@ const BASE = 'http://127.0.0.1:8399';
 
   console.log('== 密钥粘贴框显示/隐藏');
   await page.click('#btn-use-show');
-  console.log('type after show:', await page.locator('#use-key').getAttribute('type'));
+  const useKeyType = await page.locator('#use-key').getAttribute('type');
+  const useKeyMasked = await page.locator('#use-key').evaluate((el) => el.classList.contains('use-key-masked'));
+  console.log('after show: type:', useKeyType, '| masked:', useKeyMasked);
+  if (useKeyType !== 'text' || useKeyMasked) {
+    console.error('ASSERT FAIL: 显示密钥应只移除视觉掩码，输入类型保持 text'); process.exitCode = 1;
+  }
 
   
   console.log('\n== ERRORS:', errors.length ? '\n' + errors.join('\n') : 'none');
