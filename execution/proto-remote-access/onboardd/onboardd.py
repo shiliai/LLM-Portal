@@ -37,7 +37,8 @@ DOMAIN = os.environ.get("DOMAIN", "llm-portal.example.com")
 # offload 模式（TLS 在上游设备终结）：对外基地址通常带高位端口（https://域名:8080），
 # 站点 install/register 回调地址用它；站点 wg Endpoint 指向网关可达地址（内网部署=内网 IP，
 # 上游反代不转发 UDP）。standalone/external 两模式下三者一致，均无需设置。
-PUBLIC_BASE = os.environ.get("PUBLIC_BASE", f"https://{DOMAIN}")
+# rstrip：容忍 .env 里 PUBLIC_BASE 末尾误带 /（否则 install_command 拼出 //onboard/…）
+PUBLIC_BASE = os.environ.get("PUBLIC_BASE", f"https://{DOMAIN}").rstrip("/")
 WG_ENDPOINT_HOST = os.environ.get("WG_ENDPOINT_HOST", DOMAIN)
 WG_CONF = Path(os.environ.get("WG_CONF", "/etc/wireguard/wg0.conf"))
 WG_IFACE = os.environ.get("WG_IFACE", "wg0")

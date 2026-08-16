@@ -2,8 +2,8 @@
 # 上游引用一律用容器名（compose 项目共享 external 网络时，裸服务名会与其他项目同名服务冲突，
 # 实测被解析到 sub2api 的 postgres——沿用 litellm DATABASE_URL 的结论）。
 # 对外入口三种模式（deploy.sh 按 .env 的 EDGE_MODE 选择）：
-#   standalone（默认）：--profile edge+tls 起 edge-nginx + edge-certbot，80/443 由本栈发布，
-#                      不依赖任何既有容器/目录布局；
+#   standalone（默认）：--profile edge --profile tls 起 edge-nginx + edge-certbot，
+#                      80/443 由本栈发布，不依赖任何既有容器/目录布局；
 #   external：反代到既有 nginx 容器（共享网络 + 注入 server 块，见 deploy.sh external 分支）；
 #   offload：TLS 由上游设备（防火墙反代等）终结，仅起 edge-nginx（HTTP-only，
 #            nginx/private-llm-offload.conf），certbot 不启用——外部 URL 形如

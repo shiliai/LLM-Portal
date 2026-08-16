@@ -23,8 +23,12 @@ DOMAIN=${DOMAIN:?DOMAIN}
 WG_PORT=${WG_PORT:-51820}
 WG_VPS_IP=${WG_VPS_IP:-10.77.0.1}
 # WG_SUBNET（.env，如 10.78.0.0/24）→ 派生前缀传给 onboardd（站点 AllowedIPs/自检 ping；
-# 换独立网段可让站点与另一套 10.77.0.0/24 网关双隧道并存）
+# 换独立网段可让站点与另一套 10.77.0.0/24 网关双隧道并存）。
+# 校验 /24 形状：onboardd 硬性假设三段前缀（拼 .0/24、站点 IP 从 .11 递增）
 WG_SUBNET=${WG_SUBNET:-10.77.0.0/24}
+if ! [[ "$WG_SUBNET" =~ ^([0-9]{1,3}\.){3}0/24$ ]]; then
+  echo "WG_SUBNET 非法（expect x.y.z.0/24，实为 '$WG_SUBNET'——onboardd 按 /24 前缀语义生成站点配置）"; exit 1
+fi
 export WG_SUBNET_PREFIX="${WG_SUBNET%.*}"
 STATE_DIR=/var/lib/private-llm
 ETC_DIR=/etc/private-llm
