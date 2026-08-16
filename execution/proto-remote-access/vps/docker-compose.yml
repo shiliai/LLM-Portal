@@ -107,6 +107,7 @@ services:
       ONBOARD_ADMIN_TOKEN: ${ONBOARD_ADMIN_TOKEN}
       WG_PORT: ${WG_PORT:-51820}
       WG_VPS_IP: ${WG_VPS_IP:-10.77.0.1}
+      WG_SUBNET_PREFIX: ${WG_SUBNET_PREFIX:-10.77.0}
       # wg0 在宿主机 netns（wireguard sidecar 托管），经 docker.sock exec 操作
       WG_EXEC: docker exec private-llm-wireguard wg
     volumes:

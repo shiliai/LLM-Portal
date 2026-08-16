@@ -22,6 +22,10 @@ set -a; . ./.env; set +a
 DOMAIN=${DOMAIN:?DOMAIN}
 WG_PORT=${WG_PORT:-51820}
 WG_VPS_IP=${WG_VPS_IP:-10.77.0.1}
+# WG_SUBNET（.env，如 10.78.0.0/24）→ 派生前缀传给 onboardd（站点 AllowedIPs/自检 ping；
+# 换独立网段可让站点与另一套 10.77.0.0/24 网关双隧道并存）
+WG_SUBNET=${WG_SUBNET:-10.77.0.0/24}
+export WG_SUBNET_PREFIX="${WG_SUBNET%.*}"
 STATE_DIR=/var/lib/private-llm
 ETC_DIR=/etc/private-llm
 
