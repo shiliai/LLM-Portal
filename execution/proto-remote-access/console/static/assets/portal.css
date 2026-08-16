@@ -87,8 +87,8 @@ h1, h2, h3, h4, p { margin: 0; }
   padding: 0 16px; border-bottom: 1px solid #f0f0f0;
 }
 .pf-logo-mark {
-  width: 26px; height: 26px; border-radius: 6px; background: #1677ff;
-  display: inline-flex; align-items: center; justify-content: center; color: #fff; flex: none;
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
 }
 .pf-logo-mark svg { display: block; }
 .pf-logo-text { font-size: 15px; font-weight: 600; letter-spacing: .2px; }

@@ -60,7 +60,7 @@
     layout.innerHTML =
       '<aside class="pf-sidebar">' +
         '<div class="pf-logo">' +
-          '<span class="pf-logo-mark"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8.8 1.6 3.2 9h3.6l-.8 5.4L11.6 7H8z"/></svg></span>' +
+          '<span class="pf-logo-mark"><svg viewBox="0 0 64 64" width="100%" height="100%"><rect x="4.5" y="4.5" width="55" height="55" rx="9.5" fill="#0b60f5"/><path d="M13.3 13H31.5A5.5 5.5 0 0 1 37 18.5V29H35.3V35H37V45.5A5.5 5.5 0 0 1 31.5 51H13.3A5.5 5.5 0 0 1 7.8 45.5V18.5A5.5 5.5 0 0 1 13.3 13Z" fill="#041d66"/><path d="M14.3 19.5 30.4 32M14.3 32H30.4M14.3 44.5 30.4 32" stroke="#fff" stroke-width="3.1" stroke-linecap="round" fill="none"/><path d="M30.4 32H50" stroke="#fff" stroke-width="4.6" stroke-linecap="round" fill="none"/><circle cx="14.3" cy="19.5" r="3.6" fill="#fff"/><circle cx="14.3" cy="32" r="3.6" fill="#fff"/><circle cx="14.3" cy="44.5" r="3.6" fill="#fff"/><circle cx="50" cy="32" r="4.4" fill="#fff"/></svg></span>' +
           '<span class="pf-logo-text">远程模型网关</span>' +
         '</div>' +
         '<nav class="pf-nav">' + navHtml + '</nav>' +

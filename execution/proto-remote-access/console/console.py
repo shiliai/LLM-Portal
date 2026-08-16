@@ -1509,14 +1509,18 @@ async def console_redirect(request: Request) -> Response:
 
 # 未登录可取的静态资源（登录页本体 + 样式 + 图标）；其余页面源码一律会话门禁，
 # 避免内部拓扑/组件名/策略文案经公开 URL 外泄（安全收敛，对应评审意见「对外尽量少暴露内部信息」）
-PUBLIC_STATIC = {"login.html", "admin-login.html", "assets/portal.css", "favicon.ico"}
+PUBLIC_STATIC = {"login.html", "admin-login.html", "assets/portal.css", "favicon.ico",
+                 "manifest.webmanifest"}
+# 品牌图标族整目录公开：favicon / manifest / PWA 图标在登录页就需要加载（issue #41）
+PUBLIC_STATIC_PREFIX = "assets/brand/"
 
 
 async def console_static(request: Request) -> Response:
     rel = request.path_params.get("rest", "").lstrip("/")
     if rel == "":
         rel = "index.html"
-    if rel not in PUBLIC_STATIC and session_of(request) is None:
+    if (rel not in PUBLIC_STATIC and not rel.startswith(PUBLIC_STATIC_PREFIX)
+            and session_of(request) is None):
         return RedirectResponse("/console/login.html", status_code=302)
     target = (STATIC_DIR / rel).resolve()
     root = STATIC_DIR.resolve()
