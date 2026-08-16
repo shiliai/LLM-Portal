@@ -48,7 +48,9 @@ fi
 
 echo "== [2/7] 引导 WireGuard 密钥/配置与状态目录（docker 执行，宿主机免 sudo；已存在则跳过）"
 docker compose build wireguard >/dev/null
-docker run --rm -v "$STATE_DIR":/state -v /etc/wireguard:/wg \
+# -i 必需：heredoc 走 stdin，缺 -i 时 sh -s 立即 EOF、bootstrap 体一行都不执行
+#（exit 0 的静默失败；VPS 迁移自 systemd 时密钥已存在故从未暴露）
+docker run --rm -i -v "$STATE_DIR":/state -v /etc/wireguard:/wg \
   -e WG_VPS_IP -e WG_PORT private-llm-wireguard sh -es <<'BOOTSTRAP'
 umask 077
 [ -f /state/wireguard-private.key ] || wg genkey > /state/wireguard-private.key
@@ -111,8 +113,10 @@ if [ "$EDGE_MODE" = external ]; then
   fi
 elif [ "$EDGE_MODE" = offload ]; then
   # offload：无证书环节（上游设备终结 TLS），仅渲染 HTTP-only 边缘并发布 80。
-  # letsencrypt/www 目录仍建（edge-nginx 挂载点存在即可，内容为空）
-  docker run --rm -v "$EDGE_DIR":/edge alpine sh -c 'mkdir -p /edge/nginx/conf.d /edge/letsencrypt /edge/www'
+  # letsencrypt/www 目录仍建（edge-nginx 挂载点存在即可，内容为空）；nginx 树 chown 给
+  # 执行用户——deploy.sh 以 docker 组用户写 conf，root 建的目录会 Permission denied
+  docker run --rm -v "$EDGE_DIR":/edge alpine \
+    sh -c 'mkdir -p /edge/nginx/conf.d /edge/letsencrypt /edge/www && chown -R '"$(id -u):$(id -g)"' /edge/nginx'
   sed -e "s|{{LITELLM_UPSTREAM}}|litellm:4000|g" -e "s|{{COMPAT_UPSTREAM}}|private-llm-compat:8400|g" \
       nginx/private-llm-offload.conf > "$EDGE_DIR/nginx/conf.d/private-llm.conf"
   docker compose --profile edge up -d edge-nginx
@@ -120,7 +124,8 @@ elif [ "$EDGE_MODE" = offload ]; then
   docker exec private-llm-edge-nginx nginx -s reload
 else
   # standalone：状态目录经 bootstrap 容器建（/var/lib 直建需 sudo）；首签走 80 端口 bootstrap 配置
-  docker run --rm -v "$EDGE_DIR":/edge alpine sh -c 'mkdir -p /edge/nginx/conf.d /edge/letsencrypt /edge/www'
+  docker run --rm -v "$EDGE_DIR":/edge alpine \
+    sh -c 'mkdir -p /edge/nginx/conf.d /edge/letsencrypt /edge/www && chown -R '"$(id -u):$(id -g)"' /edge/nginx'
   render_nginx() { sed -e "s|{{LITELLM_UPSTREAM}}|litellm:4000|g" -e "s|{{COMPAT_UPSTREAM}}|private-llm-compat:8400|g" \
       -e "s|{{DOMAIN}}|$DOMAIN|g" nginx/private-llm.conf; }
   if [ ! -f "$EDGE_DIR/letsencrypt/live/$DOMAIN/fullchain.pem" ]; then

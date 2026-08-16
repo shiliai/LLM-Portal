@@ -69,7 +69,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: litellm
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # postgres 18+ 规范挂载点（镜像默认 PGDATA=/var/lib/postgresql/18/docker，须落在卷内；
+      # 挂 …/data 会被 entrypoint 拒启）。注意：从旧布局（…/data）迁来需一次性 pg_dump 恢复
+      - pgdata:/var/lib/postgresql
 
   mcp-hub:
     build: ../mcp-hub
