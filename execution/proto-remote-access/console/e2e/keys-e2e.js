@@ -27,14 +27,14 @@ const BASE = 'http://127.0.0.1:8399';
     '|', await page.locator('#keys-extra').textContent());
 
   console.log('== 3. 点击行内分组下拉(只点开不选择,再点别处关闭)');
-  await page.locator('.js-group').first().click();
+  await page.locator('.js-group:not([disabled])').first().click();
   await page.waitForTimeout(300);
   await page.mouse.click(700, 500);
   await page.waitForTimeout(300);
   console.log('after open/close select, rows:', await page.locator('#keys-tbody tr').count());
 
   console.log('== 4. 切换行内分组 home → default(触发 POST update)');
-  await page.locator('.js-group').first().selectOption('home');
+  await page.locator('.js-group:not([disabled])').first().selectOption('home');
   await page.waitForTimeout(700);
   console.log('after change, rows:', await page.locator('#keys-tbody tr').count(),
     '| first row group now:', await page.locator('.js-group').first().inputValue());
@@ -69,6 +69,7 @@ const BASE = 'http://127.0.0.1:8399';
   console.log('modal open:', await page.locator('#modal-usekey.open').count(),
     '| focused is use-key:', await page.evaluate(() => document.activeElement && document.activeElement.id));
   await page.screenshot({ path: '/tmp/e2e/r3-usekey.png' });
+  await page.keyboard.press('Escape');   // 关闭使用弹窗，避免遮罩挡住后续行内操作
 
   console.log('== 8. 编辑/禁用/新建全链路');
   console.log('== 编辑弹窗');
@@ -78,7 +79,7 @@ const BASE = 'http://127.0.0.1:8399';
   await page.fill('#edit-alias', 'justink-改名');
   await page.click('#btn-editkey');
   await page.waitForTimeout(600);
-  const firstAlias = await page.locator('#keys-tbody tr td').first().textContent();
+  const firstAlias = await page.locator('#keys-tbody tr:not(.pf-row-muted) td').first().textContent();
   console.log('alias after edit:', firstAlias);
 
   console.log('== 禁用/启用');
@@ -86,9 +87,35 @@ const BASE = 'http://127.0.0.1:8399';
   await page.waitForTimeout(600);
   const chip = await page.locator('#keys-tbody .pf-chip.gray').count();
   console.log('disabled chips:', chip, '| select disabled:', await page.locator('.js-group[disabled]').count());
-  await page.locator('.js-toggle-key').first().click();
+  if (chip !== 1) { console.error('ASSERT FAIL: 禁用后应有 1 个「已禁用」chip'); process.exitCode = 1; }
+
+  console.log('== 8b. 状态筛选「已禁用」→ 恰好显示被禁的那把（事件委托 + 状态ful 桩）');
+  await page.selectOption('#f-status', 'off');
+  await page.waitForTimeout(300);
+  const offRows = await page.locator('#keys-tbody tr').count();
+  const offText = (await page.locator('#keys-tbody').innerText()).trim();
+  console.log('filtered rows:', offRows, '| text head:', JSON.stringify(offText.slice(0, 60)));
+  if (offRows !== 1) { console.error('ASSERT FAIL: 「已禁用」筛选应只显示 1 把'); process.exitCode = 1; }
+
+  console.log('== 8c. 无「已禁用」Key 时的空态指引（误点筛选不再像页面坏掉）');
+  await page.locator('.js-toggle-key').first().click();   // 重新启用 → 筛选下无结果
   await page.waitForTimeout(600);
-  console.log('re-enabled, disabled chips:', await page.locator('#keys-tbody .pf-chip.gray').count());
+  const emptyHint = (await page.locator('#keys-tbody').innerText()).trim();
+  console.log('empty hint:', JSON.stringify(emptyHint));
+  if (!emptyHint.includes('当前没有「已禁用」的 Key') || !emptyHint.includes('禁用」按钮')) {
+    console.error('ASSERT FAIL: 空态应给出「如何禁用」的指引'); process.exitCode = 1;
+  }
+  await page.screenshot({ path: '/tmp/e2e/r3b-empty-hint.png' });
+  await page.selectOption('#f-status', '');
+
+  console.log('== 8d. 通用无匹配空态');
+  await page.fill('#f-search', '不存在的词');
+  await page.waitForTimeout(300);
+  const noMatch = (await page.locator('#keys-tbody').innerText()).trim();
+  if (!noMatch.includes('当前筛选')) { console.error('ASSERT FAIL: 通用空态文案缺失'); process.exitCode = 1; }
+  console.log('no-match hint:', JSON.stringify(noMatch.slice(0, 50)));
+  await page.fill('#f-search', '');
+  await page.waitForTimeout(200);
 
   console.log('== 新建密钥 → 查看客户端配置');
   await page.click('#btn-open-newkey');
