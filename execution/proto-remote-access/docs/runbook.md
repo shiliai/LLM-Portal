@@ -141,6 +141,9 @@ docker compose stop compat                                     # 容器可留可
 # 重启组件（consoled 会话已落盘，重启不掉线；mcp-hub 重启会中断进行中的 MCP 调用；
 #   wireguard 重启 = wg-quick down/up，隧道瞬断、conf 持久化的 peer 自动恢复）
 cd ~/LLM-Portal/vps && docker compose restart console
+# 单服务重建（改代码后）：up -d --build <svc>；注意——重建任何 nginx 上游容器（litellm/compat/
+#   console/mcp-hub/onboardd）后其共享网络 IP 会变，nginx 把容器名解析成旧 IP 导致公网 502，
+#   须补一刀：docker exec <edge-nginx 容器> nginx -s reload（2026-08-16 实测踩坑）
 cd ~/LLM-Portal/vps && ./deploy.sh    # 幂等升级（compose build + up + 收敛自检；无需 sudo）
 # LiteLLM 应急通道（管理 API/UI 已公网 404）：ssh -L 4000:127.0.0.1:4000 your-vps → http://localhost:4000/ui
 # 证书：certbot 每日 cron 自动续期（已并入 renew.sh）
