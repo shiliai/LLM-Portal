@@ -289,3 +289,59 @@ def test_logout_removes_session(console, monkeypatch):
         assert client.post("/console/api/logout", headers={"Cookie": cookie, **XRW}).status_code == 200
         assert client.get("/console/api/me", headers={"Cookie": cookie}).status_code == 401
     assert _rows(console) == []                       # 会话行已删
+
+
+# ---------------------------------------------------------------- 思考强度提取
+
+def test_row_effort_prefers_spend_logs_metadata(console):
+    # 生产实际落库形态：LiteLLM 1.96.2 写库白名单只保留 spend_logs_metadata
+    assert console.row_effort({"metadata": {"spend_logs_metadata": {"effort": "high"}}}) == "high"
+    assert console.row_effort({"metadata": {"spend_logs_metadata": {"effort": "budget:8192"}}}) == "budget:8192"
+
+
+def test_row_effort_fallback_shapes(console):
+    assert console.row_effort({"metadata": {"requester_metadata": {"effort": "low"}}}) == "low"
+    assert console.row_effort({"metadata": {"effort": "medium"}}) == "medium"   # 形态兜底
+    assert console.row_effort({"metadata": {"usage_object": {}}}) == ""        # 历史行/未携带
+    assert console.row_effort({}) == ""
+
+
+# ---------------------------------------------------------------- issue #46 直通白名单
+
+def test_rebuild_deployments_carry_allowed_openai_params(console, monkeypatch):
+    """retag_site / 别名克隆都靠「/model/new 重建 + /model/delete 删旧」改 deployment——
+    重建 payload 必须带 allowed_openai_params，否则一次分组改写就把 reasoning_effort
+    直通（issue #46）洗掉。"""
+    import asyncio
+
+    dep = {"model_name": "m1",
+           "litellm_params": {"model": "openai/m1", "api_base": "http://10.77.0.21:8890/v1",
+                              "tags": ["home"], "connect_timeout": 5, "timeout": 600},
+           "model_info": {"id": "dep-1"}}
+
+    def handler(method, path, bearer, json_body):
+        if path == "/model/info":
+            return 200, {"data": [dep]}
+        if path in ("/model/new", "/model/delete"):
+            return 200, {"ok": True}
+        if path == "/global/spend" and bearer == MASTER_KEY:   # master key 网页登录的探活
+            return 200, {}
+        return 404, {"error": f"unexpected stub path {path}"}
+
+    calls = install_litellm_stub(monkeypatch, handler)
+    assert asyncio.run(console.retag_site("10.77.0.21", ["lab"])) == []
+    lp = [c for c in calls if c["path"] == "/model/new"][0]["json"]["litellm_params"]
+    assert lp["allowed_openai_params"] == ["reasoning_effort"]
+    assert lp["tags"] == ["lab"]                      # retag 既有语义不变
+
+    calls.clear()
+    with TestClient(console.app) as client:           # 别名克隆走正式路由（需登录会话）
+        ok = client.post("/console/api/login", json={"key": MASTER_KEY}, headers=XRW)
+        cookie = _cookie_of(ok)
+        resp = client.post("/console/api/models/alias",
+                           headers={"Cookie": cookie, **XRW},
+                           json={"alias": "m1-copy", "target": "m1"})
+    assert resp.status_code == 200
+    lp = [c for c in calls if c["path"] == "/model/new"][0]["json"]["litellm_params"]
+    assert lp["allowed_openai_params"] == ["reasoning_effort"]
+    assert lp["model"] == "openai/m1"

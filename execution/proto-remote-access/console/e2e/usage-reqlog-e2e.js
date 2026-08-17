@@ -16,6 +16,8 @@ const BASE = 'http://127.0.0.1:8399';
   await page.waitForURL('**/console/');
   await page.goto(BASE + '/console/usage.html');
   await page.waitForTimeout(800);
+  await page.click('button[data-tab="logs"]');   // 页面默认激活「趋势」Tab，明细交互前需切换
+  await page.waitForTimeout(200);
 
   console.log('== 1. 明细表加载:');
   const rows = await page.locator('#rl-rows tr').count();
@@ -45,17 +47,29 @@ const BASE = 'http://127.0.0.1:8399';
   await page.click('#rl-prev');
   await page.waitForTimeout(200);
 
-  console.log('== 5. 详情抽屉:');
+  console.log('== 5. 思考列:');
+  const effortHead = await page.locator('#rl-head th', { hasText: '思考' }).count();
+  const effortCells = await page.locator('#rl-rows tr td:nth-child(5)').allInnerTexts();
+  const effortShown = effortCells.filter(t => t.trim() !== '—' && t.trim() !== '').length;
+  console.log('表头思考列:', effortHead, '| 首屏显示 effort 的行:', effortShown,
+    '| 样例:', effortCells.find(t => t.trim() !== '—' && t.trim() !== '') || '无');
+
+  console.log('== 6. 详情抽屉:');
   await page.locator('.js-rl-detail').first().click();
   await page.waitForTimeout(400);
   const drawerOpen = await page.locator('#drawer-reqlog.open').count();
   const detail = await page.locator('#rl-detail').innerText();
-  console.log('抽屉打开:', drawerOpen, '| 含 Request ID:', detail.includes('req-'), '| 含延迟:', detail.includes('ms') || detail.includes('s'));
+  console.log('抽屉打开:', drawerOpen, '| 含 Request ID:', detail.includes('req-'),
+    '| 含思考强度:', detail.includes('思考强度'),
+    '| 含延迟:', detail.includes('ms') || detail.includes('s'));
   await page.screenshot({ path: '/tmp/e2e/r7-reqlog.png' });
+  await page.evaluate(() => window.pfDrawerClose());   // 抽屉遮罩会拦截后续点击
 
-  console.log('== 6. 聚合表仍在:');
-  console.log('聚合行数:', await page.locator('#usage-rows tr').count(),
-    '| 合计请求:', await page.locator('#sum-req').textContent());
+  console.log('== 7. 趋势 Tab 仍在:');
+  await page.click('button[data-tab="trend"]');
+  await page.waitForTimeout(200);
+  console.log('指标卡数:', await page.locator('#stat-grid > *').count(),
+    '| 模型分布条数:', await page.locator('#model-bars > *').count());
 
   console.log('\nERRORS:', errors.length ? errors.join('\n') : 'none');
   await browser.close();

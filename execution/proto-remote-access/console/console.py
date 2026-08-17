@@ -101,6 +101,10 @@ VAULT_KEY_PATH = STATE_DIR / "keyvault.key"
 SESSION_TTL = 8 * 3600
 LOGIN_FAIL_LIMIT, LOGIN_WINDOW = 5, 60
 HANDSHAKE_ONLINE = 180  # 最近握手 3 分钟内视为在线
+# issue #46：drop_params=true 下通用 openai/ deployment 会静默丢弃 reasoning_effort
+# （supported 列表不含、vLLM 上游实际支持）——retag/别名克隆重建 deployment 时
+# 必须带上，否则一次分组改写就把直通配置洗掉
+PASS_THROUGH_OPENAI_PARAMS = ["reasoning_effort"]
 
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 if SECRET_PATH.exists():
@@ -622,6 +626,7 @@ async def retag_site(wg_ip: str, new_groups: list[str]) -> list[str]:
             "api_base": src.get("api_base"),
             "api_key": "none",                      # /model/info 读回不含 api_key，重建按上游无鉴权口径
             "tags": sorted(set(new_groups) - {"default"}),
+            "allowed_openai_params": PASS_THROUGH_OPENAI_PARAMS,
             "connect_timeout": src.get("connect_timeout", 5),
             "timeout": src.get("timeout", 600),
         }
@@ -662,6 +667,16 @@ def row_cached(row: dict) -> int:
     uo = (row.get("metadata") or {}).get("usage_object") or {}
     ptd = uo.get("prompt_tokens_details") or {}
     return int(ptd.get("cached_tokens") or uo.get("cache_read_input_tokens") or 0)
+
+
+def row_effort(row: dict) -> str:
+    """请求实际携带的思考强度（group_routing 钩子注入，经 metadata.spend_logs_metadata
+    落库——LiteLLM 1.96.2 写库白名单不含 requester_metadata；requester_metadata/顶层
+    仅作形态兜底）。历史日志为空。"""
+    md = row.get("metadata") or {}
+    sl = md.get("spend_logs_metadata") or {}
+    rm = md.get("requester_metadata") or {}
+    return str(sl.get("effort") or rm.get("effort") or md.get("effort") or "")
 
 
 async def api_overview(request: Request) -> Response:
@@ -828,6 +843,7 @@ async def api_usage_logs(request: Request) -> Response:
             "key": key_last4(r),
             "model": r.get("model_group") or r.get("model") or "?",
             "call_type": r.get("call_type") or "",
+            "effort": row_effort(r),
             "prompt_tokens": int(r.get("prompt_tokens") or 0),
             "completion_tokens": int(r.get("completion_tokens") or 0),
             "cached_tokens": row_cached(r),
@@ -1143,7 +1159,8 @@ async def api_models_alias(request: Request) -> Response:
     for d in by_name[target]:
         src, info = d.get("litellm_params") or {}, d.get("model_info") or {}
         params = {"model": src.get("model"), "api_base": src.get("api_base"), "api_key": "none",
-                  "tags": dep_tags(d), "connect_timeout": src.get("connect_timeout", 5),
+                  "tags": dep_tags(d), "allowed_openai_params": PASS_THROUGH_OPENAI_PARAMS,
+                  "connect_timeout": src.get("connect_timeout", 5),
                   "timeout": src.get("timeout", 600)}
         for lim in ("rpm", "tpm"):
             if src.get(lim) is not None or info.get(lim) is not None:

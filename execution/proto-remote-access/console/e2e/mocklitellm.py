@@ -44,6 +44,11 @@ class H(BaseHTTPRequestHandler):
                 ak = 'litellm_proxy_master_key' if i % 5 == 0 else STATE[i % len(STATE)]['token']
                 fail = (i % 9 == 0)
                 tft = 300 + (i * 97) % 2400
+                md = ({'error_str': 'upstream connect timeout after 5000ms'}
+                      if fail else {'usage_object': {'prompt_tokens_details': {'cached_tokens': (i * 37) % 900}}})
+                eff = ['high', 'medium', 'budget:8192', ''][i % 4]  # 1/4 行未携带 effort
+                if eff:
+                    md['spend_logs_metadata'] = {'effort': eff}   # 生产落库形态（写库白名单内）
                 return {'startTime': st,
                         'completionStartTime': (start + _dt.timedelta(milliseconds=tft)).strftime('%Y-%m-%dT%H:%M:%S.000000Z'),
                         'endTime': st, 'api_key': ak,
@@ -54,8 +59,7 @@ class H(BaseHTTPRequestHandler):
                         'request_duration_ms': tft + 200 + (i * 173) % 4000,
                         'status': 'failure' if fail else 'success',
                         'request_id': 'req-%04d' % i, 'session_id': 'sess-%02d' % (i % 4),
-                        'metadata': ({'error_str': 'upstream connect timeout after 5000ms'}
-                                     if fail else {'usage_object': {'prompt_tokens_details': {'cached_tokens': (i * 37) % 900}}})}
+                        'metadata': md}
             self._send({'data': [mk(i) for i in range(30)]})
         else:
             self._send({"data": []})
