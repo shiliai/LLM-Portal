@@ -251,7 +251,7 @@
   var SORT = { col: 'ts', dir: -1 };
   var COLS = [
     ['ts', '时间'], ['alias', 'Key'], ['model', '模型'], ['call_type', '类型'],
-    ['tokens', 'Token'], ['latency', '延迟'], ['ip', 'IP'], ['status', '状态']
+    ['effort', '思考'], ['tokens', 'Token'], ['latency', '延迟'], ['ip', 'IP'], ['status', '状态']
   ];
   function colVal(r, col) {
     switch (col) {
@@ -284,7 +284,7 @@
       if (k && r.alias !== k) return false;
       if (m && r.model !== m) return false;
       if (st && r.status !== st) return false;
-      if (q && (r.model + ' ' + r.request_id + ' ' + r.alias + ' ' + r.ip + ' ' + (r.error || '')).toLowerCase().indexOf(q) < 0) return false;
+      if (q && (r.model + ' ' + r.request_id + ' ' + r.alias + ' ' + r.ip + ' ' + (r.effort || '') + ' ' + (r.error || '')).toLowerCase().indexOf(q) < 0) return false;
       return true;
     });
     list.sort(function (a, b) {
@@ -332,13 +332,14 @@
         '<td>' + esc(r.alias) + '</td>' +
         '<td class="mono">' + esc(r.model) + '</td>' +
         '<td>' + esc(r.call_type || '—') + '</td>' +
+        '<td class="mono" style="white-space:nowrap">' + (r.effort ? esc(r.effort) : '<span style="color:#bfbfbf">—</span>') + '</td>' +
         '<td class="tok-cell">' + tokCell(r) + '</td>' +
         '<td>' + latCell(r) + '</td>' +
         '<td class="mono" style="white-space:nowrap">' + esc(ip) + '</td>' +
         '<td>' + (r.status === 'failure' ? '<span class="pf-chip err">失败</span>' : '<span class="pf-chip ok">成功</span>') + '</td>' +
         '<td><button class="pf-link js-rl-detail" data-i="' + RL.indexOf(r) + '">详情</button></td>' +
       '</tr>';
-    }).join('') || '<tr><td colspan="9"><div class="pf-empty"><div class="pf-empty-icon">▢</div>没有符合条件的请求</div></td></tr>';
+    }).join('') || '<tr><td colspan="10"><div class="pf-empty"><div class="pf-empty-icon">▢</div>没有符合条件的请求</div></td></tr>';
     document.querySelectorAll('.js-rl-detail').forEach(function (btn) {
       btn.onclick = function () { rlDetail(RL[+btn.dataset.i]); };
     });
@@ -351,6 +352,7 @@
       '<div class="pf-kv-k">Key</div><div class="pf-kv-v">' + esc(r.alias) + ' <span class="pf-key">' + esc(r.key) + '</span></div>' +
       '<div class="pf-kv-k">模型</div><div class="pf-kv-v mono">' + esc(r.model) + '</div>' +
       '<div class="pf-kv-k">调用类型</div><div class="pf-kv-v mono">' + esc(r.call_type || '—') + '</div>' +
+      '<div class="pf-kv-k">思考强度</div><div class="pf-kv-v mono">' + esc(r.effort || '—') + '</div>' +
       '<div class="pf-kv-k">状态</div><div class="pf-kv-v">' + (r.status === 'failure' ? '<span class="pf-chip err">失败</span>' : '<span class="pf-chip ok">成功</span>') + '</div>' +
       '<div class="pf-kv-k">输入 / 缓存读</div><div class="pf-kv-v">' + fmtN(r.prompt_tokens) + ' / ' + fmtN(r.cached_tokens) + '</div>' +
       '<div class="pf-kv-k">输出 / 总计</div><div class="pf-kv-v">' + fmtN(r.completion_tokens) + ' / <b>' + fmtN(tt) + '</b></div>' +

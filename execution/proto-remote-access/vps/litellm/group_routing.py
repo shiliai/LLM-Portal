@@ -14,21 +14,94 @@
 from litellm.integrations.custom_logger import CustomLogger
 
 
+def _get(d, key):
+    """dict / 请求对象两种形态统一取参。"""
+    if isinstance(d, dict):
+        return d.get(key)
+    return getattr(d, key, None)
+
+
+def _effort(data) -> str:
+    """归一化本请求实际携带的思考强度（网关不改写 effort，携带值即生效值）。
+
+    OpenAI 协议 reasoning_effort / reasoning.effort → 档位原样（low/medium/high…）；
+    Anthropic 协议 thinking.budget_tokens → "budget:N"；thinking.type=disabled → "off"；
+    未携带 → 空串（不写键）。已知局限：钩子在路由前，drop_params 对不支持上游的
+    静默丢弃不可感知，记录的是请求携带值。
+    """
+    re_ = _get(data, "reasoning_effort")
+    if isinstance(re_, str) and re_:
+        return re_
+    reasoning = _get(data, "reasoning")
+    if isinstance(reasoning, dict) and isinstance(reasoning.get("effort"), str) and reasoning["effort"]:
+        return reasoning["effort"]
+    thinking = _get(data, "thinking")
+    if isinstance(thinking, dict):
+        if isinstance(thinking.get("budget_tokens"), int):
+            return f"budget:{thinking['budget_tokens']}"
+        if thinking.get("type") == "disabled":
+            return "off"
+    return ""
+
+
+def _set_effort(metadata: dict, data) -> None:
+    """effort 原地写入 metadata（两路）。
+
+    1.96.2 实测：① spend log 落库时按 SpendLogsMetadata.__annotations__ 白名单重建
+    metadata，requester_metadata 不在白名单内会被丢弃；spend_logs_metadata（自由
+    键值槽）在白名单内，是唯一可靠落库通道。② function_setup 在本钩子之前就把
+    data["metadata"] 以同一引用存进 Logging 对象——必须**原地改写**，整体替换
+    data["metadata"] 会让日志层握着旧引用、改动全部丢失。"""
+    effort = _effort(data)
+    if not effort:
+        return
+    sl = metadata.get("spend_logs_metadata")
+    if not isinstance(sl, dict):
+        sl = {}
+        metadata["spend_logs_metadata"] = sl
+    sl["effort"] = effort
+    rm = metadata.get("requester_metadata")   # 非 DB 日志消费方（otel 等）仍读这里
+    if not isinstance(rm, dict):
+        rm = {}
+        metadata["requester_metadata"] = rm
+    rm["effort"] = effort
+
+
 def _apply(group: str, data) -> None:
     if isinstance(data, dict):
-        metadata = dict(data.get("metadata") or {})
+        metadata = data.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            data["metadata"] = metadata
         if group:
             metadata["tags"] = [group]
         else:
             metadata.pop("tags", None)  # 未绑组 = 全量池；顺带清除客户端伪造的 tag
-        data["metadata"] = metadata
+        _set_effort(metadata, data)
+        # /v1/messages 入口：代理把请求 metadata 放在 litellm_metadata（非 metadata），
+        # function_setup 以同引用进日志层的 litellm_params["litellm_metadata"]
+        lm = data.get("litellm_metadata")
+        if isinstance(lm, dict):
+            _set_effort(lm, data)
+        # 直写 Logging 对象：实测（1.96.2）请求 data["metadata"] 在路由/主调用层会被
+        # 重建，而 spend log 读的是 function_setup 存进 Logging 的那份 litellm_params
+        # ——请求侧两通道 + Logging 对象三路同写，确保 effort 到达落库层。
+        lo = data.get("litellm_logging_obj")
+        lp = getattr(lo, "litellm_params", None)
+        if isinstance(lp, dict):
+            lmd = lp.get("metadata")
+            if not isinstance(lmd, dict):
+                lmd = {}
+                lp["metadata"] = lmd
+            _set_effort(lmd, data)
         data["enable_tag_filtering"] = True
-    else:  # 部分入口（如 /v1/messages）传对象；尽力设置
+    else:  # 部分入口传对象；尽力设置
         metadata = dict(getattr(data, "metadata", None) or {})
         if group:
             metadata["tags"] = [group]
         else:
             metadata.pop("tags", None)
+        _set_effort(metadata, data)
         data.metadata = metadata
         try:
             data.enable_tag_filtering = True

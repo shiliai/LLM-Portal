@@ -289,3 +289,18 @@ def test_logout_removes_session(console, monkeypatch):
         assert client.post("/console/api/logout", headers={"Cookie": cookie, **XRW}).status_code == 200
         assert client.get("/console/api/me", headers={"Cookie": cookie}).status_code == 401
     assert _rows(console) == []                       # 会话行已删
+
+
+# ---------------------------------------------------------------- 思考强度提取
+
+def test_row_effort_prefers_spend_logs_metadata(console):
+    # 生产实际落库形态：LiteLLM 1.96.2 写库白名单只保留 spend_logs_metadata
+    assert console.row_effort({"metadata": {"spend_logs_metadata": {"effort": "high"}}}) == "high"
+    assert console.row_effort({"metadata": {"spend_logs_metadata": {"effort": "budget:8192"}}}) == "budget:8192"
+
+
+def test_row_effort_fallback_shapes(console):
+    assert console.row_effort({"metadata": {"requester_metadata": {"effort": "low"}}}) == "low"
+    assert console.row_effort({"metadata": {"effort": "medium"}}) == "medium"   # 形态兜底
+    assert console.row_effort({"metadata": {"usage_object": {}}}) == ""        # 历史行/未携带
+    assert console.row_effort({}) == ""

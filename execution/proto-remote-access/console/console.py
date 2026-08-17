@@ -664,6 +664,16 @@ def row_cached(row: dict) -> int:
     return int(ptd.get("cached_tokens") or uo.get("cache_read_input_tokens") or 0)
 
 
+def row_effort(row: dict) -> str:
+    """请求实际携带的思考强度（group_routing 钩子注入，经 metadata.spend_logs_metadata
+    落库——LiteLLM 1.96.2 写库白名单不含 requester_metadata；requester_metadata/顶层
+    仅作形态兜底）。历史日志为空。"""
+    md = row.get("metadata") or {}
+    sl = md.get("spend_logs_metadata") or {}
+    rm = md.get("requester_metadata") or {}
+    return str(sl.get("effort") or rm.get("effort") or md.get("effort") or "")
+
+
 async def api_overview(request: Request) -> Response:
     sess = await require(request)
     if isinstance(sess, JSONResponse):
@@ -828,6 +838,7 @@ async def api_usage_logs(request: Request) -> Response:
             "key": key_last4(r),
             "model": r.get("model_group") or r.get("model") or "?",
             "call_type": r.get("call_type") or "",
+            "effort": row_effort(r),
             "prompt_tokens": int(r.get("prompt_tokens") or 0),
             "completion_tokens": int(r.get("completion_tokens") or 0),
             "cached_tokens": row_cached(r),
