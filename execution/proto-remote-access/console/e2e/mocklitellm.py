@@ -1,6 +1,9 @@
 """mock LiteLLM:回放生产形状的 /key/list,支持 /key/update 改内存状态。
 数据来源:环境变量 KEYLIST_JSON 指向导出文件;缺省用内置合成夹具(与生产同形状,
-含密钥哈希/别名/分组/禁用态,不依赖任何生产导出数据)。"""
+含密钥哈希/别名/分组/禁用态,不依赖任何生产导出数据)。
+站点模型管理 e2e 另需:/model/info + /model/new + /model/delete(内存 deployment
+状态)、/onboard/admin/list(兼扮 onboardd)、无 Authorization 的 /v1/models
+(兼扮站点上游——与网关自身 /v1/models 按 Authorization 头区分,与单测同判据)。"""
 import hashlib, json, os, secrets, sys, time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -22,6 +25,24 @@ else:
                       "blocked": None if _alias != 'home-only' else False,
                       "created_at": "2026-08-15T08:00:00"})
 
+# 站点模型管理夹具:一个 active 站点 + 一个旧 id 的 qwen deployment,
+# 上游 /v1/models 返回新 id(两个,逼出「多 id 下拉」分支)。wg_ip 用 127.0.0.1:
+# console 的探测是服务端 httpx 真发起的,本机回环才可达(另起 MOCK_PORT=8004
+# 的 mock 实例扮站点上游)
+DEP_SEQ = [1]     # 初始夹具已占 dep-1,新建从 dep-2 起(撞 id 会把多个一起删)
+DEPLOYMENTS = [
+    {"model_name": "qwen3.6-35b-fp8",
+     "litellm_params": {"model": "openai/qwen3.6-35b-fp8",
+                        "api_base": "http://127.0.0.1:8004/v1", "tags": ["home"]},
+     "model_info": {"id": "dep-1"}},
+]
+UPSTREAM_MODELS = {"data": [{"id": "qwen3.8-27b-mtp2", "owned_by": "llamacpp"},
+                            {"id": "qwen3.8-27b-mtp2-mini", "owned_by": "llamacpp"}]}
+ONBOARD_SITES = {"sites": [{"name": "workstation", "pubkey": "MOCKPUBKEY0=",
+                            "wg_ip": "127.0.0.1", "models": "[]",
+                            "groups": '["home"]', "status": "active",
+                            "created_at": 1755400000}]}
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def _send(self, obj, code=200):
@@ -34,6 +55,14 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith('/key/list'):
             self._send(STATE)
+        elif self.path.startswith('/onboard/admin/list'):
+            self._send(ONBOARD_SITES)
+        elif self.path.startswith('/model/info'):
+            self._send({"data": DEPLOYMENTS})
+        elif self.path.startswith('/v1/models') and not self.headers.get('Authorization'):
+            self._send(UPSTREAM_MODELS)            # 站点上游探测(无鉴权头)
+        elif self.path.startswith('/v1/models'):
+            self._send({"data": [{"id": d["model_name"]} for d in DEPLOYMENTS]})
         elif self.path.startswith('/key/info'):
             self._send({"info": {"key_alias": "x", "metadata": {"group": "default"}, "models": []}})
         elif self.path.startswith('/spend/logs'):
@@ -66,6 +95,19 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get('content-length') or 0)
         body = json.loads(self.rfile.read(n) or b'{}')
+        if self.path.startswith('/model/new'):
+            DEP_SEQ[0] += 1
+            dep = {"model_name": body.get("model_name"),
+                   "litellm_params": body.get("litellm_params") or {},
+                   "model_info": {"id": "dep-%d" % DEP_SEQ[0]}}
+            DEPLOYMENTS.append(dep)
+            return self._send({"ok": True, "model_info": dep["model_info"]})
+        if self.path.startswith('/model/delete'):
+            DEPLOYMENTS[:] = [d for d in DEPLOYMENTS
+                              if (d.get("model_info") or {}).get("id") != body.get("id")]
+            return self._send({"ok": True})
+        if self.path.startswith('/onboard/admin/models'):
+            return self._send({"ok": True})
         if self.path.startswith('/key/generate'):
             import secrets as _s, hashlib as _h, time as _t
             key = 'sk-' + _s.token_urlsafe(24)
@@ -99,4 +141,4 @@ class H(BaseHTTPRequestHandler):
             return self._send({"ok": True})
         self._send({"ok": True})
 
-HTTPServer(('127.0.0.1', 4100), H).serve_forever()
+HTTPServer(('127.0.0.1', int(os.environ.get('MOCK_PORT', '4100'))), H).serve_forever()

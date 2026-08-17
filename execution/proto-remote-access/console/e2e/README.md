@@ -37,6 +37,22 @@ node keys-e2e.js                              # 断言输出 + 截图 r*.png（=
 
 其余脚本同理：`npm run keys-memory` / `keys-vault` / `usage-redesign` / `usage-reqlog`。
 
+## 站点模型管理 e2e（`npm run sites-models`）
+
+比其余脚本多两个前提：
+
+```bash
+MOCK_PORT=8004 python3 mocklitellm.py &    # 假「站点上游」：console 的 /sites/probe
+                                           # 是服务端 httpx 真发起的,回环才可达
+env ... ONBOARDD_URL=http://127.0.0.1:4100 .venv/bin/python ../console.py &
+                                           # onboardd 也指到 mock(夹具: workstation 站点)
+```
+
+覆盖：模型弹窗打开（回归:smReload 曾定义在 pfReady.then 内,点击 ReferenceError）、
+刷新上游（多 id 下拉→应用→列表更新）、手动添加（探测 chip 回填）、两段式删除；
+全程断言无 pageerror。mock 夹具 wg_ip=127.0.0.1、DEP_SEQ 从 1 起（撞 id 会把
+多个 deployment 一起删,踩过）。
+
 ## 已知桩缺口（断言时留意）
 
 `/key/generate` 只回 `{"ok":true}`（无 key 字段）、`/key/block` 不改状态——

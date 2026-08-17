@@ -764,7 +764,7 @@ async def api_overview(request: Request) -> Response:
     }
     site_rows = []
     for s in sites:
-        ago = hs.get(s.get("pubkey") or "")
+        ago = hs.get(s.get("pubkey") or "", -1)   # -1=未握手/不在 dump(wg 失败、peer 已摘),None 会让下方比较 TypeError→全表 500
         n_deps = sum(1 for d in deps if dep_of_site(d, s.get("wg_ip") or "#"))
         online = s["status"] in ("active", "partial") and 0 <= ago < HANDSHAKE_ONLINE
         site_rows.append({"name": s["name"], "wg_ip": s["wg_ip"], "handshake": ago,
@@ -941,7 +941,7 @@ async def api_sites(request: Request) -> Response:
         site_deps = [d for d in deps if dep_of_site(d, s.get("wg_ip") or "#")]
         tags = sorted({t for d in site_deps for t in dep_tags(d)}) if site_deps else \
                sorted({g for g in s["groups"] if g != "default"})
-        ago = hs.get(s.get("pubkey") or "")
+        ago = hs.get(s.get("pubkey") or "", -1)   # -1=未握手/不在 dump(wg 失败、peer 已摘),None 会让下方比较 TypeError→全表 500
         rows.append({
             "name": s["name"], "pubkey": (s.get("pubkey") or "")[:10] + "…=",
             "wg_ip": s["wg_ip"], "handshake": ago,
