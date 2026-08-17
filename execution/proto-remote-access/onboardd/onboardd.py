@@ -9,6 +9,8 @@
   POST /onboard/admin/tokens {site, models, groups}   签发一次性 token（15min）
   POST /onboard/admin/revoke {site}                   吊销：wg 摘 peer + LiteLLM 摘 deployment
   POST /onboard/admin/groups {site, groups}           r6：站点分组同步（LiteLLM retag 由 consoled 负责）
+  POST /onboard/admin/models {site, models}           站点模型清单同步（手动加/刷新/删后回写，
+                                                      LiteLLM 侧操作由 consoled 完成）
   GET  /onboard/admin/list                            站点清单
 
 状态存 SQLite；peer 持久化回写 /etc/wireguard/wg0.conf。wg 命令前缀 WG_EXEC：
@@ -296,6 +298,29 @@ async def admin_groups(request: Request) -> Response:
     return JSONResponse({"ok": True, "site": site, "groups": groups})
 
 
+async def admin_models(request: Request) -> Response:
+    """站点模型清单同步（全量替换）：consoled 手动加模型/刷新上游 id/删除后回写注册表，
+    使 admin/list 与 LiteLLM 实际 deployment 保持一致。权威数据在 LiteLLM——
+    这里只做登记簿同步，不做任何 LiteLLM 写操作。"""
+    if not require_admin(request):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    body = await request.json()
+    site, models = body.get("site", ""), body.get("models", [])
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,32}", site or ""):
+        return JSONResponse({"error": "bad site name"}, status_code=400)
+    # 模型名允许点号（qwen3.8-27b 一类版本号命名）；port 必须可转 int
+    if not isinstance(models, list) or not all(
+            isinstance(m, dict) and re.fullmatch(r"[a-zA-Z0-9_.-]{1,64}", m.get("name") or "")
+            and isinstance(m.get("port"), int) for m in models):
+        return JSONResponse({"error": "bad models (expect [{name, port, upstream_model?}])"},
+                            status_code=400)
+    with db() as conn:
+        cur = conn.execute("UPDATE sites SET models=? WHERE name=?", (json.dumps(models), site))
+        if cur.rowcount == 0:
+            return JSONResponse({"error": f"unknown site {site}"}, status_code=404)
+    return JSONResponse({"ok": True, "site": site, "models": models})
+
+
 # ---------------------------------------------------------------- wg0.conf 持久化辅助
 
 PEER_BLOCK = "# peer {name}\n[Peer]\nPublicKey = {pubkey}\nAllowedIPs = {ip}/32\n"
@@ -404,6 +429,7 @@ app = Starlette(routes=[
     Route("/onboard/admin/tokens", admin_token, methods=["POST"]),
     Route("/onboard/admin/revoke", admin_revoke, methods=["POST"]),
     Route("/onboard/admin/groups", admin_groups, methods=["POST"]),
+    Route("/onboard/admin/models", admin_models, methods=["POST"]),
     Route("/onboard/admin/list", admin_list, methods=["GET"]),
 ])
 

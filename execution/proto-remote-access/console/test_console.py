@@ -345,3 +345,176 @@ def test_rebuild_deployments_carry_allowed_openai_params(console, monkeypatch):
     lp = [c for c in calls if c["path"] == "/model/new"][0]["json"]["litellm_params"]
     assert lp["allowed_openai_params"] == ["reasoning_effort"]
     assert lp["model"] == "openai/m1"
+
+
+# ---------------------------------------------------------------- 站点模型管理（探测/添加/刷新/删除）
+
+SM_SITE = {"name": "workstation", "pubkey": "PUBKEY0", "wg_ip": "10.77.0.14",
+           "models": "[]", "groups": '["home"]', "status": "active", "created_at": 1700000000}
+UPSTREAM_IDS = ["qwen3.8-27b-mtp2"]                 # 站点上游 /v1/models 实际在服务的 id
+
+
+def _sm_handler(deps=None, upstream_ids=None):
+    """桩 LiteLLM + onboardd + 站点上游。站点上游探测的 /v1/models 不带
+    Authorization 头，据此与网关自身 /v1/models（master key）区分。"""
+    deps = [] if deps is None else deps
+    upstream_ids = UPSTREAM_IDS if upstream_ids is None else upstream_ids
+
+    def handler(method, path, bearer, json_body):
+        if path == "/onboard/admin/list":
+            return 200, {"sites": [dict(SM_SITE)]}
+        if path == "/v1/models" and not bearer:
+            return 200, {"data": [{"id": i, "owned_by": "llamacpp"} for i in upstream_ids]}
+        if path == "/model/info":
+            return 200, {"data": deps}
+        if path in ("/model/new", "/model/delete", "/onboard/admin/models"):
+            return 200, {"ok": True}
+        if path == "/global/spend" and bearer == MASTER_KEY:
+            return 200, {}
+        return 404, {"error": f"unexpected stub path {path}"}
+
+    return handler
+
+
+def _admin_client(console):
+    client = TestClient(console.app)
+    ok = client.post("/console/api/login", json={"key": MASTER_KEY}, headers=XRW)
+    return client, {"Cookie": _cookie_of(ok), **XRW}
+
+
+def test_sites_probe_returns_upstream_ids(console, monkeypatch):
+    install_litellm_stub(monkeypatch, _sm_handler(upstream_ids=["b", "a"]))
+    client, hdr = _admin_client(console)
+    resp = client.get("/console/api/sites/probe?site=workstation&port=8004", headers=hdr)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [m["id"] for m in body["models"]] == ["b", "a"]   # 去重保序
+    assert body["api_base"] == "http://10.77.0.14:8004/v1"
+    # 未知站点 / 坏端口 / 用户角色
+    assert client.get("/console/api/sites/probe?site=ghost&port=8004", headers=hdr).status_code == 404
+    assert client.get("/console/api/sites/probe?site=workstation&port=abc", headers=hdr).status_code == 400
+
+
+def test_sites_probe_rejects_user_role(console, monkeypatch):
+    install_litellm_stub(monkeypatch, _handler)
+    with TestClient(console.app) as client:
+        ok = client.post("/console/api/login", json={"key": USER_KEY}, headers=XRW)
+        resp = client.get("/console/api/sites/probe?site=x&port=1",
+                          headers={"Cookie": _cookie_of(ok)})
+    assert resp.status_code == 403
+
+
+def test_sites_models_add(console, monkeypatch):
+    dep = {"model_name": "deepseek-v4-flash-0731",
+           "litellm_params": {"model": "openai/deepseek-v4-flash-0731",
+                              "api_base": "http://10.77.0.14:8890/v1", "tags": ["home"]},
+           "model_info": {"id": "dep-ds"}}
+    calls = install_litellm_stub(monkeypatch, _sm_handler(deps=[dep]))
+    client, hdr = _admin_client(console)
+    resp = client.post("/console/api/sites/models", headers=hdr,
+                       json={"site": "workstation", "name": "qwen3.8-27b",
+                             "port": 8004, "upstream_model": "qwen3.8-27b-mtp2"})
+    assert resp.status_code == 200
+    assert resp.json()["upstream_model"] == "qwen3.8-27b-mtp2"
+    new = [c for c in calls if c["path"] == "/model/new"][0]["json"]
+    assert new["model_name"] == "qwen3.8-27b"                 # 对外名（带点号，MODEL_RE 放行）
+    lp = new["litellm_params"]
+    assert lp["model"] == "openai/qwen3.8-27b-mtp2"           # 上游真名
+    assert lp["api_base"] == "http://10.77.0.14:8004/v1"
+    assert lp["tags"] == ["home"]                             # 分组沿站点现状
+    assert lp["allowed_openai_params"] == ["reasoning_effort"]
+    sync = [c for c in calls if c["path"] == "/onboard/admin/models"][0]["json"]
+    assert {"name": "qwen3.8-27b", "port": 8004,
+            "upstream_model": "qwen3.8-27b-mtp2"} in sync["models"]
+
+
+def test_sites_models_add_duplicate_409(console, monkeypatch):
+    dep = {"model_name": "qwen3.8-27b",
+           "litellm_params": {"model": "openai/qwen3.8-27b-mtp2",
+                              "api_base": "http://10.77.0.14:8004/v1"},
+           "model_info": {"id": "dep-1"}}
+    install_litellm_stub(monkeypatch, _sm_handler(deps=[dep]))
+    client, hdr = _admin_client(console)
+    resp = client.post("/console/api/sites/models", headers=hdr,
+                       json={"site": "workstation", "name": "qwen3.8-27b", "port": 8004})
+    assert resp.status_code == 409
+
+
+def test_sites_models_refresh_rebuilds_upstream(console, monkeypatch):
+    """换模型场景：对外名/api_base/tags/限流保留，仅换上游 model id；先建新后删旧。"""
+    dep = {"model_name": "qwen3.6-35b-fp8",
+           "litellm_params": {"model": "openai/qwen3.6-35b-fp8",
+                              "api_base": "http://10.77.0.14:8004/v1",
+                              "tags": ["home"], "rpm": 7},
+           "model_info": {"id": "dep-q"}}
+    calls = install_litellm_stub(monkeypatch, _sm_handler(deps=[dep]))
+    client, hdr = _admin_client(console)
+    resp = client.post("/console/api/sites/models/refresh", headers=hdr,
+                       json={"site": "workstation", "name": "qwen3.6-35b-fp8",
+                             "port": 8004, "upstream_model": "qwen3.8-27b-mtp2"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert (body["previous"], body["upstream_model"]) == ("qwen3.6-35b-fp8", "qwen3.8-27b-mtp2")
+    seq = [c["path"] for c in calls if c["path"] in ("/model/new", "/model/delete")]
+    assert seq == ["/model/new", "/model/delete"]             # 不留零 deployment 窗口
+    new = [c for c in calls if c["path"] == "/model/new"][0]["json"]
+    assert new["model_name"] == "qwen3.6-35b-fp8"             # 对外名不变，订阅方无感
+    lp = new["litellm_params"]
+    assert lp["model"] == "openai/qwen3.8-27b-mtp2"
+    assert lp["rpm"] == 7 and lp["tags"] == ["home"]
+    assert [c for c in calls if c["path"] == "/model/delete"][0]["json"] == {"id": "dep-q"}
+    sync = [c for c in calls if c["path"] == "/onboard/admin/models"][0]["json"]
+    assert sync["models"] == [{"name": "qwen3.6-35b-fp8", "port": 8004,
+                               "upstream_model": "qwen3.8-27b-mtp2"}]
+
+
+def test_sites_models_refresh_unchanged_and_unknown(console, monkeypatch):
+    dep = {"model_name": "m1",
+           "litellm_params": {"model": "openai/qwen3.8-27b-mtp2",
+                              "api_base": "http://10.77.0.14:8004/v1"},
+           "model_info": {"id": "dep-1"}}
+    install_litellm_stub(monkeypatch, _sm_handler(deps=[dep]))
+    client, hdr = _admin_client(console)
+    same = client.post("/console/api/sites/models/refresh", headers=hdr,
+                       json={"site": "workstation", "name": "m1",
+                             "port": 8004, "upstream_model": "qwen3.8-27b-mtp2"})
+    assert same.status_code == 200 and same.json()["unchanged"] is True
+    missing = client.post("/console/api/sites/models/refresh", headers=hdr,
+                          json={"site": "workstation", "name": "nope",
+                                "port": 8004, "upstream_model": "x"})
+    assert missing.status_code == 404
+
+
+def test_sites_models_delete(console, monkeypatch):
+    dep = {"model_name": "qwen3.6-35b-fp8",
+           "litellm_params": {"model": "openai/qwen3.6-35b-fp8",
+                              "api_base": "http://10.77.0.14:8004/v1"},
+           "model_info": {"id": "dep-q"}}
+    calls = install_litellm_stub(monkeypatch, _sm_handler(deps=[dep]))
+    client, hdr = _admin_client(console)
+    resp = client.post("/console/api/sites/models/delete", headers=hdr,
+                       json={"site": "workstation", "name": "qwen3.6-35b-fp8", "port": 8004})
+    assert resp.status_code == 200
+    assert [c for c in calls if c["path"] == "/model/delete"][0]["json"] == {"id": "dep-q"}
+    sync = [c for c in calls if c["path"] == "/onboard/admin/models"][0]["json"]
+    assert sync["models"] == []                               # 登记簿同步清空
+
+
+def test_sites_token_accepts_dotted_model_names(console, monkeypatch):
+    """注册表单允许 qwen3.8-27b 一类带点号模型名（此前 NAME_RE 误拒，MODEL_RE 放行）。"""
+    seen = []
+
+    def handler(method, path, bearer, json_body):
+        if path == "/onboard/admin/tokens":
+            seen.append(json_body)
+            return 200, {"token": "t", "expires_in": 900, "install_command": "cmd"}
+        if path == "/global/spend" and bearer == MASTER_KEY:
+            return 200, {}
+        return 404, {"error": f"unexpected stub path {path}"}
+
+    install_litellm_stub(monkeypatch, handler)
+    client, hdr = _admin_client(console)
+    resp = client.post("/console/api/sites/token", headers=hdr,
+                       json={"site": "s1", "models": [{"name": "qwen3.8-27b", "port": 8004}]})
+    assert resp.status_code == 200
+    assert seen[0]["models"][0]["name"] == "qwen3.8-27b"

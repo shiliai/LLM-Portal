@@ -67,7 +67,9 @@ def test_admin_endpoints_reject_missing_or_wrong_token(onboardd):
             rvk = client.post("/onboard/admin/revoke", headers=headers, json={"site": "s"})
             grp = client.post("/onboard/admin/groups", headers=headers,
                               json={"site": "s", "groups": []})
-            for resp in (lst, tok, rvk, grp):
+            mdl = client.post("/onboard/admin/models", headers=headers,
+                              json={"site": "s", "models": []})
+            for resp in (lst, tok, rvk, grp, mdl):
                 assert resp.status_code == 403, (headers, resp.status_code)
                 assert resp.json()["error"] == "forbidden"
     # 门禁拒掉时也不该签出任何 token
@@ -200,6 +202,32 @@ def test_admin_groups_updates_site_groups(onboardd):
     assert ok.json() == {"ok": True, "site": "delta", "groups": ["lab", "default"]}
     assert unknown.status_code == 404
     assert bad.status_code == 400
+
+
+def test_admin_models_replaces_site_models(onboardd):
+    """consoled 手动加/刷新/删模型后的登记簿同步：全量替换 sites.models。"""
+    _insert_site(onboardd, "workstation", wg_ip="10.77.0.14")
+    with TestClient(onboardd.app) as client:
+        ok = client.post("/onboard/admin/models", headers=_admin_headers(),
+                         json={"site": "workstation", "models": [
+                             {"name": "qwen3.8-27b", "port": 8004,
+                              "upstream_model": "qwen3.8-27b-mtp2"}]})
+        unknown = client.post("/onboard/admin/models", headers=_admin_headers(),
+                              json={"site": "ghost", "models": []})
+        bad_name = client.post("/onboard/admin/models", headers=_admin_headers(),
+                               json={"site": "workstation", "models": [{"name": "坏 名", "port": 1}]})
+        bad_port = client.post("/onboard/admin/models", headers=_admin_headers(),
+                               json={"site": "workstation", "models": [{"name": "m", "port": "x"}]})
+    assert ok.status_code == 200
+    assert ok.json()["ok"] is True
+    assert unknown.status_code == 404
+    assert bad_name.status_code == 400
+    assert bad_port.status_code == 400
+    with sqlite3.connect(onboardd.DB_PATH) as conn:
+        stored = json.loads(conn.execute(
+            "SELECT models FROM sites WHERE name='workstation'").fetchone()[0])
+    assert stored == [{"name": "qwen3.8-27b", "port": 8004,
+                       "upstream_model": "qwen3.8-27b-mtp2"}]
 
 
 def test_admin_revoke_unknown_site_404(onboardd):
