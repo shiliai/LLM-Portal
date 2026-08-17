@@ -5,7 +5,8 @@ const BASE = 'http://127.0.0.1:8399';
 const fail = m => { console.error('FAIL:', m); process.exit(1); };
 
 (async () => {
-  const browser = await chromium.launch();
+  // PW_CHANNEL=chrome 可复用本机已装 Chrome（免去 npx playwright install 的大体积下载）
+  const browser = await chromium.launch(process.env.PW_CHANNEL ? { channel: process.env.PW_CHANNEL } : {});
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
@@ -44,21 +45,25 @@ const fail = m => { console.error('FAIL:', m); process.exit(1); };
     '| 对外名不变:', refreshed.includes('qwen3.6-35b-fp8'));
   if (!refreshed.includes('qwen3.8-27b-mtp2')) fail('刷新上游未生效');
 
-  console.log('== 3. 手动添加(端口下拉 + 探测回填):');
+  console.log('== 3. 添加模型(独立弹窗 + 自动探测):');
+  await page.click('#btn-sm-open-add');
+  await page.waitForSelector('#modal-sm-add.open');
   const portOpt = await page.locator('#sm-port-sel option[value="8004"]').count();
   console.log('端口下拉含已知端口 8004(带在用标注):', portOpt === 1,
     '| 选项文案:', await page.locator('#sm-port-sel option[value="8004"]').textContent());
   if (portOpt !== 1) fail('端口下拉未含已知端口 8004');
-  await page.selectOption('#sm-port-sel', '8004');   // 与假上游 mock 同端口(探测是服务端发起的真请求)
-  await page.click('#sm-probe');
-  await page.waitForSelector('#sm-chips .js-sm-chip');
-  await page.click('#sm-chips .js-sm-chip');
-  console.log('点选后上游 id:', await page.inputValue('#sm-upstream'),
-    '| 对外名自动带出:', await page.inputValue('#sm-name'));
-  if ((await page.inputValue('#sm-upstream')) !== 'qwen3.8-27b-mtp2') fail('chip 未回填上游 id');
+  console.log('未选上游时添加按钮禁用:', await page.isDisabled('#btn-sm-add'));
+  // 默认选中首个已知端口(8004,与假上游 mock 同端口) → 打开即自动探测，无需探测按钮
+  await page.waitForSelector('#sm-probe-box .pf-opt input', { timeout: 5000 });
+  await page.click('#sm-probe-box .pf-opt');
+  await page.waitForTimeout(200);
+  console.log('点选后对外名自动带出:', await page.inputValue('#sm-name'),
+    '| 添加按钮可用:', !(await page.isDisabled('#btn-sm-add')));
   if ((await page.inputValue('#sm-name')) !== 'qwen3.8-27b-mtp2') fail('对外名未自动带出');
+  if (await page.isDisabled('#btn-sm-add')) fail('点选后添加按钮未启用');
   await page.fill('#sm-name', 'test-model');
   await page.click('#btn-sm-add');
+  await page.waitForSelector('#modal-site-models.open');   // 加完自动回列表弹窗
   await page.waitForFunction(() =>
     document.querySelectorAll('#sm-list .pf-dep-item').length >= 2);
   await page.waitForTimeout(300);

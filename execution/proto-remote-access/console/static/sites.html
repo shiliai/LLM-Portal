@@ -124,45 +124,56 @@
     </div>
   </div>
 
-  <!-- 站点模型管理弹窗：刷新上游 id / 手动添加 / 删除（端口只从站点已知端口选，
-       手打易错且 api_base 拼错即静默不可用——用户实测反馈） -->
-  <div class="pf-modal" id="modal-site-models" style="width:680px">
+  <!-- 站点模型弹窗（方案 A 重设计：管理与创建分离，一个弹窗只干一件事——
+       用户两次实测反馈「混排看不懂」；原型见 docs/superpowers/prototypes/models-redesign） -->
+  <div class="pf-modal" id="modal-site-models" style="width:640px">
     <div class="pf-modal-head">
-      <div class="pf-modal-title">模型管理 · <span id="sm-site-name" class="mono"></span></div>
+      <div class="pf-modal-title">站点模型 · <span id="sm-site-name" class="mono"></span></div>
       <button class="pf-x" data-close>×</button>
     </div>
     <div class="pf-modal-body">
-      <div class="pf-desc" style="margin-bottom:10px">站点上<b>换了新模型</b>（端口没变）→ 对下方已有条目点「刷新上游」，对外名不变、调用方无感；只有<b>新起了服务</b>才需要底部「添加模型」。</div>
-      <div style="font-weight:600;margin-bottom:2px">已注册模型</div>
+      <div class="pf-desc" style="margin-bottom:10px">站点<b>换了模型</b>（端口没变）→ 点条目内「刷新上游」，对外名不变、调用方无感；「删除」即把模型摘出路由池。</div>
       <div id="sm-list">加载中…</div>
-      <div style="font-weight:600;margin:18px 0 2px">添加模型</div>
+    </div>
+    <div class="pf-modal-foot">
+      <button class="pf-btn" data-close>关闭</button>
+      <button class="pf-btn primary" id="btn-sm-open-add">+ 添加模型</button>
+    </div>
+  </div>
+
+  <!-- 添加模型弹窗：① 选端口（选定即自动探测，无需单独按钮）→ ② 点选上游模型
+       → ③ 确认对外名（点选自动带出）。探测失败降级为手填上游 id -->
+  <div class="pf-modal" id="modal-sm-add" style="width:560px">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title">添加模型 · <span id="sm-add-site-name" class="mono"></span></div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-modal-body">
       <div class="pf-form-row">
-        <label class="req">① 站点端口</label>
+        <label class="req">站点端口</label>
         <div>
-          <select class="pf-select mono" id="sm-port-sel" style="width:auto;min-width:170px"></select>
-          <input class="pf-input mono" id="sm-port-custom" placeholder="输入端口" style="width:100px;display:none">
-          <button class="pf-link" id="sm-probe" type="button" style="margin-left:10px">② 探测上游 model id</button>
-          <div class="pf-desc" id="sm-port-note">下拉为该站点已注册/已部署的端口；站点真开了新端口才选「其他端口」手填。</div>
+          <select class="pf-select mono" id="sm-port-sel" style="width:auto;min-width:220px"></select>
+          <input class="pf-input mono" id="sm-port-custom" placeholder="端口" style="width:100px;display:none;margin-left:8px">
+          <div class="pf-desc">站点已注册/已部署的端口；真开了新端口才选「其他端口…」手填。选定即自动探测。</div>
         </div>
       </div>
       <div class="pf-form-row">
-        <label>③ 上游 model id</label>
-        <div>
-          <div class="pf-desc" id="sm-chips" style="margin-bottom:6px">点「② 探测」后这里列出上游实际在服务的 id，点选即填入右侧。</div>
-          <input class="pf-input mono" id="sm-upstream" placeholder="留空 = 与对外模型名相同">
+        <label class="req">上游模型</label>
+        <div id="sm-probe-box">
+          <div class="pf-desc">选定端口后自动探测该服务的 <span class="mono">/v1/models</span>。</div>
         </div>
       </div>
-      <div class="pf-form-row">
-        <label class="req">④ 对外模型名</label>
+      <div class="pf-form-row" id="sm-name-row" style="display:none">
+        <label class="req">对外模型名</label>
         <div>
           <input class="pf-input mono" id="sm-name" placeholder="例：qwen3.8-27b">
-          <div class="pf-desc">客户端经网关调用的名字；点选上游 id 时会自动带出，可改。</div>
+          <div class="pf-desc">客户端经网关调用的名字，已按上游 id 带出，可改。</div>
         </div>
       </div>
     </div>
     <div class="pf-modal-foot">
-      <button class="pf-btn" data-close>关闭</button>
-      <button class="pf-btn primary" id="btn-sm-add">添加模型</button>
+      <button class="pf-btn" id="btn-sm-back">返回列表</button>
+      <button class="pf-btn primary" id="btn-sm-add" disabled>添加模型</button>
     </div>
   </div>
 
@@ -225,7 +236,6 @@
     window.pfApi('GET', '/sites').then(function (d) {
       var site = d.sites.filter(function (s) { return s.name === smSite; })[0];
       renderSmList(site ? site.deps || [] : []);
-      smInitPortSel(site);           // 端口下拉随之重建（含「哪个模型在用」标注）
       load();                       // 顺带刷新外层站点表的模型数
     }).catch(function (e) { window.pfErr(e.error || '站点加载失败'); });
   }
@@ -236,14 +246,14 @@
         '<div class="pf-dep-main">' +
         '<strong class="mono">' + esc(dep.name) + '</strong>' +
         '<span class="pf-chip info mono">端口 ' + dep.port + '</span>' +
+        '<span class="pf-desc mono">上游 ' + esc(dep.upstream || '—') + '</span>' +
         '<span style="margin-left:auto;white-space:nowrap">' +
         '<button class="pf-link js-sm-refresh" type="button">刷新上游</button> ' +
         '<button class="pf-link danger js-sm-del" type="button">删除</button>' +
         '</span></div>' +
-        '<div class="pf-desc mono" style="padding:3px 0 1px">上游 id：' + esc(dep.upstream || '—') + '</div>' +
         '<div class="js-sm-edit" style="display:none;padding:4px 0 2px"></div>' +
         '</div>';
-    }).join('') || '<div class="pf-desc" style="padding:6px 0">该站点暂无已注册模型（在下方「添加模型」注册第一个）</div>';
+    }).join('') || '<div class="pf-empty"><div class="pf-empty-icon">▢</div>暂无已注册模型，点右下「+ 添加模型」注册第一个</div>';
   }
 
   // 端口下拉只放站点已知端口（后端 known_ports = deployment ∪ 登记簿），手打端口
@@ -298,10 +308,6 @@
         smSite = btn.dataset.site;
         document.getElementById('sm-site-name').textContent = smSite;
         document.getElementById('sm-list').textContent = '加载中…';
-        document.getElementById('sm-name').value = '';
-        document.getElementById('sm-port-custom').value = '';
-        document.getElementById('sm-upstream').value = '';
-        document.getElementById('sm-chips').innerHTML = '点「② 探测」后这里列出上游实际在服务的 id，点选即填入下方输入框。';
         smReload();
         window.pfModal('modal-site-models');
       };
@@ -480,54 +486,102 @@
       }).catch(function (e) { window.pfErr(e.error || '删除失败'); });
     }
 
-    /* 手动添加：① 选端口 → ② 探测 → ③ 点选 id → ④ 起对外名 */
+    /* 添加模型（独立弹窗）：① 选端口 → 选定即自动探测 → ② 点选上游模型（radio
+       卡片）→ ③ 确认对外名（自动带出）。探测失败降级为手填上游 id，不阻断 */
+    var smPicked = null;                     // 已选/已填的上游 model id
+    var smProbeSeq = 0;                      // 探测序号：丢弃过期响应（快速切端口时）
+
+    function smProbeBox() { return document.getElementById('sm-probe-box'); }
+
+    function smProbe() {
+      var port = smPort(), seq = ++smProbeSeq;
+      smPicked = null;
+      document.getElementById('btn-sm-add').disabled = true;
+      document.getElementById('sm-name-row').style.display = 'none';
+      if (!(port > 0)) { smProbeBox().innerHTML = '<div class="pf-desc">请先选择/填写端口。</div>'; return; }
+      smProbeBox().innerHTML = '<div class="pf-desc">正在探测 <span class="mono">端口 ' + port + ' 的 /v1/models</span> …</div>';
+      window.pfApi('GET', '/sites/probe?site=' + encodeURIComponent(smSite) + '&port=' + port)
+        .then(function (d) {
+          if (seq !== smProbeSeq) return;    // 期间又换了端口，丢弃本次结果
+          if (!d.models || !d.models.length) {
+            smProbeBox().innerHTML = '<div class="pf-desc">上游返回空列表——确认该端口的服务已在运行。</div>';
+            return;
+          }
+          smProbeBox().innerHTML = d.models.map(function (m) {
+            return '<label class="pf-opt"><input type="radio" name="sm-up" value="' + esc(m.id) + '">' +
+              '<span class="mono" style="font-size:12.5px">' + esc(m.id) + '</span>' +
+              (m.owned_by ? '<span class="pf-chip gray">' + esc(m.owned_by) + '</span>' : '') + '</label>';
+          }).join('');
+        })
+        .catch(function (e) {
+          if (seq !== smProbeSeq) return;
+          smProbeBox().innerHTML = '<div class="pf-banner" style="margin-bottom:8px">探测失败：' +
+            esc(e.error || '上游不可达') + '。可手填上游 id：</div>' +
+            '<input class="pf-input mono" id="sm-up-manual" placeholder="上游真实 model id">';
+          document.getElementById('sm-up-manual').addEventListener('input', function () {
+            smPicked = this.value.trim() || null;
+            smPickedReady();
+          });
+        });
+    }
+
+    function smPickedReady() {               // 选/填了上游 id 后的联动
+      var ok = !!smPicked;
+      document.getElementById('btn-sm-add').disabled = !ok;
+      document.getElementById('sm-name-row').style.display = ok ? '' : 'none';
+      var nameEl = document.getElementById('sm-name');
+      if (ok && !nameEl.value.trim()) nameEl.value = smPicked;   // 顺手带出，可改
+    }
+
+    smProbeBox().addEventListener('change', function (e) {
+      if (e.target.name !== 'sm-up') return;
+      smPicked = e.target.value;
+      document.getElementById('sm-name').value = '';   // 换选 id 时重带对外名
+      smPickedReady();
+    });
     document.getElementById('sm-port-sel').addEventListener('change', function () {
       var custom = document.getElementById('sm-port-custom');
       var on = this.value === '__custom__';
       custom.style.display = on ? '' : 'none';
-      if (on) custom.focus();
+      if (on) { custom.focus(); smProbeBox().innerHTML = '<div class="pf-desc">填好端口后自动探测。</div>'; }
+      else smProbe();
     });
-    document.getElementById('sm-probe').addEventListener('click', function () {
-      var port = smPort();
-      if (!(port > 0)) { window.pfErr('请先在①选择/填写站点端口'); return; }
-      document.getElementById('sm-chips').textContent = '探测中…';
-      window.pfApi('GET', '/sites/probe?site=' + encodeURIComponent(smSite) + '&port=' + port)
-        .then(function (d) {
-          var chips = d.models.map(function (m) {
-            return '<button class="pf-link mono js-sm-chip" type="button" data-id="' + esc(m.id) + '">' +
-              esc(m.id) + (m.owned_by ? ' · ' + esc(m.owned_by) : '') + '</button>';
-          }).join(' ');
-          document.getElementById('sm-chips').innerHTML = chips
-            ? '探测到 ' + d.models.length + ' 个 id（点选填入③，并自动带出④）：' + chips
-            : '上游返回空列表';
-        })
-        .catch(function (e) {
-          document.getElementById('sm-chips').textContent = '探测失败：' + (e.error || '上游不可达');
-        });
+    document.getElementById('sm-port-custom').addEventListener('input', function () {
+      clearTimeout(this._t);
+      this._t = setTimeout(smProbe, 400);    // 手填端口防抖探测
     });
-    document.getElementById('sm-chips').addEventListener('click', function (e) {
-      var chip = e.target.closest('.js-sm-chip');
-      if (!chip) return;
-      document.getElementById('sm-upstream').value = chip.dataset.id;
-      var nameEl = document.getElementById('sm-name');
-      if (!nameEl.value.trim()) nameEl.value = chip.dataset.id;   // 对外名空则顺手带出，可再改
+
+    document.getElementById('btn-sm-open-add').addEventListener('click', function () {
+      document.getElementById('sm-add-site-name').textContent = smSite;
+      document.getElementById('sm-name').value = '';
+      smPicked = null;
+      document.getElementById('btn-sm-add').disabled = true;
+      document.getElementById('sm-name-row').style.display = 'none';
+      smProbeBox().innerHTML = '<div class="pf-desc">加载端口…</div>';
+      // 每次打开重新拉站点数据：known_ports 随增删变化（含「哪个模型在用」标注）
+      window.pfApi('GET', '/sites').then(function (d) {
+        var site = d.sites.filter(function (s) { return s.name === smSite; })[0];
+        smInitPortSel(site);
+        window.pfModal('modal-sm-add');
+        smProbe();                           // 打开即探测默认端口
+      }).catch(function (e) { window.pfErr(e.error || '站点加载失败'); });
+    });
+    document.getElementById('btn-sm-back').addEventListener('click', function () {
+      window.pfModal('modal-site-models');
     });
     document.getElementById('btn-sm-add').addEventListener('click', function () {
       var name = document.getElementById('sm-name').value.trim();
       var port = smPort();
-      var upstream = document.getElementById('sm-upstream').value.trim();
-      if (!(port > 0)) { window.pfErr('请先在①选择/填写站点端口'); return; }
+      if (!(port > 0)) { window.pfErr('请先选择/填写站点端口'); return; }
       if (!/^[a-zA-Z0-9_.-]{1,64}$/.test(name)) {
-        window.pfErr('请检查④对外模型名（字母/数字/._-）');
+        window.pfErr('请检查对外模型名（字母/数字/._-）');
         return;
       }
       window.pfApi('POST', '/sites/models', {
-        site: smSite, name: name, port: port, upstream_model: upstream || undefined
+        site: smSite, name: name, port: port, upstream_model: smPicked || undefined
       }).then(function () {
         window.pfToast('已添加 ' + name + '（立即进入路由池）');
-        document.getElementById('sm-name').value = '';
-        document.getElementById('sm-upstream').value = '';
-        document.getElementById('sm-chips').innerHTML = '点「② 探测」后这里列出上游实际在服务的 id，点选即填入下方输入框。';
+        window.pfModal('modal-site-models'); // 加完回列表
         smReload();
       }).catch(function (e) { window.pfErr(e.error || '添加失败'); });
     });

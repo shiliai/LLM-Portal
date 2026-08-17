@@ -49,9 +49,12 @@ env ... ONBOARDD_URL=http://127.0.0.1:4100 .venv/bin/python ../console.py &
 ```
 
 覆盖：模型弹窗打开（回归:smReload 曾定义在 pfReady.then 内,点击 ReferenceError）、
-刷新上游（多 id 下拉→应用→列表更新）、手动添加（探测 chip 回填）、两段式删除；
-全程断言无 pageerror。mock 夹具 wg_ip=127.0.0.1、DEP_SEQ 从 1 起（撞 id 会把
-多个 deployment 一起删,踩过）。
+刷新上游（多 id 下拉→应用→列表更新）、添加（独立弹窗,选端口即自动探测→radio
+点选回填对外名）、两段式删除；全程断言无 pageerror。mock 夹具 wg_ip=127.0.0.1、
+DEP_SEQ 从 1 起（撞 id 会把多个 deployment 一起删,踩过）。
+
+`sites-models-e2e.js` 支持 `PW_CHANNEL=chrome node sites-models-e2e.js` 复用本机
+已装 Chrome，免去 `npx playwright install chromium` 的大体积下载。
 
 ## 已知桩缺口（断言时留意）
 
