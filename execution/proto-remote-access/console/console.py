@@ -12,10 +12,14 @@
   POST /console/api/logout             注销
   GET  /console/api/me                 会话信息（角色 + 导航裁剪）
   GET  /console/api/overview           仪表盘：今日聚合 + 站点隧道 + deployment 健康 + 近期错误
-  GET  /console/api/sites              站点清单（onboardd + wg 握手 + deployment 数）
+  GET  /console/api/sites              站点清单（onboardd + wg 握手 + deployment 数/明细）
   POST /console/api/sites/token        签发一次性安装命令（转 onboardd）
   POST /console/api/sites/revoke       吊销站点（转 onboardd）
   POST /console/api/sites/groups       调整站点分组（deployment retag + onboardd 同步）
+  GET  /console/api/sites/probe        探测站点上游 /v1/models（自动抓取可用 model id）
+  POST /console/api/sites/models       手动向已注册站点添加模型（写 LiteLLM + 同步登记簿）
+  POST /console/api/sites/models/refresh  刷新 deployment 上游 model id（对外名不变，订阅方无感）
+  POST /console/api/sites/models/delete   删除站点单个模型 deployment
   GET  /console/api/groups             分组清单（tags ∪ key 绑定；成员/绑定数）
   POST /console/api/groups/create      新建分组（带初始成员站点，retag）
   POST /console/api/groups/rename      改名（retag + 批量改 Key 绑定 + onboardd 同步）
@@ -147,6 +151,8 @@ _login_fails: dict[str, list] = {}      # ip -> [window_start, fail_count]
 _totp_used: dict[int, float] = {}       # TOTP timestep -> 使用时刻（防同一动态码重放）
 NAME_RE = re.compile(r"[a-zA-Z0-9_-]{1,32}")
 GROUP_RE = re.compile(r"[a-zA-Z0-9_-]{1,32}")
+# 模型名/上游 model id 允许点号（qwen3.8-27b 一类版本号命名，站点名仍用 NAME_RE）
+MODEL_RE = re.compile(r"[a-zA-Z0-9_.-]{1,64}")
 
 
 # ---------------------------------------------------------------- 基础设施
@@ -650,6 +656,69 @@ async def sync_onboard_group(site_name: str, groups: list[str]) -> None:
     await onboard("POST", "/onboard/admin/groups", json={"site": site_name, "groups": groups})
 
 
+async def fetch_upstream_models(wg_ip: str, port: int) -> tuple[list[dict], str]:
+    """网关侧探测站点上游的 OpenAI 兼容 /v1/models（自动抓取 model id）。
+
+    SSRF 口径（US-03 C8）：URL 由注册表里的 wg_ip + 受校验端口拼出，不接受
+    任意用户提供的 URL；wg 网段属「本地显式放行」，与 LiteLLM 路由流量同一边界。
+    返回 ([{id, owned_by}], "") 或 ([], 可判读错误)。
+    """
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(f"http://{wg_ip}:{port}/v1/models")
+    except httpx.HTTPError as exc:
+        return [], f"上游不可达（隧道断开或服务未启动？）：{exc}"
+    if r.status_code != 200:
+        return [], f"上游返回 HTTP {r.status_code}"
+    try:
+        data = r.json().get("data") or []
+    except ValueError:
+        return [], "上游响应不是 JSON（确认该端口是 OpenAI 兼容服务）"
+    seen, models = set(), []
+    for m in data:
+        mid = str(m.get("id") or "")
+        if mid and mid not in seen:
+            seen.add(mid)
+            models.append({"id": mid, "owned_by": m.get("owned_by") or ""})
+    return models, ""
+
+
+def _dep_port(dep: dict) -> int:
+    """从 api_base（http://wg_ip:port/v1）解出端口；解析失败给 0。"""
+    tail = str((dep.get("litellm_params") or {}).get("api_base") or "").rsplit(":", 1)[-1]
+    digits = tail.split("/")[0]
+    return int(digits) if digits.isdigit() else 0
+
+
+def _site_models_from_deps(deps: list[dict]) -> list[dict]:
+    """LiteLLM deployment → onboardd 登记簿口径的模型清单（[{name, port, upstream_model}]），
+    供手动加/刷新/删后全量回写（权威数据在 LiteLLM，登记簿只求与之一致）。"""
+    return [{"name": d.get("model_name"), "port": _dep_port(d),
+             "upstream_model": str((d.get("litellm_params") or {}).get("model") or "")
+                               .removeprefix("openai/")}
+            for d in deps]
+
+
+def _dep_params(src: dict, info: dict, *, model: str, api_base: str, tags) -> dict:
+    """重建/新建 deployment 的 litellm_params，口径对齐 retag_site 与 onboardd confirm：
+    api_key 按上游无鉴权；直通白名单必须带，否则一次重建就洗掉 issue #46 的直通配置。"""
+    params = {"model": model, "api_base": api_base, "api_key": "none",
+              "tags": sorted({t for t in tags if t != "default"}),
+              "allowed_openai_params": PASS_THROUGH_OPENAI_PARAMS,
+              "connect_timeout": src.get("connect_timeout", 5),
+              "timeout": src.get("timeout", 600)}
+    for lim in ("rpm", "tpm"):
+        if src.get(lim) is not None:
+            params[lim] = src[lim]
+        elif info.get(lim) is not None:
+            params[lim] = info[lim]
+    return params
+
+
+async def sync_onboard_models(site_name: str, models: list[dict]) -> None:
+    await onboard("POST", "/onboard/admin/models", json={"site": site_name, "models": models})
+
+
 # ---------------------------------------------------------------- 仪表盘 / 用量
 
 def err_text(row: dict) -> str:
@@ -877,6 +946,10 @@ async def api_sites(request: Request) -> Response:
             "name": s["name"], "pubkey": (s.get("pubkey") or "")[:10] + "…=",
             "wg_ip": s["wg_ip"], "handshake": ago,
             "models": sorted({d.get("model_name") for d in site_deps}),
+            "deps": [{"name": d.get("model_name"), "port": _dep_port(d),
+                      "upstream": str((d.get("litellm_params") or {}).get("model") or "")
+                                  .removeprefix("openai/")}
+                     for d in site_deps],
             "groups": tags, "status": s["status"],
             "online": s["status"] in ("active", "partial") and 0 <= ago < HANDSHAKE_ONLINE,
             "created_at": s.get("created_at"),
@@ -898,7 +971,7 @@ async def api_sites_token(request: Request) -> Response:
         return jerr("bad request: expect {site, models:[{name,port}], groups?}", 400)
     if not NAME_RE.fullmatch(site or ""):
         return jerr("bad site name ([a-zA-Z0-9_-]{1,32})", 400)
-    if not models or not all(NAME_RE.fullmatch(m["name"] or "") and 1 <= m["port"] <= 65535 for m in models):
+    if not models or not all(MODEL_RE.fullmatch(m["name"] or "") and 1 <= m["port"] <= 65535 for m in models):
         return jerr("bad models (name + port required)", 400)
     bad = [g for g in groups if not GROUP_RE.fullmatch(g or "")]
     if bad:
@@ -948,6 +1021,159 @@ async def api_sites_groups(request: Request) -> Response:
         return jerr("; ".join(errors), 502)
     await sync_onboard_group(site, [g for g in groups if g != "default"])
     return JSONResponse({"ok": True, "site": site, "groups": [g for g in groups if g != "default"]})
+
+
+async def _site_row_or_error(site: str) -> tuple[dict | None, JSONResponse | None]:
+    """按名取 onboardd 登记的站点行；未知 404、已吊销 400（与 /sites/groups 同判）。"""
+    sites = await onboard_sites()
+    row = next((s for s in sites if s["name"] == site), None)
+    if row is None:
+        return None, jerr(f"unknown site {site}", 404)
+    if row["status"] == "revoked":
+        return None, jerr("site revoked", 400)
+    return row, None
+
+
+async def api_sites_probe(request: Request) -> Response:
+    """探测站点某端口上游的 /v1/models，返回可用 model id（表单自动填充 / 刷新前预览用）。"""
+    sess = await require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    site = request.query_params.get("site", "")
+    try:
+        port = int(request.query_params.get("port", ""))
+    except ValueError:
+        return jerr("bad port", 400)
+    if not 1 <= port <= 65535:
+        return jerr("bad port", 400)
+    row, err = await _site_row_or_error(site)
+    if err:
+        return err
+    models, perr = await fetch_upstream_models(row["wg_ip"], port)
+    if perr:
+        return jerr(perr, 502)
+    return JSONResponse({"site": site, "port": port,
+                         "api_base": f"http://{row['wg_ip']}:{port}/v1", "models": models})
+
+
+async def api_sites_models(request: Request) -> Response:
+    """手动向已注册站点添加模型（不经 install.sh 流程，典型场景：站点上新了一个模型）。
+    payload 与 onboardd confirm 同口径；分组沿站点现状（deployment tags ∪ 登记簿分组）。"""
+    sess = await require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    try:
+        body = await request.json()
+        site, name, port = body["site"], body["name"], int(body["port"])
+        upstream = (body.get("upstream_model") or "").strip() or None
+    except (ValueError, KeyError, TypeError):
+        return jerr("bad request: expect {site, name, port, upstream_model?}", 400)
+    if not MODEL_RE.fullmatch(name or ""):
+        return jerr("bad model name ([a-zA-Z0-9_.-]{1,64})", 400)
+    if upstream is not None and not MODEL_RE.fullmatch(upstream):
+        return jerr("bad upstream model id", 400)
+    if not 1 <= port <= 65535:
+        return jerr("bad port", 400)
+    row, err = await _site_row_or_error(site)
+    if err:
+        return err
+    deps = [d for d in await litellm_deployments() if dep_of_site(d, row["wg_ip"])]
+    api_base = f"http://{row['wg_ip']}:{port}/v1"
+    if any(d.get("model_name") == name and _dep_port(d) == port for d in deps):
+        return jerr(f"{site} 已有 {name}:{port}（换上游 id 请用「刷新上游」）", 409)
+    tags = sorted({t for d in deps for t in dep_tags(d)} |
+                  {g for g in row["groups"] if g != "default"})
+    params = _dep_params({}, {}, model=f"openai/{upstream or name}", api_base=api_base, tags=tags)
+    code, rbody = await ll_json("POST", "/model/new", json={"model_name": name, "litellm_params": params})
+    if code != 200:
+        return JSONResponse(rbody if isinstance(rbody, dict) else {"error": str(rbody)[:300]},
+                            status_code=code)
+    new_dep = {"model_name": name,
+               "litellm_params": {"model": f"openai/{upstream or name}", "api_base": api_base}}
+    await sync_onboard_models(site, _site_models_from_deps(deps + [new_dep]))
+    return JSONResponse({"ok": True, "site": site, "model": name, "port": port,
+                         "upstream_model": upstream or name, "api_base": api_base})
+
+
+async def _site_dep_or_error(site_row: dict, name: str, port: int):
+    """定位站点某「对外名:端口」的 deployment（api_base 精确匹配，避免解析歧义）。"""
+    api_base = f"http://{site_row['wg_ip']}:{port}/v1"
+    deps = [d for d in await litellm_deployments() if dep_of_site(d, site_row["wg_ip"])]
+    dep = next((d for d in deps if d.get("model_name") == name
+                and (d.get("litellm_params") or {}).get("api_base") == api_base), None)
+    if dep is None:
+        return None, None, jerr(f"site {site_row['name']} 没有 {name}（端口 {port}）的 deployment", 404)
+    return dep, deps, None
+
+
+async def api_sites_models_refresh(request: Request) -> Response:
+    """刷新 deployment 的上游 model id（站点换了模型、引擎/端口不变的场景）：
+    对外名 / api_base / tags / 限流全保留，仅替换 litellm_params.model——
+    先建新后删旧（与 retag 同一已验证模式，不留零 deployment 的 404 窗口），订阅方无感。"""
+    sess = await require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    try:
+        body = await request.json()
+        site, name, port = body["site"], body["name"], int(body["port"])
+        upstream = (body.get("upstream_model") or "").strip()
+    except (ValueError, KeyError, TypeError):
+        return jerr("bad request: expect {site, name, port, upstream_model}", 400)
+    if not MODEL_RE.fullmatch(upstream):
+        return jerr("bad upstream model id", 400)
+    row, err = await _site_row_or_error(site)
+    if err:
+        return err
+    dep, deps, err = await _site_dep_or_error(row, name, port)
+    if err:
+        return err
+    src = dep.get("litellm_params") or {}
+    old_upstream = str(src.get("model") or "").removeprefix("openai/")
+    if old_upstream == upstream:
+        return JSONResponse({"ok": True, "unchanged": True, "site": site, "model": name,
+                             "upstream_model": upstream})
+    api_base = src.get("api_base")
+    params = _dep_params(src, dep.get("model_info") or {}, model=f"openai/{upstream}",
+                         api_base=api_base, tags=dep_tags(dep))
+    code, rbody = await ll_json("POST", "/model/new", json={"model_name": name, "litellm_params": params})
+    if code != 200:
+        return JSONResponse(rbody if isinstance(rbody, dict) else {"error": str(rbody)[:300]},
+                            status_code=code)
+    code, rbody = await ll_json("POST", "/model/delete",
+                                json={"id": (dep.get("model_info") or {}).get("id")})
+    if code != 200:
+        return jerr(f"新 deployment 已建但旧的下线失败（当前新旧并存），请重试删除：{str(rbody)[:150]}", 502)
+    new_dep = {"model_name": name,
+               "litellm_params": {"model": f"openai/{upstream}", "api_base": api_base}}
+    await sync_onboard_models(site, _site_models_from_deps(
+        [d for d in deps if d is not dep] + [new_dep]))
+    return JSONResponse({"ok": True, "site": site, "model": name, "port": port,
+                         "upstream_model": upstream, "previous": old_upstream})
+
+
+async def api_sites_models_delete(request: Request) -> Response:
+    """删除站点的单个模型 deployment（整站下线请用 /sites/revoke，会把 wg peer 一并摘除）。"""
+    sess = await require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    try:
+        body = await request.json()
+        site, name, port = body["site"], body["name"], int(body["port"])
+    except (ValueError, KeyError, TypeError):
+        return jerr("bad request: expect {site, name, port}", 400)
+    row, err = await _site_row_or_error(site)
+    if err:
+        return err
+    dep, deps, err = await _site_dep_or_error(row, name, port)
+    if err:
+        return err
+    code, rbody = await ll_json("POST", "/model/delete",
+                                json={"id": (dep.get("model_info") or {}).get("id")})
+    if code != 200:
+        return JSONResponse(rbody if isinstance(rbody, dict) else {"error": str(rbody)[:300]},
+                            status_code=code)
+    await sync_onboard_models(site, _site_models_from_deps([d for d in deps if d is not dep]))
+    return JSONResponse({"ok": True, "site": site, "model": name, "port": port})
 
 
 # ---------------------------------------------------------------- 分组
@@ -1145,7 +1371,7 @@ async def api_models_alias(request: Request) -> Response:
         alias, target = body["alias"], body["target"]
     except (ValueError, KeyError):
         return jerr("bad request: expect {alias, target}", 400)
-    if not NAME_RE.fullmatch(alias or ""):
+    if not MODEL_RE.fullmatch(alias or ""):
         return jerr("bad alias name ([a-zA-Z0-9_.-]{1,64})", 400)
     deps = await litellm_deployments()
     by_name: dict[str, list[dict]] = {}
@@ -1567,6 +1793,10 @@ api_routes = [
     Route("/console/api/sites/token", api_sites_token, methods=["POST"]),
     Route("/console/api/sites/revoke", api_sites_revoke, methods=["POST"]),
     Route("/console/api/sites/groups", api_sites_groups, methods=["POST"]),
+    Route("/console/api/sites/probe", api_sites_probe, methods=["GET"]),
+    Route("/console/api/sites/models", api_sites_models, methods=["POST"]),
+    Route("/console/api/sites/models/refresh", api_sites_models_refresh, methods=["POST"]),
+    Route("/console/api/sites/models/delete", api_sites_models_delete, methods=["POST"]),
     Route("/console/api/groups", api_groups, methods=["GET"]),
     Route("/console/api/groups/create", api_groups_create, methods=["POST"]),
     Route("/console/api/groups/rename", api_groups_rename, methods=["POST"]),
