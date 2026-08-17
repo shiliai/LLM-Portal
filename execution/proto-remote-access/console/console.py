@@ -950,6 +950,12 @@ async def api_sites(request: Request) -> Response:
                       "upstream": str((d.get("litellm_params") or {}).get("model") or "")
                                   .removeprefix("openai/")}
                      for d in site_deps],
+            # 站点已知端口（deployment ∪ onboardd 登记簿）：前端「添加模型」的端口
+            # 下拉用——手打端口易错（api_base 拼错即静默不可用），只允许选或显式自定义
+            "known_ports": sorted({p for p in ({_dep_port(d) for d in site_deps} |
+                                               {m.get("port") for m in s["models"]
+                                                if isinstance(m, dict)})
+                                   if isinstance(p, int) and p > 0}),
             "groups": tags, "status": s["status"],
             "online": s["status"] in ("active", "partial") and 0 <= ago < HANDSHAKE_ONLINE,
             "created_at": s.get("created_at"),

@@ -88,8 +88,8 @@ install.sh 在站点侧：装 wireguard-tools → `wg genkey`（私钥不出机�
 
 站点接入后的模型增删改走控制台「站点」页的 **模型** 按钮（无需重新走 install.sh）：
 
-- **手动添加模型**：填对外模型名 + 站点端口（可选上游真实 id；可点「从上游获取 model id」探测 `/v1/models` 自动回填，llama.cpp/vLLM 均适用）；
 - **刷新上游**：站点换了模型（引擎/端口不变）时用——对外模型名不变、仅替换发往上游的 model id（先建新 deployment 再删旧，不留 404 窗口），订阅方与 Key 无需任何改动；
+- **添加模型**：四步引导——① 端口从站点已知端口下拉选（后端 `known_ports` = deployment ∪ 登记簿，避免手打拼错 api_base；新端口才选「其他端口」手填）→ ② 探测该端口 `/v1/models`（llama.cpp/vLLM 均适用）→ ③ 点选上游真实 id → ④ 起/改对外模型名（点选 id 自动带出）；
 - **删除**：把单个 deployment 摘出路由池（两段式确认）。以上操作均同步 onboardd 登记簿（`/onboard/admin/models`）。
 
 ## 4. 客户端接入

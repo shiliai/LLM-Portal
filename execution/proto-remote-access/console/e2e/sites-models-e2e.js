@@ -28,7 +28,7 @@ const fail = m => { console.error('FAIL:', m); process.exit(1); };
   const rows = await page.locator('#sm-list .pf-dep-item').count();
   console.log('deployment 行数:', rows);
   if (rows !== 1) fail('期望 1 行(夹具 workstation x qwen3.6)');
-  console.log('首行上游:', await page.locator('#sm-list .pf-dep-item .pf-muted').nth(1).textContent());
+  console.log('首行内容:', (await page.locator('#sm-list .pf-dep-item').first().textContent()).trim().replace(/\s+/g, ' ').slice(0, 90));
 
   console.log('== 2. 刷新上游(两 id → 下拉):');
   await page.click('.js-sm-refresh');
@@ -36,7 +36,7 @@ const fail = m => { console.error('FAIL:', m); process.exit(1); };
   await page.selectOption('#sm-list .js-sm-edit select', 'qwen3.8-27b-mtp2');
   await page.click('.js-sm-apply');
   await page.waitForFunction(() =>
-    document.querySelector('#sm-list .pf-dep-item .pf-muted:nth-of-type(1)') &&
+    document.querySelector('#sm-list .pf-dep-item') &&
     document.querySelector('#sm-list').textContent.includes('qwen3.8-27b-mtp2'));
   await page.waitForTimeout(300);
   const refreshed = await page.locator('#sm-list').textContent();
@@ -44,15 +44,20 @@ const fail = m => { console.error('FAIL:', m); process.exit(1); };
     '| 对外名不变:', refreshed.includes('qwen3.6-35b-fp8'));
   if (!refreshed.includes('qwen3.8-27b-mtp2')) fail('刷新上游未生效');
 
-  console.log('== 3. 手动添加(探测回填):');
-  await page.fill('#sm-name', 'test-model');
-  await page.fill('#sm-port', '8004');   // 与假上游 mock 同端口(探测是服务端发起的真请求)
+  console.log('== 3. 手动添加(端口下拉 + 探测回填):');
+  const portOpt = await page.locator('#sm-port-sel option[value="8004"]').count();
+  console.log('端口下拉含已知端口 8004(带在用标注):', portOpt === 1,
+    '| 选项文案:', await page.locator('#sm-port-sel option[value="8004"]').textContent());
+  if (portOpt !== 1) fail('端口下拉未含已知端口 8004');
+  await page.selectOption('#sm-port-sel', '8004');   // 与假上游 mock 同端口(探测是服务端发起的真请求)
   await page.click('#sm-probe');
   await page.waitForSelector('#sm-chips .js-sm-chip');
   await page.click('#sm-chips .js-sm-chip');
   console.log('点选后上游 id:', await page.inputValue('#sm-upstream'),
-    '| 对外名保留手填:', await page.inputValue('#sm-name'));
+    '| 对外名自动带出:', await page.inputValue('#sm-name'));
   if ((await page.inputValue('#sm-upstream')) !== 'qwen3.8-27b-mtp2') fail('chip 未回填上游 id');
+  if ((await page.inputValue('#sm-name')) !== 'qwen3.8-27b-mtp2') fail('对外名未自动带出');
+  await page.fill('#sm-name', 'test-model');
   await page.click('#btn-sm-add');
   await page.waitForFunction(() =>
     document.querySelectorAll('#sm-list .pf-dep-item').length >= 2);
