@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>方案 B · 单弹窗双 Tab + 真步进条</title>
+<link rel="stylesheet" href="/execution/proto-remote-access/console/static/assets/portal.css">
+<style>
+  .opt { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+         border: 1px solid #f0f0f0; border-radius: 6px; margin-bottom: 6px; cursor: pointer; }
+  .opt:hover { border-color: #91caff; }
+  .opt:has(input:checked) { border-color: #1677ff; background: #f0f7ff; }
+  .opt input { accent-color: #1677ff; margin: 0; }
+  .opt-id { font-size: 12.5px; }
+</style>
+</head>
+<body data-page="sites">
+<template id="page">
+
+  <div class="pf-page-head">
+    <div class="pf-desc">方案 B：一个弹窗两个 Tab——「已注册模型」管理 /「添加模型」用设计系统的 .pf-steps 真步进；选定端口即自动探测。</div>
+  </div>
+
+  <div class="pf-card flush">
+    <div class="pf-card-head">
+      <div class="pf-card-title">站点列表</div>
+      <div class="pf-card-extra">共 1 个 · 1 个在线</div>
+    </div>
+    <table class="pf-table">
+      <thead><tr><th>站点名</th><th>WG IP</th><th>最近握手</th><th class="num">模型数</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>workstation</td><td class="mono">10.77.0.14</td><td class="mono">42 秒前</td>
+          <td class="num" id="b-count">2</td>
+          <td><span class="pf-chip ok"><span class="pf-dot ok"></span>在线</span></td>
+          <td><button class="pf-link" id="b-open">模型</button></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 单弹窗双 Tab -->
+  <div class="pf-modal" id="b-modal" style="width:640px">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title">模型管理 · <span class="mono">workstation</span></div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-modal-body">
+      <div class="pf-tabs">
+        <button class="pf-tab active" data-tab="list">已注册模型 <span class="pf-chip gray" id="b-tab-n">2</span></button>
+        <button class="pf-tab" data-tab="add">添加模型</button>
+      </div>
+
+      <div class="pf-tabpane active" data-tab="list">
+        <div class="pf-desc" style="margin-bottom:10px">站点<b>换了模型</b>（端口没变）→ 点「刷新上游」，对外名不变、调用方无感；「删除」即摘出路由池。</div>
+        <div id="b-list"></div>
+      </div>
+
+      <div class="pf-tabpane" data-tab="add">
+        <div class="pf-steps" style="margin-bottom:20px">
+          <div class="pf-step active" id="b-st1"><span class="pf-step-dot">1</span><span class="pf-step-title">选端口</span></div>
+          <div class="pf-step" id="b-st2"><span class="pf-step-dot">2</span><span class="pf-step-title">选上游模型</span></div>
+          <div class="pf-step" id="b-st3"><span class="pf-step-dot">3</span><span class="pf-step-title">起对外名</span></div>
+        </div>
+        <div class="pf-form-row">
+          <label class="req">站点端口</label>
+          <div>
+            <select class="pf-select mono" id="b-port" style="width:auto;min-width:220px"></select>
+            <input class="pf-input mono" id="b-port-custom" placeholder="端口" style="width:100px;display:none;margin-left:8px">
+            <div class="pf-desc">站点已知端口；真开了新端口才选「其他端口…」，选定即自动探测。</div>
+          </div>
+        </div>
+        <div class="pf-form-row">
+          <label class="req">上游模型</label>
+          <div id="b-probe-box"><div class="pf-desc">选定端口后自动探测。</div></div>
+        </div>
+        <div class="pf-form-row" id="b-name-row" style="display:none">
+          <label class="req">对外模型名</label>
+          <div>
+            <input class="pf-input mono" id="b-name">
+            <div class="pf-desc">客户端经网关调用的名字，已按上游 id 带出，可改。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="pf-modal-foot">
+      <button class="pf-btn" data-close>关闭</button>
+      <button class="pf-btn primary" id="b-add-ok" disabled>添加模型</button>
+    </div>
+  </div>
+
+</template>
+<script src="mock-boot.js"></script>
+<script src="/execution/proto-remote-access/console/static/assets/portal.js"></script>
+<script>
+(function () {
+  'use strict';
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+  window.pfReady.then(function () {
+    var S = window.MOCK.SITE;
+
+    /* ---------- 步进条状态 ---------- */
+    var steps = [document.getElementById('b-st1'), document.getElementById('b-st2'), document.getElementById('b-st3')];
+    function setStep(n) {                    // n = 当前进行中的步（1..3），之前的标 done
+      steps.forEach(function (st, i) {
+        st.classList.toggle('done', i < n - 1);
+        st.classList.toggle('active', i === n - 1);
+      });
+    }
+
+    /* ---------- Tab 1：已注册模型 ---------- */
+    function renderList() {
+      document.getElementById('b-count').textContent = S.deps.length;
+      document.getElementById('b-tab-n').textContent = S.deps.length;
+      document.getElementById('b-list').innerHTML = S.deps.map(function (dep, i) {
+        return '<div class="pf-dep-item" data-i="' + i + '">' +
+          '<div class="pf-dep-main">' +
+          '<strong class="mono">' + esc(dep.name) + '</strong>' +
+          '<span class="pf-chip info mono">端口 ' + dep.port + '</span>' +
+          '<span class="pf-desc mono">上游 ' + esc(dep.upstream || '—') + '</span>' +
+          '<span style="margin-left:auto;white-space:nowrap">' +
+          '<button class="pf-link js-refresh" type="button">刷新上游</button> ' +
+          '<button class="pf-link danger js-del" type="button">删除</button>' +
+          '</span></div>' +
+          '<div class="js-edit" style="display:none;padding:4px 0 2px"></div></div>';
+      }).join('') || '<div class="pf-empty"><div class="pf-empty-icon">▢</div>暂无已注册模型，切到「添加模型」Tab</div>';
+    }
+    renderList();
+
+    document.getElementById('b-list').addEventListener('click', function (e) {
+      var el, item;
+      if ((el = e.target.closest('.js-refresh'))) {
+        item = el.closest('.pf-dep-item');
+        var dep = S.deps[+item.dataset.i];
+        var edit = item.querySelector('.js-edit');
+        edit.style.display = '';
+        edit.innerHTML = '<span class="pf-desc">探测中…</span>';
+        window.pfApi('GET', '/sites/probe?site=workstation&port=' + dep.port).then(function (d) {
+          var opts = d.models.map(function (m) {
+            return '<option value="' + esc(m.id) + '"' + (m.id === dep.upstream ? ' selected' : '') + '>' +
+              esc(m.id) + (m.owned_by ? '（' + esc(m.owned_by) + '）' : '') + '</option>';
+          }).join('');
+          edit.innerHTML = '<select class="pf-select mono" style="max-width:100%">' + opts + '</select> ' +
+            '<button class="pf-link js-apply" type="button">应用</button> ' +
+            '<button class="pf-link js-cancel" type="button">取消</button>';
+        });
+        return;
+      }
+      if ((el = e.target.closest('.js-apply'))) {
+        item = el.closest('.pf-dep-item');
+        S.deps[+item.dataset.i].upstream = item.querySelector('select').value;
+        window.pfToast('上游已刷新');
+        renderList();
+        return;
+      }
+      if ((el = e.target.closest('.js-cancel'))) {
+        el.closest('.pf-dep-item').querySelector('.js-edit').style.display = 'none';
+        return;
+      }
+      if ((el = e.target.closest('.js-del'))) {
+        if (!el.dataset.armed) {
+          el.dataset.armed = '1'; el.textContent = '确认删除？';
+          setTimeout(function () { el.dataset.armed = ''; el.textContent = '删除'; }, 3000);
+          return;
+        }
+        S.deps.splice(+el.closest('.pf-dep-item').dataset.i, 1);
+        window.pfToast('已从路由池摘除');
+        renderList();
+      }
+    });
+
+    /* ---------- Tab 2：添加（自动探测 + 步进） ---------- */
+    var sel = document.getElementById('b-port');
+    var custom = document.getElementById('b-port-custom');
+    var box = document.getElementById('b-probe-box');
+    var nameRow = document.getElementById('b-name-row');
+    var nameInput = document.getElementById('b-name');
+    var okBtn = document.getElementById('b-add-ok');
+    var picked = null;
+
+    function initPorts() {
+      var inUse = {};
+      S.deps.forEach(function (d) { (inUse[d.port] = inUse[d.port] || []).push(d.name); });
+      sel.innerHTML = S.known_ports.map(function (p) {
+        var used = inUse[p] ? '（' + inUse[p].join('、') + ' 在用）' : '';
+        return '<option value="' + p + '">' + p + used + '</option>';
+      }).join('') + '<option value="__custom__">其他端口…</option>';
+      custom.style.display = 'none'; custom.value = '';
+    }
+    function curPort() {
+      return sel.value === '__custom__' ? parseInt(custom.value, 10) : parseInt(sel.value, 10);
+    }
+
+    function probe() {
+      var port = curPort();
+      picked = null; okBtn.disabled = true; nameRow.style.display = 'none';
+      setStep(1);
+      if (!(port > 0)) { box.innerHTML = '<div class="pf-desc">请先选择/填写端口。</div>'; return; }
+      box.innerHTML = '<div class="pf-desc">正在探测 <span class="mono">10.77.0.14:' + port + '/v1/models</span> …</div>';
+      window.pfApi('GET', '/sites/probe?site=workstation&port=' + port).then(function (d) {
+        if (!d.models.length) { box.innerHTML = '<div class="pf-desc">上游返回空列表。</div>'; return; }
+        box.innerHTML = d.models.map(function (m) {
+          return '<label class="opt"><input type="radio" name="b-up" value="' + esc(m.id) + '">' +
+            '<span class="opt-id mono">' + esc(m.id) + '</span>' +
+            (m.owned_by ? '<span class="pf-chip gray">' + esc(m.owned_by) + '</span>' : '') + '</label>';
+        }).join('');
+        setStep(2);                          // 探测成功 → 进入「选上游模型」
+      }).catch(function (err) {
+        box.innerHTML = '<div class="pf-banner" style="margin-bottom:8px">探测失败：' + esc(err.error || '上游不可达') +
+          '。可手填上游 id：</div>' +
+          '<input class="pf-input mono" id="b-up-manual" placeholder="上游真实 model id">';
+        var m2 = document.getElementById('b-up-manual');
+        m2.addEventListener('input', function () {
+          picked = m2.value.trim() || null;
+          okBtn.disabled = !picked;
+          if (picked) {
+            nameRow.style.display = '';
+            if (!nameInput.value) nameInput.value = picked;
+            setStep(3);
+          }
+        });
+        setStep(2);
+      });
+    }
+
+    box.addEventListener('change', function (e) {
+      if (e.target.name !== 'b-up') return;
+      picked = e.target.value;
+      okBtn.disabled = false;
+      nameRow.style.display = '';
+      nameInput.value = picked;
+      setStep(3);                            // 点选 id → 进入「起对外名」
+    });
+    sel.addEventListener('change', function () {
+      var on = sel.value === '__custom__';
+      custom.style.display = on ? '' : 'none';
+      if (on) { custom.focus(); box.innerHTML = '<div class="pf-desc">填好端口后自动探测。</div>'; }
+      else probe();
+    });
+    custom.addEventListener('input', function () {
+      clearTimeout(custom._t);
+      custom._t = setTimeout(probe, 400);
+    });
+
+    okBtn.onclick = function () {
+      var name = nameInput.value.trim();
+      if (!/^[a-zA-Z0-9_.-]{1,64}$/.test(name)) { window.pfErr('请检查对外模型名'); return; }
+      S.deps.push({ name: name, port: curPort(), upstream: picked });
+      window.pfToast('已添加 ' + name + '（立即进入路由池）');
+      renderList();
+      // 添加完跳回列表 Tab
+      document.querySelector('.pf-tab[data-tab="list"]').click();
+      initPorts(); nameInput.value = ''; probe();
+    };
+
+    document.getElementById('b-open').onclick = function () {
+      initPorts();
+      window.pfModal('b-modal');
+      probe();
+    };
+    initPorts();
+    window.pfModal('b-modal');
+    probe();
+  });
+})();
+</script>
+</body>
+</html>

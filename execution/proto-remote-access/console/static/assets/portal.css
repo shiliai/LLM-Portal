@@ -515,6 +515,15 @@ tr.pf-row-muted .pf-key { color: #bfbfbf; border-color: #f0f0f0; }
 }
 .pf-surface-title { font-size: 12.5px; color: #1f1f1f; }
 
+/* ---------- 可点选行（探测结果/单选卡片） ---------- */
+.pf-opt {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  border: 1px solid #f0f0f0; border-radius: 6px; margin-bottom: 6px; cursor: pointer;
+}
+.pf-opt:hover { border-color: #91caff; }
+.pf-opt:has(input:checked) { border-color: #1677ff; background: #f0f7ff; }
+.pf-opt input { accent-color: #1677ff; margin: 0; flex: none; }
+
 /* ---------- 折叠行（模型 deployment 展开） ---------- */
 .pf-collapse-row td { background: #fafafa; padding: 0; border-bottom: 1px solid #f0f0f0; }
 .pf-collapse-body { padding: 4px 16px 12px 44px; }
