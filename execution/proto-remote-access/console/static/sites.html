@@ -215,6 +215,33 @@
       .catch(function (e) { window.pfErr(e.error || '站点加载失败'); });
   }
 
+  // 模型管理弹窗的数据装载/渲染：必须挂在 IIFE 作用域——bindRowActions（表格重渲
+  // 后重绑）要调 smReload，若定义在 pfReady.then 回调内会 ReferenceError（曾致
+  // 「模型」按钮点击无反应）
+  function smReload() {
+    window.pfApi('GET', '/sites').then(function (d) {
+      var site = d.sites.filter(function (s) { return s.name === smSite; })[0];
+      renderSmList(site ? site.deps || [] : []);
+      load();                       // 顺带刷新外层站点表的模型数
+    }).catch(function (e) { window.pfErr(e.error || '站点加载失败'); });
+  }
+
+  function renderSmList(deps) {
+    document.getElementById('sm-list').innerHTML = deps.map(function (dep) {
+      return '<div class="pf-dep-item" data-sm-name="' + esc(dep.name) + '" data-sm-port="' + dep.port + '" data-sm-upstream="' + esc(dep.upstream) + '">' +
+        '<div class="pf-dep-main">' +
+        '<strong class="mono">' + esc(dep.name) + '</strong>' +
+        '<span class="mono pf-muted">:' + dep.port + '</span>' +
+        '<span class="mono pf-muted">上游=' + esc(dep.upstream || '—') + '</span>' +
+        '<span style="margin-left:auto;white-space:nowrap">' +
+        '<button class="pf-link js-sm-refresh" type="button">刷新上游</button> ' +
+        '<button class="pf-link danger js-sm-del" type="button">删除</button>' +
+        '</span></div>' +
+        '<div class="js-sm-edit" style="display:none;padding:6px 0 2px"></div>' +
+        '</div>';
+    }).join('') || '<div class="pf-desc" style="padding:6px 0">该站点暂无模型 deployment（在下方手动添加）</div>';
+  }
+
   var pendingRevoke = null, sgSite = null, smSite = null;
 
   function bindRowActions() {
@@ -339,31 +366,8 @@
       }).catch(function (e) { window.pfErr(e.error || '保存失败'); });
     });
 
-    /* ---------- 站点模型管理：刷新上游 id / 手动添加 / 删除 ---------- */
-    function smReload() {
-      window.pfApi('GET', '/sites').then(function (d) {
-        var site = d.sites.filter(function (s) { return s.name === smSite; })[0];
-        renderSmList(site ? site.deps || [] : []);
-        load();                       // 顺带刷新外层站点表的模型数
-      }).catch(function (e) { window.pfErr(e.error || '站点加载失败'); });
-    }
-
-    function renderSmList(deps) {
-      document.getElementById('sm-list').innerHTML = deps.map(function (dep) {
-        return '<div class="pf-dep-item" data-sm-name="' + esc(dep.name) + '" data-sm-port="' + dep.port + '" data-sm-upstream="' + esc(dep.upstream) + '">' +
-          '<div class="pf-dep-main">' +
-          '<strong class="mono">' + esc(dep.name) + '</strong>' +
-          '<span class="mono pf-muted">:' + dep.port + '</span>' +
-          '<span class="mono pf-muted">上游=' + esc(dep.upstream || '—') + '</span>' +
-          '<span style="margin-left:auto;white-space:nowrap">' +
-          '<button class="pf-link js-sm-refresh" type="button">刷新上游</button> ' +
-          '<button class="pf-link danger js-sm-del" type="button">删除</button>' +
-          '</span></div>' +
-          '<div class="js-sm-edit" style="display:none;padding:6px 0 2px"></div>' +
-          '</div>';
-      }).join('') || '<div class="pf-desc" style="padding:6px 0">该站点暂无模型 deployment（在下方手动添加）</div>';
-    }
-
+    /* ---------- 站点模型管理：刷新上游 id / 手动添加 / 删除（smReload/renderSmList
+       定义在 IIFE 作用域，见上） ---------- */
     // 事件委托：列表内的 刷新上游 / 应用 / 取消 / 删除（innerHTML 重建后监听仍有效）
     document.getElementById('sm-list').addEventListener('click', function (e) {
       var el;
