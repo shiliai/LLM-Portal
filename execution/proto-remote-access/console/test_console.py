@@ -304,3 +304,44 @@ def test_row_effort_fallback_shapes(console):
     assert console.row_effort({"metadata": {"effort": "medium"}}) == "medium"   # 形态兜底
     assert console.row_effort({"metadata": {"usage_object": {}}}) == ""        # 历史行/未携带
     assert console.row_effort({}) == ""
+
+
+# ---------------------------------------------------------------- issue #46 直通白名单
+
+def test_rebuild_deployments_carry_allowed_openai_params(console, monkeypatch):
+    """retag_site / 别名克隆都靠「/model/new 重建 + /model/delete 删旧」改 deployment——
+    重建 payload 必须带 allowed_openai_params，否则一次分组改写就把 reasoning_effort
+    直通（issue #46）洗掉。"""
+    import asyncio
+
+    dep = {"model_name": "m1",
+           "litellm_params": {"model": "openai/m1", "api_base": "http://10.77.0.21:8890/v1",
+                              "tags": ["home"], "connect_timeout": 5, "timeout": 600},
+           "model_info": {"id": "dep-1"}}
+
+    def handler(method, path, bearer, json_body):
+        if path == "/model/info":
+            return 200, {"data": [dep]}
+        if path in ("/model/new", "/model/delete"):
+            return 200, {"ok": True}
+        if path == "/global/spend" and bearer == MASTER_KEY:   # master key 网页登录的探活
+            return 200, {}
+        return 404, {"error": f"unexpected stub path {path}"}
+
+    calls = install_litellm_stub(monkeypatch, handler)
+    assert asyncio.run(console.retag_site("10.77.0.21", ["lab"])) == []
+    lp = [c for c in calls if c["path"] == "/model/new"][0]["json"]["litellm_params"]
+    assert lp["allowed_openai_params"] == ["reasoning_effort"]
+    assert lp["tags"] == ["lab"]                      # retag 既有语义不变
+
+    calls.clear()
+    with TestClient(console.app) as client:           # 别名克隆走正式路由（需登录会话）
+        ok = client.post("/console/api/login", json={"key": MASTER_KEY}, headers=XRW)
+        cookie = _cookie_of(ok)
+        resp = client.post("/console/api/models/alias",
+                           headers={"Cookie": cookie, **XRW},
+                           json={"alias": "m1-copy", "target": "m1"})
+    assert resp.status_code == 200
+    lp = [c for c in calls if c["path"] == "/model/new"][0]["json"]["litellm_params"]
+    assert lp["allowed_openai_params"] == ["reasoning_effort"]
+    assert lp["model"] == "openai/m1"

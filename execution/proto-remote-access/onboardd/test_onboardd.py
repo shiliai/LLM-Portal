@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from starlette.testclient import TestClient
 
-from testutil import load_service
+from testutil import install_litellm_stub, load_service
 
 ONBOARDD_DIR = Path(__file__).parent
 ADMIN_TOKEN = "tok-admin-unit"
@@ -260,3 +260,32 @@ def test_default_env_keeps_legacy_addresses(onboardd):
     assert onboardd.WG_ENDPOINT_HOST == onboardd.DOMAIN
     assert onboardd.WG_ALLOWED == "10.77.0.0/24"
     assert onboardd.GW_WG_IP == "10.77.0.1"
+
+
+# ---------------------------------------------------------------- confirm → /model/new 注册
+
+def test_confirm_registers_with_param_passthrough(onboardd, monkeypatch):
+    """issue #46：drop_params=true 下通用 openai/ deployment 会静默丢 reasoning_effort
+    （supported 列表不含、vLLM 实际支持）——注册 payload 必须带 allowed_openai_params。"""
+    calls = install_litellm_stub(monkeypatch, lambda m, p, b, j: (200, {"ok": True}))
+    with sqlite3.connect(onboardd.DB_PATH) as conn:
+        conn.execute("INSERT INTO sites VALUES (?,?,?,?,?,?,?)",
+                     ("site-x", GOOD_PUBKEY, "10.77.0.21",
+                      '[{"name": "m1", "port": 8890}]', '["home"]', "registered", int(time.time())))
+        conn.execute("INSERT INTO tokens VALUES (?,?,?,?,?,?,?)",
+                     ("tok-confirm-1", "site-x", '[{"name": "m1", "port": 8890}]', '["home"]',
+                      "10.77.0.21", int(time.time()) + 600, 0))
+    with TestClient(onboardd.app) as client:
+        resp = client.post("/onboard/confirm",
+                           json={"token": "tok-confirm-1", "ok": True, "results": {}})
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "active"
+    news = [c for c in calls if c["path"] == "/model/new"]
+    assert len(news) == 1
+    lp = news[0]["json"]["litellm_params"]
+    assert lp["allowed_openai_params"] == ["reasoning_effort"]   # 直通白名单
+    assert lp["model"] == "openai/m1" and lp["api_base"] == "http://10.77.0.21:8890/v1"
+    assert lp["tags"] == ["home"]
+    with sqlite3.connect(onboardd.DB_PATH) as conn:
+        assert conn.execute("SELECT status FROM sites WHERE name='site-x'").fetchone()[0] == "active"
+        assert conn.execute("SELECT COUNT(*) FROM tokens").fetchone()[0] == 0  # 一次性 token 已消耗

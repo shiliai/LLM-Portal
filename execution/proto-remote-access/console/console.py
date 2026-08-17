@@ -101,6 +101,10 @@ VAULT_KEY_PATH = STATE_DIR / "keyvault.key"
 SESSION_TTL = 8 * 3600
 LOGIN_FAIL_LIMIT, LOGIN_WINDOW = 5, 60
 HANDSHAKE_ONLINE = 180  # 最近握手 3 分钟内视为在线
+# issue #46：drop_params=true 下通用 openai/ deployment 会静默丢弃 reasoning_effort
+# （supported 列表不含、vLLM 上游实际支持）——retag/别名克隆重建 deployment 时
+# 必须带上，否则一次分组改写就把直通配置洗掉
+PASS_THROUGH_OPENAI_PARAMS = ["reasoning_effort"]
 
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 if SECRET_PATH.exists():
@@ -622,6 +626,7 @@ async def retag_site(wg_ip: str, new_groups: list[str]) -> list[str]:
             "api_base": src.get("api_base"),
             "api_key": "none",                      # /model/info 读回不含 api_key，重建按上游无鉴权口径
             "tags": sorted(set(new_groups) - {"default"}),
+            "allowed_openai_params": PASS_THROUGH_OPENAI_PARAMS,
             "connect_timeout": src.get("connect_timeout", 5),
             "timeout": src.get("timeout", 600),
         }
@@ -1154,7 +1159,8 @@ async def api_models_alias(request: Request) -> Response:
     for d in by_name[target]:
         src, info = d.get("litellm_params") or {}, d.get("model_info") or {}
         params = {"model": src.get("model"), "api_base": src.get("api_base"), "api_key": "none",
-                  "tags": dep_tags(d), "connect_timeout": src.get("connect_timeout", 5),
+                  "tags": dep_tags(d), "allowed_openai_params": PASS_THROUGH_OPENAI_PARAMS,
+                  "connect_timeout": src.get("connect_timeout", 5),
                   "timeout": src.get("timeout", 600)}
         for lim in ("rpm", "tpm"):
             if src.get(lim) is not None or info.get(lim) is not None:

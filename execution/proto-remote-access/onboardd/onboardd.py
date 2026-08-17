@@ -49,6 +49,10 @@ WG_ALLOWED = f"{WG_SUBNET_PREFIX}.0/24"                          # 站点侧 All
 GW_WG_IP = os.environ.get("WG_VPS_IP", "10.77.0.1")             # 网关自身 wg 地址（install.sh 自检 ping）
 LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://127.0.0.1:4000")
 LITELLM_MASTER_KEY = os.environ["LITELLM_MASTER_KEY"]
+# issue #46：drop_params=true 下通用 openai/ deployment 的 supported 参数列表不含
+# reasoning_effort，会被静默丢弃而 vLLM 上游实际支持——注册时统一直通（实测其余
+# 思考参数 enable_thinking/reasoning 走 extra_body 本就不丢，无需列入）
+ALLOWED_OPENAI_PARAMS = ["reasoning_effort"]
 ADMIN_TOKEN = os.environ["ONBOARD_ADMIN_TOKEN"]
 TOKEN_TTL = 900  # 15 分钟
 DATA_DIR = Path(os.environ.get("ONBOARDD_DATA", "/var/lib/private-llm/onboardd"))
@@ -187,6 +191,7 @@ async def confirm(request: Request) -> Response:
                     "api_base": f"http://{srow['wg_ip']}:{m['port']}/v1",
                     "api_key": "none",
                     "tags": groups,
+                    "allowed_openai_params": ALLOWED_OPENAI_PARAMS,
                     "connect_timeout": 5,
                     "timeout": 600,
                 },
