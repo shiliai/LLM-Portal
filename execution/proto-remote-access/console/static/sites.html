@@ -124,6 +124,45 @@
     </div>
   </div>
 
+  <!-- 站点模型管理弹窗：刷新上游 id / 手动添加 / 删除 -->
+  <div class="pf-modal" id="modal-site-models" style="width:660px">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title">模型管理 · <span id="sm-site-name" class="mono"></span></div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-modal-body">
+      <div class="pf-desc" style="margin-bottom:10px">「刷新上游」用于站点换了模型（引擎/端口不变）的场景：对外模型名保持不变，仅更新发往上游的 model id，订阅方无需任何改动。删除则立即把该 deployment 摘出路由池。</div>
+      <div id="sm-list">加载中…</div>
+      <div style="font-weight:600;margin:16px 0 4px">手动添加模型</div>
+      <div class="pf-form-row">
+        <label class="req">对外模型名</label>
+        <div>
+          <input class="pf-input mono" id="sm-name" placeholder="例：qwen3.8-27b">
+          <div class="pf-desc">客户端经网关调用的名称，可与上游真实 id 不同（如站点对外统一叫 qwen）。</div>
+        </div>
+      </div>
+      <div class="pf-form-row">
+        <label class="req">站点端口</label>
+        <div>
+          <input class="pf-input mono" id="sm-port" placeholder="例：8004" style="width:110px">
+          <button class="pf-link" id="sm-probe" type="button" style="margin-left:10px">从上游获取 model id</button>
+          <div class="pf-desc" id="sm-probe-note">探测站点该端口的 <span class="mono">/v1/models</span>，列出上游实际在服务的 model id。</div>
+        </div>
+      </div>
+      <div class="pf-form-row">
+        <label>上游 model id</label>
+        <div>
+          <input class="pf-input mono" id="sm-upstream" placeholder="留空 = 与对外模型名相同">
+          <div class="pf-desc" id="sm-chips"></div>
+        </div>
+      </div>
+    </div>
+    <div class="pf-modal-foot">
+      <button class="pf-btn" data-close>关闭</button>
+      <button class="pf-btn primary" id="btn-sm-add">添加模型</button>
+    </div>
+  </div>
+
 </template>
 <script src="assets/portal.js"></script>
 <script>
@@ -154,7 +193,8 @@
         : s.online ? '<span class="pf-chip ok"><span class="pf-dot ok"></span>在线</span>'
         : '<span class="pf-chip warn">' + esc(s.status) + '</span>';
       var actions = revoked ? '<button class="pf-link" disabled>已吊销</button>'
-        : '<button class="pf-link js-edit-groups" data-site="' + esc(s.name) + '">分组</button> ' +
+        : '<button class="pf-link js-site-models" data-site="' + esc(s.name) + '">模型</button> ' +
+          '<button class="pf-link js-edit-groups" data-site="' + esc(s.name) + '">分组</button> ' +
           '<button class="pf-link danger js-revoke-btn" data-site="' + esc(s.name) + '" data-wg="' + esc(s.wg_ip) + '" data-models="' + s.models.length + '">吊销</button>';
       return '<tr' + (revoked ? ' class="pf-row-muted"' : '') + ' data-site-row="' + esc(s.name) + '">' +
         '<td>' + esc(s.name) + '</td>' +
@@ -175,7 +215,7 @@
       .catch(function (e) { window.pfErr(e.error || '站点加载失败'); });
   }
 
-  var pendingRevoke = null, sgSite = null;
+  var pendingRevoke = null, sgSite = null, smSite = null;
 
   function bindRowActions() {
     document.querySelectorAll('.js-revoke-btn').forEach(function (btn) {
@@ -185,6 +225,19 @@
         document.getElementById('revoke-wg').textContent = btn.dataset.wg;
         document.getElementById('revoke-model-count').textContent = btn.dataset.models;
         window.pfModal('modal-revoke');
+      };
+    });
+    document.querySelectorAll('.js-site-models').forEach(function (btn) {
+      btn.onclick = function () {
+        smSite = btn.dataset.site;
+        document.getElementById('sm-site-name').textContent = smSite;
+        document.getElementById('sm-list').textContent = '加载中…';
+        document.getElementById('sm-name').value = '';
+        document.getElementById('sm-port').value = '';
+        document.getElementById('sm-upstream').value = '';
+        document.getElementById('sm-chips').innerHTML = '';
+        smReload();
+        window.pfModal('modal-site-models');
       };
     });
     document.querySelectorAll('.js-edit-groups').forEach(function (btn) {
@@ -284,6 +337,149 @@
         window.pfToast('站点分组已更新');
         load();
       }).catch(function (e) { window.pfErr(e.error || '保存失败'); });
+    });
+
+    /* ---------- 站点模型管理：刷新上游 id / 手动添加 / 删除 ---------- */
+    function smReload() {
+      window.pfApi('GET', '/sites').then(function (d) {
+        var site = d.sites.filter(function (s) { return s.name === smSite; })[0];
+        renderSmList(site ? site.deps || [] : []);
+        load();                       // 顺带刷新外层站点表的模型数
+      }).catch(function (e) { window.pfErr(e.error || '站点加载失败'); });
+    }
+
+    function renderSmList(deps) {
+      document.getElementById('sm-list').innerHTML = deps.map(function (dep) {
+        return '<div class="pf-dep-item" data-sm-name="' + esc(dep.name) + '" data-sm-port="' + dep.port + '" data-sm-upstream="' + esc(dep.upstream) + '">' +
+          '<div class="pf-dep-main">' +
+          '<strong class="mono">' + esc(dep.name) + '</strong>' +
+          '<span class="mono pf-muted">:' + dep.port + '</span>' +
+          '<span class="mono pf-muted">上游=' + esc(dep.upstream || '—') + '</span>' +
+          '<span style="margin-left:auto;white-space:nowrap">' +
+          '<button class="pf-link js-sm-refresh" type="button">刷新上游</button> ' +
+          '<button class="pf-link danger js-sm-del" type="button">删除</button>' +
+          '</span></div>' +
+          '<div class="js-sm-edit" style="display:none;padding:6px 0 2px"></div>' +
+          '</div>';
+      }).join('') || '<div class="pf-desc" style="padding:6px 0">该站点暂无模型 deployment（在下方手动添加）</div>';
+    }
+
+    // 事件委托：列表内的 刷新上游 / 应用 / 取消 / 删除（innerHTML 重建后监听仍有效）
+    document.getElementById('sm-list').addEventListener('click', function (e) {
+      var el;
+      if ((el = e.target.closest('.js-sm-refresh'))) { smProbeRow(el.closest('.pf-dep-item')); return; }
+      if ((el = e.target.closest('.js-sm-apply'))) { smApplyRefresh(el.closest('.pf-dep-item')); return; }
+      if ((el = e.target.closest('.js-sm-cancel'))) { smHideEdit(el.closest('.pf-dep-item')); return; }
+      if ((el = e.target.closest('.js-sm-del'))) { smDelete(el); }
+    });
+
+    function smHideEdit(item) {
+      var edit = item.querySelector('.js-sm-edit');
+      edit.style.display = 'none';
+      edit.innerHTML = '';
+    }
+
+    function smProbeRow(item) {
+      var port = item.dataset.smPort, cur = item.dataset.smUpstream;
+      var edit = item.querySelector('.js-sm-edit');
+      edit.style.display = '';
+      edit.innerHTML = '<span class="pf-desc">探测中…</span>';
+      window.pfApi('GET', '/sites/probe?site=' + encodeURIComponent(smSite) + '&port=' + port)
+        .then(function (d) {
+          if (!d.models || !d.models.length) {
+            edit.innerHTML = '<span class="pf-desc">上游 /v1/models 返回空列表</span>';
+            return;
+          }
+          if (d.models.length === 1 && d.models[0].id === cur) {
+            edit.innerHTML = '<span class="pf-desc">上游 id 已是最新（' + esc(cur) + '），无需刷新</span>';
+            return;
+          }
+          var opts = d.models.map(function (m) {
+            return '<option value="' + esc(m.id) + '"' + (m.id === cur ? ' selected' : '') + '>' +
+              esc(m.id) + (m.owned_by ? '（' + esc(m.owned_by) + '）' : '') + '</option>';
+          }).join('');
+          edit.innerHTML = '<select class="pf-select mono" style="max-width:100%">' + opts + '</select> ' +
+            '<button class="pf-link js-sm-apply" type="button">应用</button> ' +
+            '<button class="pf-link js-sm-cancel" type="button">取消</button>' +
+            '<span class="pf-desc" style="display:block;margin-top:4px">上游实际在服务的 model id（当前：' + esc(cur || '—') + '）</span>';
+        })
+        .catch(function (err) {
+          edit.innerHTML = '<span class="pf-desc">探测失败：' + esc(err.error || '上游不可达') + '</span>';
+        });
+    }
+
+    function smApplyRefresh(item) {
+      var sel = item.querySelector('.js-sm-edit select');
+      if (!sel || !sel.value) return;
+      window.pfApi('POST', '/sites/models/refresh', {
+        site: smSite, name: item.dataset.smName, port: parseInt(item.dataset.smPort, 10),
+        upstream_model: sel.value
+      }).then(function (d) {
+        window.pfToast(d.unchanged ? item.dataset.smName + ' 的上游 id 已是最新'
+          : item.dataset.smName + ' 上游已刷新：' + (d.previous || '—') + ' → ' + d.upstream_model);
+        smReload();
+      }).catch(function (e) { window.pfErr(e.error || '刷新失败'); });
+    }
+
+    function smDelete(btn) {
+      if (!btn.dataset.armed) {          // 两段式确认，避免误点
+        btn.dataset.armed = '1';
+        btn.textContent = '确认删除？';
+        setTimeout(function () { btn.dataset.armed = ''; btn.textContent = '删除'; }, 3000);
+        return;
+      }
+      var item = btn.closest('.pf-dep-item');
+      window.pfApi('POST', '/sites/models/delete', {
+        site: smSite, name: item.dataset.smName, port: parseInt(item.dataset.smPort, 10)
+      }).then(function () {
+        window.pfToast(item.dataset.smName + ' 已从路由池摘除');
+        smReload();
+      }).catch(function (e) { window.pfErr(e.error || '删除失败'); });
+    }
+
+    /* 手动添加：探测到的 id 以可点链接回显，点选即回填 */
+    document.getElementById('sm-probe').addEventListener('click', function () {
+      var port = parseInt(document.getElementById('sm-port').value, 10);
+      if (!(port > 0)) { window.pfErr('请先填写站点端口'); return; }
+      document.getElementById('sm-probe-note').textContent = '探测中…';
+      window.pfApi('GET', '/sites/probe?site=' + encodeURIComponent(smSite) + '&port=' + port)
+        .then(function (d) {
+          document.getElementById('sm-probe-note').textContent =
+            '探测到 ' + d.models.length + ' 个 model id（点击填入上游 id）：';
+          document.getElementById('sm-chips').innerHTML = d.models.map(function (m) {
+            return '<button class="pf-link mono js-sm-chip" type="button" data-id="' + esc(m.id) + '">' +
+              esc(m.id) + (m.owned_by ? ' · ' + esc(m.owned_by) : '') + '</button>';
+          }).join(' ') || '<span class="pf-desc">上游返回空列表</span>';
+        })
+        .catch(function (e) {
+          document.getElementById('sm-probe-note').textContent = '';
+          window.pfErr(e.error || '探测失败');
+        });
+    });
+    document.getElementById('sm-chips').addEventListener('click', function (e) {
+      var chip = e.target.closest('.js-sm-chip');
+      if (!chip) return;
+      document.getElementById('sm-upstream').value = chip.dataset.id;
+      var nameEl = document.getElementById('sm-name');
+      if (!nameEl.value.trim()) nameEl.value = chip.dataset.id;   // 对外名空则顺手带出，可再改
+    });
+    document.getElementById('btn-sm-add').addEventListener('click', function () {
+      var name = document.getElementById('sm-name').value.trim();
+      var port = parseInt(document.getElementById('sm-port').value, 10);
+      var upstream = document.getElementById('sm-upstream').value.trim();
+      if (!/^[a-zA-Z0-9_.-]{1,64}$/.test(name) || !(port > 0)) {
+        window.pfErr('请检查对外模型名（字母/数字/._-）与端口');
+        return;
+      }
+      window.pfApi('POST', '/sites/models', {
+        site: smSite, name: name, port: port, upstream_model: upstream || undefined
+      }).then(function () {
+        window.pfToast('已添加 ' + name + '（立即进入路由池）');
+        document.getElementById('sm-name').value = '';
+        document.getElementById('sm-upstream').value = '';
+        document.getElementById('sm-chips').innerHTML = '';
+        smReload();
+      }).catch(function (e) { window.pfErr(e.error || '添加失败'); });
     });
   });
 })();

@@ -86,6 +86,12 @@ site-revoke site-a   # 吊销：wg 摘 peer + LiteLLM 摘 deployment + 状态标
 
 install.sh 在站点侧：装 wireguard-tools → `wg genkey`（私钥不出机）→ 公钥注册 → 写 `/etc/wireguard/wg0.conf` → `systemctl enable --now wg-quick@wg0`（自启自愈）→ 自检（ping 10.77.0.1 + 各模型端口 `/v1/models`）→ confirm 注册 deployment。
 
+站点接入后的模型增删改走控制台「站点」页的 **模型** 按钮（无需重新走 install.sh）：
+
+- **手动添加模型**：填对外模型名 + 站点端口（可选上游真实 id；可点「从上游获取 model id」探测 `/v1/models` 自动回填，llama.cpp/vLLM 均适用）；
+- **刷新上游**：站点换了模型（引擎/端口不变）时用——对外模型名不变、仅替换发往上游的 model id（先建新 deployment 再删旧，不留 404 窗口），订阅方与 Key 无需任何改动；
+- **删除**：把单个 deployment 摘出路由池（两段式确认）。以上操作均同步 onboardd 登记簿（`/onboard/admin/models`）。
+
 ## 4. 客户端接入
 
 统一：`base_url = https://llm-portal.example.com`，`key = sk-<用户虚拟Key>`（管理员分发）。
