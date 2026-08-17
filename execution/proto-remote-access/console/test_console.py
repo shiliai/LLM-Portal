@@ -500,6 +500,34 @@ def test_sites_models_delete(console, monkeypatch):
     assert sync["models"] == []                               # 登记簿同步清空
 
 
+def test_sites_lists_known_ports(console, monkeypatch):
+    """/sites 返回 known_ports（deployment ∪ 登记簿端口）——前端「添加模型」的
+    端口下拉数据源，杜绝手打端口拼错 api_base。"""
+    dep = {"model_name": "qwen3.6-35b-fp8",
+           "litellm_params": {"model": "openai/qwen3.6-35b-fp8",
+                              "api_base": "http://10.77.0.14:8004/v1"},
+           "model_info": {"id": "dep-1"}}
+
+    def handler(method, path, bearer, json_body):
+        if path == "/onboard/admin/list":
+            # 登记簿里另有一个端口 9000（尚无 deployment）也应出现在已知端口里
+            site = dict(SM_SITE, models='[{"name": "m2", "port": 9000}]')
+            return 200, {"sites": [site]}
+        if path == "/model/info":
+            return 200, {"data": [dep]}
+        if path == "/global/spend" and bearer == MASTER_KEY:
+            return 200, {}
+        return 404, {"error": f"unexpected stub path {path}"}
+
+    install_litellm_stub(monkeypatch, handler)
+    client, hdr = _admin_client(console)
+    resp = client.get("/console/api/sites", headers=hdr)
+    assert resp.status_code == 200
+    row = resp.json()["sites"][0]
+    assert row["known_ports"] == [8004, 9000]      # deployment 端口 ∪ 登记簿端口
+    assert row["deps"][0]["port"] == 8004
+
+
 def test_sites_token_accepts_dotted_model_names(console, monkeypatch):
     """注册表单允许 qwen3.8-27b 一类带点号模型名（此前 NAME_RE 误拒，MODEL_RE 放行）。"""
     seen = []
