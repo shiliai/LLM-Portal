@@ -27,7 +27,7 @@
     </div>
     <table class="pf-table">
       <thead>
-        <tr><th>分组名</th><th>说明</th><th>成员站点</th><th class="num">绑定 Key 数</th><th>状态</th><th>操作</th></tr>
+        <tr><th>分组名</th><th>说明</th><th>成员站点</th><th class="num">绑定 Key 数</th><th class="num">绑定 MCP 数</th><th>状态</th><th>操作</th></tr>
       </thead>
       <tbody id="groups-tbody"></tbody>
     </table>
@@ -107,6 +107,7 @@
         '<td class="pf-desc">' + desc + '</td>' +
         '<td>' + members + '</td>' +
         '<td class="num">' + g.keys + '</td>' +
+        '<td class="num">' + (g.mcps || 0) + '</td>' +
         '<td><span class="pf-chip ' + (g.system ? 'ok' : 'ok') + '">' + (g.system ? '系统组' : '启用') + '</span></td>' +
         '<td>' + actions + '</td>' +
       '</tr>';
@@ -124,7 +125,7 @@
     document.querySelectorAll('.js-delete-group').forEach(function (btn) {
       btn.onclick = function () {
         var name = btn.dataset.group;
-        if (!confirm('删除分组「' + name + '」？成员站点的组 tag 将被移除（不影响 default 路由）；存在绑定 Key 时将拒绝删除。')) return;
+        if (!confirm('删除分组「' + name + '」？成员站点的组 tag 将被移除（不影响 default 路由）；存在绑定 Key 或 MCP 时将拒绝删除。')) return;
         window.pfApi('POST', '/groups/delete', { name: name }).then(function () {
           window.pfToast('分组「' + name + '」已删除');
           load();

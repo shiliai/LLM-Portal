@@ -35,6 +35,8 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AccessToken, TokenVerifier
 from fastmcp.server.context import Context
 from fastmcp.server.dependencies import get_http_request
+from fastmcp.server.middleware.authorization import AuthMiddleware
+from fastmcp.utilities.authorization import AuthContext
 
 # ---------------------------------------------------------------- 配置
 
@@ -101,7 +103,14 @@ class LiteLLMTokenVerifier(TokenVerifier):
         info = await check_key(token)
         if info is None:
             return None
-        return AccessToken(token=token, client_id=key_hash(token), scopes=[])
+        group = (info.get("metadata") or {}).get("group") or "default"
+        return AccessToken(token=token, client_id=key_hash(token), scopes=[str(group)])
+
+
+def group_access(ctx: AuthContext) -> bool:
+    """无 tags 的工具全局可用；有 tags 的外部工具仅向命中分组的 Key 开放。"""
+    groups = ctx.component.tags
+    return not groups or bool(ctx.token and groups.intersection(ctx.token.scopes))
 
 
 def current_key(ctx) -> str:
@@ -154,7 +163,12 @@ async def lifespan(app):
                 pass
 
 
-mcp = FastMCP("mcp-hub", auth=LiteLLMTokenVerifier(), lifespan=lifespan)
+mcp = FastMCP(
+    "mcp-hub",
+    auth=LiteLLMTokenVerifier(),
+    lifespan=lifespan,
+    middleware=[AuthMiddleware(auth=group_access)],
+)
 
 
 @mcp.tool
@@ -204,6 +218,12 @@ async def register_external_tools() -> None:
         return
     for entry in entries:
         name, prefix = entry["name"], entry.get("prefix", f"{entry['name']}_")
+        raw_groups = entry.get("groups") or []
+        if not isinstance(raw_groups, list) or any(not isinstance(group, str) or not group
+                                                   for group in raw_groups):
+            print(f"[mcp-hub] external mcp '{name}': skipped (invalid groups list)")
+            continue
+        groups = set(raw_groups)
         if "REPLACE" in str(entry.get("api_key", "")) or "REPLACE" in entry.get("url", ""):
             print(f"[mcp-hub] external mcp '{name}': skipped (placeholder credentials)")
             continue
@@ -211,20 +231,25 @@ async def register_external_tools() -> None:
             client = Client(entry["url"], auth=BearerAuth(entry["api_key"]) if entry.get("api_key") else None)
             await client.__aenter__()
             tools = await client.list_tools()
+            external_clients[name] = client
             for tool in tools:
 
                 async def _proxy(_client=client, _name=tool.name, **kwargs):
                     result = await _client.call_tool(_name, kwargs)
                     return result.content[0].text if result.content else "(empty)"
 
-                from fastmcp.tools import Tool as FastTool
-                mcp.add_tool(FastTool(
+                from fastmcp.tools import FunctionTool
+                mcp.add_tool(FunctionTool(
                     fn=_proxy,
                     name=f"{prefix}{tool.name}",
                     description=f"[{name}] {tool.description or ''}".strip(),
-                    parameters=tool.parameters or {"type": "object", "properties": {}},
+                    parameters=tool.inputSchema or {"type": "object", "properties": {}},
+                    tags=groups,
+                    run_in_thread=False,
                 ))
-            print(f"[mcp-hub] external mcp '{name}': {len(tools)} tools proxied (prefix '{prefix}')")
+            scope = ",".join(sorted(groups)) if groups else "global"
+            print(f"[mcp-hub] external mcp '{name}': {len(tools)} tools proxied "
+                  f"(prefix '{prefix}', groups '{scope}')")
         except Exception as exc:  # 外部服务不可达不阻断启动
             print(f"[mcp-hub] external mcp '{name}' unavailable: {exc}")
 

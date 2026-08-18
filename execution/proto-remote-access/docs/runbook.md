@@ -105,6 +105,11 @@ install.sh 在站点侧：装 wireguard-tools → `wg genkey`（私钥不出机�
 
 本地图片两步式：`POST /mcp/upload`（multipart `file=`，同一 Key）→ 得临时 URL（30min）→ `analyze_image(url, 问题)`。
 
+外部 MCP 由管理员在「MCP 管理」绑定零个或多个分组：不绑定（`groups: []` 或旧条目无
+`groups`）表示全局可用；绑定后，仅 `metadata.group` 命中的 Key 能在 `tools/list`
+发现并通过 `tools/call` 使用。未绑定/`default` Key 只见全局工具；内建
+`analyze_image` 默认全局。客户端 URL、Bearer Key 与传输协议不变。
+
 ## 5. 验收记录（T1~T13，2026-08-14 首站 site-a 实测）
 
 | # | 故事 | 验证步骤与通过标准 | 结果 |
@@ -120,7 +125,7 @@ install.sh 在站点侧：装 wireguard-tools → `wg genkey`（私钥不出机�
 | T9 | US-P9 | Admin UI 建/禁 Key 即时生效；用量可筛 | ✅ `/ui` 可用（master key 登录）；建 Key 即时生效（home-key 实测） |
 | T10 | US-P10 | `/key/info` 仅见自身用量 | ✅ 用户 Key 自查 200 |
 | T11 | US-P11 | `/v1/models` 见全部对外名；未知名→400/404 | ✅ 4 个对外名（deepseek/qwen 直选 + claude-opus-5/qwen3.6-35b-a3 别名） |
-| T12 | US-P12 | 外部 MCP 注册后 tools/list 前缀工具可用 | ◐ 框架就绪（配置文件 + 占位符过滤 + 前缀代理）；智谱真实凭据待录入验证 |
+| T12 | US-P12/#51 | 外部 MCP 注册后前缀工具可用，按 Key 分组裁剪 tools/list/tools/call | ✅ FastMCP 3.4.7 授权矩阵与 console 配置测试通过；Codex `web-reader` 真实注册为 `web_webReader`（home 标签）并经代理读取 example.com 通过 |
 | T13 | US-P13 | Key 绑组仅组内路由；伪造 tag 无法越组；组内无部署→可判读错误 | ✅ 六项矩阵全过：home Key→组外模型 401 可判读、组内 200、伪造 x-litellm-tags 双向无效、未绑组全量 |
 | T14 | US-P9 修订/P14 | 控制台全流程（2026-08-14 晚实测） | ✅ 登录三态（master→admin / 用户 Key→user / 错 Key 401，连错 5 次 60s 内 429）；user 访问管理 API 全 403、/my 数据真实（今日 133 次 + 分模型）；Key 建/禁/解禁/删全链路（blocked→chat 401、mcp 401，删除→401）；分组 create/rename/delete 的 retag 实效（/model/info tags 逐条核对）；站点 token 下发（900s + 安装命令）；别名创建（/v1/models 可见 + 调用 200）；MCP 注册/移除（配置 0600 + restart + 凭据只显尾 4 位 + 不可达服务优雅降级） |
 | T15 | US-P14 | 暴露面收敛回归（2026-08-14 晚实测） | ✅ 管理面 404 矩阵：/ui、/login、/sso、/openapi.json、/redoc、/health、/key/generate、/key/block、/key/update、/key/list、/model/new、/model/info、/team/list、/global/spend、/spend/logs、/onboard/admin/*、任意未知名全 404；保留面正常：/（主页 200）、/v1/models（带 Key 200）、SSE 流式 chat、/v1/messages（CC 协议 200）、/key/info、/health/liveliness、/mcp（无 Key 401）、/onboard/install（坏 token 403）、/console/（200）；site-add/list CLI 走本机 8100 不受影响；deploy.sh 冒烟含收敛自检 |

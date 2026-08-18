@@ -478,6 +478,42 @@ textarea.pf-input { height: auto; min-height: 72px; padding: 6px 10px; line-heig
 }
 .pf-banner.info { background: #e6f4ff; border-color: #91caff; color: #0958d9; }
 
+/* ---------- 窄屏控制台 ---------- */
+@media (max-width: 720px) {
+  .pf-sidebar {
+    position: static; width: 100%; height: auto; display: block;
+    border-right: none; border-bottom: 1px solid #f0f0f0;
+  }
+  .pf-logo { height: 48px; padding: 0 12px; }
+  .pf-logo-mark { width: 24px; height: 24px; }
+  .pf-sidebar-foot { display: none; }
+  .pf-nav {
+    display: flex; gap: 4px; padding: 6px 8px; overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .pf-nav::-webkit-scrollbar { display: none; }
+  .pf-nav-item { flex: none; height: 32px; margin: 0; padding: 0 10px; }
+  .pf-main { margin-left: 0; min-width: 0; }
+  .pf-topbar { height: 48px; padding: 0 12px; }
+  .pf-content { min-width: 0; padding: 12px; }
+  .pf-page-head { align-items: flex-start; flex-wrap: wrap; }
+  .pf-page-head > .pf-desc { flex: 1 1 220px; min-width: 0; }
+  .pf-card { padding: 12px; }
+  .pf-card.flush { overflow-x: auto; }
+  .pf-card.flush .pf-card-head { position: sticky; left: 0; min-width: min(100%, 320px); }
+  .pf-table { width: max-content; min-width: 100%; }
+  .pf-table td { white-space: nowrap; }
+  .pf-grid.cols-2, .pf-grid.cols-3, .pf-grid.cols-4, .pf-grid.main-side {
+    grid-template-columns: 1fr;
+  }
+  .pf-form-row { grid-template-columns: 1fr; gap: 4px; }
+  .pf-form-row > label { text-align: left; padding-top: 0; }
+  .pf-kv { grid-template-columns: 82px minmax(0, 1fr); }
+  .pf-dep-item { align-items: flex-start; flex-wrap: wrap; }
+  .pf-modal { top: 16px; max-height: calc(100vh - 32px); }
+  .pf-modal-head, .pf-modal-body, .pf-modal-foot { padding-left: 14px; padding-right: 14px; }
+}
+
 /* ============================================================
    扩展（remote-access-console 专用，追加于 llm-portal-console 基线之上）
    ============================================================ */

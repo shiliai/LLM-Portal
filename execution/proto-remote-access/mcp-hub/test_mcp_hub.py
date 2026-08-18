@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from starlette.testclient import TestClient
@@ -109,6 +111,7 @@ def test_token_verifier_accepts_valid_key(hub):
     assert token is not None
     assert token.token == VALID_KEY
     assert token.client_id == hashlib.sha256(VALID_KEY.encode()).hexdigest()[:16]
+    assert token.scopes == ["default"]
 
 
 def test_token_verifier_rejects_bad_and_empty(hub):
@@ -127,3 +130,64 @@ def test_usage_counts_recorded_per_key_hash(hub):
     body = resp.json()
     assert body["tools"] == {"analyze_image": 1, "upload": 1}
     assert body["total"] == 2
+
+
+# ---------------------------------------------------------------- Group 工具授权（issue #51）
+
+def _auth_ctx(hub, tags, scopes=("default",)):
+    token = hub.AccessToken(token="unit", client_id="unit", scopes=list(scopes))
+    return hub.AuthContext(token=token, component=SimpleNamespace(tags=set(tags)))
+
+
+def test_group_access_matrix(hub):
+    assert hub.group_access(_auth_ctx(hub, [])) is True          # 无 tags = 全局
+    assert hub.group_access(_auth_ctx(hub, ["home"], ["home"])) is True
+    assert hub.group_access(_auth_ctx(hub, ["home", "lab"], ["lab"])) is True
+    assert hub.group_access(_auth_ctx(hub, ["home"], ["work"])) is False
+    assert hub.group_access(hub.AuthContext(
+        token=None, component=SimpleNamespace(tags={"home"}))) is False
+
+
+def test_auth_middleware_is_installed(hub):
+    assert any(isinstance(item, hub.AuthMiddleware) for item in hub.mcp.middleware)
+
+
+def test_external_tools_inherit_configured_groups(hub, monkeypatch):
+    hub.EXTERNAL_MCP_CONF.write_text(json.dumps([{
+        "name": "svc", "url": "https://mcp.invalid/mcp", "api_key": "secret",
+        "prefix": "svc_", "groups": ["home", "lab"],
+    }]))
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def list_tools(self):
+            return [SimpleNamespace(name="ping", description="Ping", inputSchema=None)]
+
+    monkeypatch.setattr(hub, "Client", FakeClient)
+    asyncio.run(hub.register_external_tools())
+    tool = asyncio.run(hub.mcp.get_tool("svc_ping"))
+    assert tool is not None
+    assert tool.tags == {"home", "lab"}
+
+
+def test_external_tool_with_malformed_groups_is_not_registered(hub, monkeypatch):
+    hub.EXTERNAL_MCP_CONF.write_text(json.dumps([{
+        "name": "svc", "url": "https://mcp.invalid/mcp", "api_key": "secret",
+        "prefix": "svc_", "groups": "home",
+    }]))
+
+    class UnexpectedClient:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("malformed authorization config must fail before connecting")
+
+    monkeypatch.setattr(hub, "Client", UnexpectedClient)
+    asyncio.run(hub.register_external_tools())
+    assert asyncio.run(hub.mcp.get_tool("svc_ping")) is None
