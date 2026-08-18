@@ -1,7 +1,0 @@
-# 实值不入库（部署环境生成）
-.env
-*.rendered.conf
-__pycache__/
-*.pyc
-*.db
-uploads/

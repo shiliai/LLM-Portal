@@ -1,6 +1,6 @@
 # 安全策略（Security Policy）
 
-本项目是面向中小企业自部署的统一 AI 网关（LiteLLM + 自写 console / onboardd / mcp-hub / compat + WireGuard 多站点隧道）。本文档说明：如何报告安全漏洞、系统的安全边界与已知取舍、以及部署时应完成的安全清单。部署架构详见 [`execution/proto-remote-access/README.md`](execution/proto-remote-access/README.md) 与 [`execution/proto-remote-access/docs/runbook.md`](execution/proto-remote-access/docs/runbook.md)。
+本项目是面向中小企业自部署的统一 AI 网关（LiteLLM + 自写 console / onboardd / mcp-hub / compat + WireGuard 多站点隧道）。本文档说明：如何报告安全漏洞、系统的安全边界与已知取舍、以及部署时应完成的安全清单。部署架构见根 [`README.md`](README.md)，详细操作见 [`docs/runbook.md`](docs/runbook.md)。
 
 ## 支持的版本
 
@@ -31,7 +31,7 @@
 
 ### 服务与权限级别
 
-部署形态为单 VPS 全容器栈（`execution/proto-remote-access/vps/docker-compose.yml`），各服务权限：
+部署形态为单 VPS 全容器栈（`vps/docker-compose.yml`），各服务权限：
 
 | 服务 | 权限级别 | 说明 |
 |------|----------|------|
@@ -66,7 +66,7 @@ nginx（`vps/nginx/private-llm.conf`）按 allowlist 分发，**其余路径一�
 
 ## 部署安全清单
 
-按 `execution/proto-remote-access/docs/runbook.md` 部署时，逐项确认：
+按 `docs/runbook.md` 部署时，逐项确认：
 
 1. **防火墙 / 云安全组**：standalone 仅放行 `80/tcp`、`443/tcp`、`51820/udp`（WireGuard）与 SSH（建议限源 IP）；external 按既有入口收敛；offload 的 `80/tcp` 必须限源到受信 LAN 上游设备。其余一律拒绝。云安全组与主机 ufw 两层都要查——WireGuard 端口漏放会导致隧道不通（历史踩坑见 runbook §1）。
 2. **强凭据生成**：复制 `vps/.env.example` 为 `.env` 后，全部 `REPLACE_ME` 用随机值替换（**禁止**使用示例值/弱口令）：

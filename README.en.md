@@ -7,9 +7,9 @@ inference models spread across multiple internal sites behind one public gateway
 OpenAI- and Anthropic-compatible APIs, and provides virtual keys, group-based routing, usage
 metering, and a web administration console.
 
-> **Status:** early prototype. `execution/proto-remote-access/` contains the deployed MVP: a
-> multi-site WireGuard data plane, dual-protocol API gateway, and management console. The frozen
-> product baseline is `planning/03-core/user_story_baseline_r4.md`; current gaps are listed below.
+> **Status: Alpha.** The current version is used in real deployments, but APIs, configuration, and
+> upgrade procedures may still change before the first stable release. See [`ROADMAP.md`](ROADMAP.md)
+> for known limitations and planned work.
 
 ## Implemented MVP features
 
@@ -28,7 +28,8 @@ metering, and a web administration console.
 - **Web console:** administrator login with email, password, and optional TOTP; graphical management
   for sites, groups, models, keys, usage, and external MCP servers; user self-service usage view.
 - **MCP gateway:** built-in image analysis plus registered external MCP servers. Upstream MCP
-  credentials remain on the gateway.
+  credentials remain on the gateway. External tools can be assigned to groups, and a virtual key's
+  `metadata.group` restricts both `tools/list` and `tools/call`.
 - **Public-surface allowlist:** nginx exposes only the required application routes. LiteLLM's UI and
   management APIs return 404 through the public gateway.
 
@@ -66,7 +67,7 @@ required firewall rules for the selected edge mode. Standalone public deployment
 
 ```bash
 git clone https://github.com/shiliai/LLM-Portal.git
-cd LLM-Portal/execution/proto-remote-access/vps
+cd LLM-Portal/vps
 cp .env.example .env
 vi .env
 ./deploy.sh
@@ -93,13 +94,13 @@ curl https://llm-portal.example.com/v1/chat/completions \
   -d '{"model":"my-model","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-See the [operations runbook](execution/proto-remote-access/docs/runbook.md) for detailed deployment,
+See the [operations runbook](docs/runbook.md) for detailed deployment,
 site enrollment, acceptance records, maintenance, and recovery procedures.
 
 ## Edge modes and configuration
 
 All supported variables and generation instructions are in
-[`vps/.env.example`](execution/proto-remote-access/vps/.env.example).
+[`vps/.env.example`](vps/.env.example).
 
 - `EDGE_MODE=standalone` (default): the stack publishes ports 80/443 with `edge-nginx` and
   `edge-certbot`; no existing reverse proxy is required.
@@ -123,17 +124,18 @@ make compose-validate
 ```
 
 Browser E2E tests use Playwright and a mock LiteLLM server; see
-[`console/e2e/README.md`](execution/proto-remote-access/console/e2e/README.md). CI also runs a full-history
+[`console/e2e/README.md`](console/e2e/README.md). CI also runs a full-history
 Gitleaks scan and dependency audits in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## Repository layout
 
 | Path | Purpose |
 |------|---------|
-| `execution/proto-remote-access/` | MVP implementation, deployment assets, services, tools, and runbook |
-| `planning/03-core/` | Frozen product and prototype baselines |
-| `planning/02-working/` | Product and integration research |
-| `docs/superpowers/` | Designs and high-fidelity prototypes |
+| `vps/` | Compose, deployment/release/rollback scripts, nginx, LiteLLM, and WireGuard configuration |
+| `console/`, `onboardd/`, `mcp-hub/`, `compat/` | Runtime services, dependencies, and tests |
+| `site-tools/` | Site enrollment, inspection, and revocation commands |
+| `docs/` | Operator-facing documentation |
+| `tools/` | Compatibility experiments and diagnostics, excluded from runtime containers |
 
 ## Security boundary
 
@@ -148,16 +150,11 @@ Gitleaks scan and dependency audits in [`.github/workflows/ci.yml`](.github/work
   trust boundary; do not expose model ports outside that boundary.
 - Report vulnerabilities privately as described in [`SECURITY.md`](SECURITY.md), not in public issues.
 
-## Current limitations
+## Roadmap
 
-- No explicit active/standby ordering or failover event stream; routing currently uses least-busy
-  selection and failure cooldown.
-- No per-key or per-model system-prompt injection/replacement policy.
-- Cloud-provider upstreams have not been validated; current upstreams are private OpenAI-compatible
-  model servers reached through WireGuard.
-- Cache governance, content-optimization pipelines, and conversation storage are not implemented.
-  Prompt-cache passthrough works and cache-hit usage is visible.
-- Console state is single-host SQLite and the management plane is not highly available.
+Known limitations, near-term priorities, and longer-term directions are maintained in
+[`ROADMAP.md`](ROADMAP.md). Roadmap items describe intent; scope and scheduling are tracked in linked
+issues.
 
 ## Contributing and license
 

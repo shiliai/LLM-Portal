@@ -4,11 +4,10 @@
 
 面向**中小企业**的自部署统一 AI 网关（Unified AI Gateway）：在一台公网 VPS 上聚合散布于
 多个内网站点的私有推理模型，以 **OpenAI / Anthropic 兼容 API** 统一对外，并提供虚拟密钥、
-分组路由、用量计量与 Web 管理控制台。参考产品：token.love（见 `planning/02-working/`）。
+分组路由、用量计量与 Web 管理控制台。
 
-> **状态**：早期原型。`execution/proto-remote-access/` 为已上线的 MVP（多站点隧道 + 双协议
-> 入口 + 管理控制台）；需求基线为 `planning/03-core/user_story_baseline_r4.md`（已冻结），
-> 与基线的功能差距见下文「限制与路线图」。
+> **状态：Alpha。** 当前版本已用于实际部署，但接口、配置和升级流程在首个稳定版前仍可能调整。
+> 已知限制与后续方向见 [`ROADMAP.md`](ROADMAP.md)。
 
 ## 核心能力（MVP 已实现）
 
@@ -24,7 +23,8 @@
 - **用量计量**：按 Key / 模型 / 时间的 token、缓存命中、首 token 延迟、逐请求明细。
 - **管理控制台**：管理员邮箱+密码+TOTP 两步验证登录；站点/分组/模型/Key/用量/外部 MCP
   全图形化管理；用户凭虚拟 Key 查自己的用量。
-- **MCP 工具面**：内建图像理解工具 + 外部 MCP 代理注册（凭据不出网关）。
+- **MCP 工具面**：内建图像理解工具 + 外部 MCP 代理注册（凭据不出网关）；外部工具可绑定
+  一个或多个分组，由用户 Key 的 `metadata.group` 同时约束 `tools/list` 与 `tools/call`。
 - **公网收敛**：nginx allowlist——LiteLLM 管理面 `/ui`、管理 API 一律 404，仅暴露业务路径。
 
 ## 架构
@@ -54,7 +54,7 @@ standalone 模式另启 `edge-nginx` + `edge-certbot`。也可复用既有 nginx
 前置：一台公网 VPS（域名解析到位、放行 80/443/tcp 与 51820/udp）、docker 组权限用户。
 
 ```bash
-git clone https://github.com/shiliai/LLM-Portal.git && cd LLM-Portal/execution/proto-remote-access/vps
+git clone https://github.com/shiliai/LLM-Portal.git && cd LLM-Portal/vps
 cp .env.example .env && vi .env     # 填 LITELLM_MASTER_KEY / POSTGRES_PASSWORD / DOMAIN / ADMIN_* 等
 ./deploy.sh                         # 幂等：wg 引导 + compose + 证书 + nginx + 冒烟收敛自检
 ```
@@ -74,11 +74,11 @@ curl https://llm-portal.example.com/v1/chat/completions \
   -d '{"model":"my-model","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-详细部署步骤、验收表与故障处置见 `execution/proto-remote-access/docs/runbook.md`。
+详细部署步骤、验收表与故障处置见 [`docs/runbook.md`](docs/runbook.md)。
 
 ## 配置
 
-全部环境变量见 `execution/proto-remote-access/vps/.env.example`（真实值只放 `.env`，不入库）。
+全部环境变量见 [`vps/.env.example`](vps/.env.example)（真实值只放 `.env`，不入库）。
 要点：
 
 - `EDGE_MODE=standalone`（默认）：本栈自带 edge-nginx/edge-certbot 发布 80/443，全新 VPS
@@ -99,17 +99,18 @@ make compose-validate   # docker compose 配置校验
 ```
 
 console 浏览器 E2E（Playwright + mock LiteLLM，不依赖真实部署）：
-见 `execution/proto-remote-access/console/e2e/README.md`。CI（单测/语法/Compose 校验/
+见 [`console/e2e/README.md`](console/e2e/README.md)。CI（单测/语法/Compose 校验/
 secret 扫描/依赖审计）见 `.github/workflows/ci.yml`。
 
 ## 目录结构
 
 | 目录 | 内容 |
 |------|------|
-| `execution/proto-remote-access/` | MVP 实现：`vps/`（部署物）、`console/`、`onboardd/`、`mcp-hub/`、`compat/`、`site-tools/`、`docs/runbook.md` |
-| `planning/03-core/` | 需求与原型权威基线（r4 冻结；proto-r1~r6 原型基线） |
-| `planning/02-working/` | 提炼分析（token.love 规格、竞品分析等） |
-| `docs/superpowers/` | 设计稿与高保真原型 |
+| `vps/` | Compose、部署/发布/回滚脚本、nginx、LiteLLM 与 WireGuard 配置 |
+| `console/`、`onboardd/`、`mcp-hub/`、`compat/` | 自研服务、依赖与测试 |
+| `site-tools/` | 站点签发、查看和吊销命令 |
+| `docs/` | 面向部署者的运行手册 |
+| `tools/` | 兼容性实验与诊断工具，不进入运行时容器 |
 
 ## 安全边界（摘要）
 
@@ -122,16 +123,10 @@ secret 扫描/依赖审计）见 `.github/workflows/ci.yml`。
   暴露到站点局域网之外。
 - 漏洞报告与完整边界说明见 [`SECURITY.md`](SECURITY.md)。
 
-## 限制与路线图
+## 路线图
 
-当前为原型，相对 r4 基线的主要差距（详见基线文档）：
-
-- **主备容灾（US-04）**：仅有 least-busy 分流与故障冷却，无显式主备序列与切换事件流。
-- **System Prompt 策略（US-05）**：未实现按 Key/模型的注入/替换。
-- **多供应商**：上游当前假设为内网 OpenAI 兼容站点（经隧道），云厂商上游接入未验证。
-- **缓存治理 / 内容优化管道 / 对话保存（US-08/09/10）**：未实现（prompt cache 透传有效，
-  命中率在用量页可见）。
-- 控制台会话为单机 sqlite、管理面单实例，无 HA。
+当前限制、近期优先级和长期方向统一维护在 [`ROADMAP.md`](ROADMAP.md)。路线图用于说明方向，
+具体范围和排期以关联 issue 为准。
 
 ## 贡献与许可
 

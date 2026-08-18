@@ -49,7 +49,7 @@ body:
     id: edge-mode
     attributes:
       label: 部署模式
-      description: 对应 vps/.env 的 EDGE_MODE（详见 execution/proto-remote-access/docs/runbook.md）。
+      description: 对应 vps/.env 的 EDGE_MODE（详见 docs/runbook.md）。
       options:
         - standalone（本栈 edge-nginx + edge-certbot 发布 80/443）
         - external（注入既有 nginx 容器）

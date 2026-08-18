@@ -19,28 +19,28 @@ updates:
       prefix: "chore(deps)"
 
   - package-ecosystem: "pip"
-    directory: "/execution/proto-remote-access/console"
+    directory: "/console"
     schedule:
       interval: "weekly"
     commit-message:
       prefix: "chore(deps)"
 
   - package-ecosystem: "pip"
-    directory: "/execution/proto-remote-access/onboardd"
+    directory: "/onboardd"
     schedule:
       interval: "weekly"
     commit-message:
       prefix: "chore(deps)"
 
   - package-ecosystem: "pip"
-    directory: "/execution/proto-remote-access/mcp-hub"
+    directory: "/mcp-hub"
     schedule:
       interval: "weekly"
     commit-message:
       prefix: "chore(deps)"
 
   - package-ecosystem: "pip"
-    directory: "/execution/proto-remote-access/compat"
+    directory: "/compat"
     schedule:
       interval: "weekly"
     commit-message:
@@ -49,35 +49,35 @@ updates:
   # Docker 镜像基础镜像：五个含 Dockerfile 的目录
   # （compose 里的 litellm/postgres/nginx/certbot 镜像 tag 为手动固定，Dependabot 不覆盖 compose）
   - package-ecosystem: "docker"
-    directory: "/execution/proto-remote-access/console"
+    directory: "/console"
     schedule:
       interval: "weekly"
     commit-message:
       prefix: "chore(deps)"
 
   - package-ecosystem: "docker"
-    directory: "/execution/proto-remote-access/onboardd"
+    directory: "/onboardd"
     schedule:
       interval: "weekly"
     commit-message:
       prefix: "chore(deps)"
 
   - package-ecosystem: "docker"
-    directory: "/execution/proto-remote-access/mcp-hub"
+    directory: "/mcp-hub"
     schedule:
       interval: "weekly"
     commit-message:
       prefix: "chore(deps)"
 
   - package-ecosystem: "docker"
-    directory: "/execution/proto-remote-access/compat"
+    directory: "/compat"
     schedule:
       interval: "weekly"
     commit-message:
       prefix: "chore(deps)"
 
   - package-ecosystem: "docker"
-    directory: "/execution/proto-remote-access/vps/wireguard"
+    directory: "/vps/wireguard"
     schedule:
       interval: "weekly"
     commit-message:

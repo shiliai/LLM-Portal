@@ -4,8 +4,8 @@
 # 否则回退系统 python3——新环境先 `python3 -m venv .venv &&
 # .venv/bin/pip install -r requirements-dev.txt` 再 `make test PYTHON=.venv/bin/python`。
 
-PYTHON ?= $(shell test -x execution/proto-remote-access/console/e2e/.venv/bin/python \
-	&& echo execution/proto-remote-access/console/e2e/.venv/bin/python || echo python3)
+PYTHON ?= $(shell test -x console/e2e/.venv/bin/python \
+	&& echo console/e2e/.venv/bin/python || echo python3)
 
 .PHONY: test test-unit test-e2e compose-validate lint
 
@@ -18,8 +18,8 @@ test-unit:
 
 ## test-e2e：console 浏览器端到端（Playwright + mock LiteLLM，需真实浏览器，不进 CI）
 test-e2e:
-	@echo "== console E2E（真实浏览器，先装依赖：见 execution/proto-remote-access/console/e2e/README.md）=="
-	@echo "  cd execution/proto-remote-access/console/e2e"
+	@echo "== console E2E（真实浏览器，先装依赖：见 console/e2e/README.md）=="
+	@echo "  cd console/e2e"
 	@echo "  npm install && npx playwright install chromium   # 一次性"
 	@echo "  python3 mocklitellm.py &                         # 127.0.0.1:4100"
 	@echo "  env CONSOLE_PORT=8399 CONSOLE_DATA=/tmp/cdata LITELLM_BASE=http://127.0.0.1:4100 \\"
@@ -30,11 +30,11 @@ test-e2e:
 
 ## compose-validate：校验 vps/docker-compose.yml 语法与变量引用（不启动容器）
 compose-validate:
-	cd execution/proto-remote-access/vps && docker compose --env-file .env.example config --quiet
+	cd vps && docker compose --env-file .env.example config --quiet
 	@echo "compose config OK"
 
 ## lint：仓库内全部 .py 语法编译检查（py_compile）。
-## 范围 = git 追踪 + 未忽略的新文件（planning/ 外部代码、.venv、agent-compat/.tools 等均被排除）
+## 范围 = git 追踪 + 未忽略的新文件（本地 planning、.venv、工具缓存等均被排除）
 lint:
 	@set -e; \
 	files=$$(git ls-files --cached --others --exclude-standard -- '*.py'); \

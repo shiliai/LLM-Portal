@@ -1,28 +1,17 @@
 # 贡献指南（Contributing Guide）
 
-感谢参与 LLM-portal！本文档说明开发流程、代码风格与 PR 要求。项目定位与架构见根 [`README.md`](README.md)，部署与运维见 [`execution/proto-remote-access/docs/runbook.md`](execution/proto-remote-access/docs/runbook.md)。
+感谢参与 LLM-portal！本文档说明开发流程、代码风格与 PR 要求。项目定位与架构见根
+[`README.md`](README.md)，部署与运维见 [`docs/runbook.md`](docs/runbook.md)，公开方向见
+[`ROADMAP.md`](ROADMAP.md)。
 
 ## 开发流程
 
-### planning 三层工作流
+### Issue 与实现
 
-需求与设计资料按三层目录流转，**未落入 `planning/03-core/` 的内容一律视为未确认**：
-
-```
-planning/01-raw/       原始资料（外部代码库、原始文档；已 gitignore，不入库）
-        │  提炼
-        ▼
-planning/02-working/   已提炼资料，作为设计阶段的输入与讨论底稿
-        │  设计确认
-        ▼
-planning/03-core/      已确认的权威资料（需求基线 / 设计基线），开发阶段以此为准
-        │  执行
-        ▼
-execution/             开发执行产物（代码与实现，如 proto-remote-access）
-```
-
-- 需求基线只能通过「升版」演进：新版本在旧版本文本基础上追加批准记录，非本次修订的既有文本须逐字保留。
-- 新功能请先在 issue 中对齐，确认后再动代码；代码改动落在 `execution/` 对应子目录。
+- 新功能先开 issue，说明问题、期望行为、替代方案和安全影响；路线图条目不等于已承诺排期。
+- Bug 报告应包含可复现步骤、当前 commit、部署模式和经过脱敏的日志。
+- 获得方向确认后再提交实现 PR；一次 PR 聚焦一个可验证结果，避免混入无关重构。
+- 用户可见行为、部署方式或安全边界变化时，同步更新 README、runbook 或 `ROADMAP.md`。
 
 ### 分支与提交
 
@@ -42,7 +31,7 @@ execution/             开发执行产物（代码与实现，如 proto-remote-a
 根目录 Makefile 提供统一测试入口：
 
 ```bash
-make test    # 根目录 pytest：自动发现 execution/ 下的测试
+make test    # 根目录 pytest：自动发现各服务与部署工具测试
 ```
 
 也可直接 `python -m pytest`。CI（`.github/workflows/ci.yml`）在 push / PR 到 `main` 时运行同样的测试，外加语法编译、compose 配置校验、密钥扫描与依赖审计。
