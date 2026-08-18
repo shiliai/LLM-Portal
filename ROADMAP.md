@@ -1,52 +1,15 @@
-# LLM-Portal Roadmap
+# 路线图
 
-This roadmap distills the project's historical planning into a public, outcome-oriented view. It is
-not a release commitment: implementation scope and scheduling are decided in GitHub issues and pull
-requests.
+以下功能来自初始 Spec，当前 MVP 尚未实现：
 
-## Current foundation
-
-- OpenAI Chat Completions and Anthropic Messages gateways, including streaming and tool calls
-- Multi-site WireGuard enrollment and model routing with virtual-key group isolation
-- Web administration for sites, groups, models, keys, usage, and external MCP servers
-- Group-aware MCP tool discovery and invocation
-- Three edge modes: standalone TLS, integration with an existing nginx, and trusted-LAN TLS offload
-- Commit-bound release packages, checksums, deployment smoke tests, and rollback tooling
-
-## Now: stabilize the Alpha release
-
-- Keep installation, upgrade, and rollback workflows reproducible across all edge modes
-- Expand browser and deployment regression coverage around administrator and site-management flows
-- Improve diagnostics for routing failures, tunnel health, and external MCP availability
-- Turn accepted roadmap work into narrowly scoped public issues before implementation
-
-## Next: routing and policy controls
-
-- Explicit active/standby deployment order with observable failover events
-- Per-key and per-model system-prompt injection or replacement policies
-- Managed passthrough for OpenAI Responses-compatible upstreams
-- Cache governance: policy visibility, invalidation controls, and clearer hit-rate diagnostics
-- Broader validation of upstream providers beyond private OpenAI-compatible model servers
-
-## Later: data and availability
-
-- Optional, versioned content-optimization pipelines with auditable transformations
-- Opt-in conversation retention and a paginated export/query API
-- High-availability management services and alternatives to single-host SQLite state
-- Stronger isolation for deployments that require multiple administrative trust domains
-
-## Current limitations
-
-- Routing uses least-busy selection and failure cooldown, without an explicit active/standby sequence.
-- The gateway does not currently apply configurable system-prompt policies.
-- Conversation bodies are not retained; usage logs contain request metadata only.
-- The management plane is designed for a single gateway host and is not highly available.
-- Private model servers normally rely on the WireGuard and site-LAN trust boundary rather than their
-  own application authentication.
-
-## Non-goals for the current release line
-
-- A hosted multi-tenant SaaS control plane
-- Physical tenant isolation on a shared gateway host
-- Cross-protocol conversion for OpenAI Responses server-side conversation semantics
-- Support for undocumented or arbitrary invalid message roles
+- 通用 Provider 管理：注册本地或远程上游、托管上游凭据，并对远程地址执行 SSRF 与 DNS rebinding 防护。
+- 原生 Anthropic 上游：支持 OpenAI Chat Completions 到 Anthropic Messages 的反向协议转换。
+- 有序主备路由：为模型配置主上游和备选上游，并记录、展示故障切换事件。
+- System Prompt 策略：按 Key 或模型配置注入、追加和替换规则。
+- Key 配额与限流：按 Key 设置额度、请求速率和 token 速率限制。
+- 成本与 Prompt Cache 治理：配置模型价格，展示估算成本、缓存命中率和节省金额，并支持自动注入缓存断点。
+- 内容优化管道：按 Key 对工具输出执行 ANSI 剥离、重复行折叠和超大块截断，并展示优化前后的 token 差异。
+- 首次启动向导：在浏览器内完成管理员设置、首个上游、模型映射和 Key 发放。
+- OpenAI Responses API：受管透传 `/v1/responses`，包含鉴权、模型映射、流式工具调用和用量计量。
+- 对话数据保存与消费：按 Key 选择性保存正文，提供保留期清理、控制台查看、SSE 事件流和分页 REST 查询。
+- Anthropic 兼容模式控制：按 Key 切换兼容或严格模式，并在调用日志中记录脱敏的规范化事件。

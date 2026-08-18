@@ -7,7 +7,7 @@
 分组路由、用量计量与 Web 管理控制台。
 
 > **状态：Alpha。** 当前版本已用于实际部署，但接口、配置和升级流程在首个稳定版前仍可能调整。
-> 已知限制与后续方向见 [`ROADMAP.md`](ROADMAP.md)。
+> 初始 Spec 中尚未由 MVP 实现的功能见 [`ROADMAP.md`](ROADMAP.md)。
 
 ## 核心能力（MVP 已实现）
 
@@ -125,8 +125,8 @@ secret 扫描/依赖审计）见 `.github/workflows/ci.yml`。
 
 ## 路线图
 
-当前限制、近期优先级和长期方向统一维护在 [`ROADMAP.md`](ROADMAP.md)。路线图用于说明方向，
-具体范围和排期以关联 issue 为准。
+初始 Spec 中尚未由 MVP 实现的功能统一列在 [`ROADMAP.md`](ROADMAP.md)，具体范围和排期以
+关联 issue 为准。
 
 ## 贡献与许可
 

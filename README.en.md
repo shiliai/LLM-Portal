@@ -9,7 +9,7 @@ metering, and a web administration console.
 
 > **Status: Alpha.** The current version is used in real deployments, but APIs, configuration, and
 > upgrade procedures may still change before the first stable release. See [`ROADMAP.md`](ROADMAP.md)
-> for known limitations and planned work.
+> for features from the initial specification that are not yet implemented in the MVP.
 
 ## Implemented MVP features
 
@@ -152,9 +152,8 @@ Gitleaks scan and dependency audits in [`.github/workflows/ci.yml`](.github/work
 
 ## Roadmap
 
-Known limitations, near-term priorities, and longer-term directions are maintained in
-[`ROADMAP.md`](ROADMAP.md). Roadmap items describe intent; scope and scheduling are tracked in linked
-issues.
+Features from the initial specification that are not yet implemented in the MVP are listed in
+[`ROADMAP.md`](ROADMAP.md). Scope and scheduling are tracked in linked issues.
 
 ## Contributing and license
 
