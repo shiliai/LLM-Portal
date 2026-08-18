@@ -508,6 +508,9 @@ def test_pi_and_dsh_use_config_contracts():
     assert "contextWindow: 1048576" in source
     assert "maxTokens: 32768" in source
     assert "reasoningEfforts:" in source
+    assert "agent-default-model:" in source
+    assert "provider: private-llm" in source
+    assert "reasoningEffort: high" in source
     assert "thinkingFormat:" not in source
 
 

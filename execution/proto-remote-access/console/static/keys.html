@@ -403,18 +403,21 @@
   function keyVal() { return $('use-key').value.trim() || 'sk-（在此粘贴你的完整密钥）'; }
 
   function fillUse() {
-    var B = location.origin, K = keyVal(), q = function (s) { return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'; };
+    var B = location.origin, K = keyVal();
+    var q = function (s) { return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'; };
+    var shq = function (s) { return "'" + String(s).replace(/'/g, "'\"'\"'") + "'"; };
+    var psq = function (s) { return "'" + String(s).replace(/'/g, "''") + "'"; };
     $('cc-nix-term').textContent =
-      'export ANTHROPIC_BASE_URL=' + q(B) + '\n' +
-      'export ANTHROPIC_AUTH_TOKEN=' + q(K);
+      'export ANTHROPIC_BASE_URL=' + shq(B) + '\n' +
+      'export ANTHROPIC_AUTH_TOKEN=' + shq(K);
     $('cc-nix-json').textContent =
       '{\n  "env": {\n    "ANTHROPIC_BASE_URL": ' + JSON.stringify(B) + ',\n    "ANTHROPIC_AUTH_TOKEN": ' + JSON.stringify(K) + '\n  }\n}';
     $('cc-win-term').textContent =
-      '$env:ANTHROPIC_BASE_URL = ' + q(B) + '\n' +
-      '$env:ANTHROPIC_AUTH_TOKEN = ' + q(K);
+      '$env:ANTHROPIC_BASE_URL = ' + psq(B) + '\n' +
+      '$env:ANTHROPIC_AUTH_TOKEN = ' + psq(K);
     $('cc-win-json').textContent = $('cc-nix-json').textContent;
-    $('codex-nix-term').textContent = 'export PLL_API_KEY=' + q(K);
-    $('codex-win-term').textContent = '$env:PLL_API_KEY = ' + q(K);
+    $('codex-nix-term').textContent = 'export PLL_API_KEY=' + shq(K);
+    $('codex-win-term').textContent = '$env:PLL_API_KEY = ' + psq(K);
     var toml =
       'model = "deepseek-v4-flash-0731"          # 默认模型，可换任意对外模型名/别名\n' +
       'model_provider = "private-llm"\n\n' +
@@ -425,11 +428,11 @@
     $('codex-toml').textContent = toml;
     $('codex-win-toml').textContent = toml;
     $('oa-nix-term').textContent =
-      'export OPENAI_BASE_URL=' + q(B + '/v1') + '\n' +
-      'export OPENAI_API_KEY=' + q(K);
+      'export OPENAI_BASE_URL=' + shq(B + '/v1') + '\n' +
+      'export OPENAI_API_KEY=' + shq(K);
     $('oa-win-term').textContent =
-      '$env:OPENAI_BASE_URL = ' + q(B + '/v1') + '\n' +
-      '$env:OPENAI_API_KEY = ' + q(K);
+      '$env:OPENAI_BASE_URL = ' + psq(B + '/v1') + '\n' +
+      '$env:OPENAI_API_KEY = ' + psq(K);
     $('oa-py').textContent =
       'from openai import OpenAI\n\n' +
       'client = OpenAI(base_url=' + q(B + '/v1') + ', api_key=' + q(K) + ')\n' +
@@ -456,7 +459,11 @@
       '          maxTokens: 32768\n' +
       '          reasoningEfforts:\n' +
       '            high: high\n' +
-      '            max: max';
+      '            max: max\n' +
+      'agent-default-model:\n' +
+      '  provider: private-llm\n' +
+      '  model: deepseek-v4-flash-0731\n' +
+      '  reasoningEffort: high';
     $('pi-json').textContent = JSON.stringify({
       providers: {
         'private-llm': {

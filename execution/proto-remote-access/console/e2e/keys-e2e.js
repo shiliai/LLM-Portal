@@ -169,6 +169,15 @@ const AUTOFILL_EMAIL = ['autofill', 'example.com'].join('@');
     await page.locator(`.pf-tabs > .pf-tab:has-text("${tab}")`).first().click();
     await page.waitForTimeout(150);
   }
+  const adversarialKey = "sk-$(printf INJECTED)'tail";
+  await page.fill('#use-key', adversarialKey);
+  const posixExport = await page.locator('#codex-nix-term').textContent();
+  const powershellExport = await page.locator('#codex-win-term').textContent();
+  if (posixExport !== `export PLL_API_KEY='sk-$(printf INJECTED)'\"'\"'tail'`
+      || powershellExport !== `$env:PLL_API_KEY = 'sk-$(printf INJECTED)''tail'`) {
+    console.error('ASSERT FAIL: shell 配置必须把粘贴内容序列化为纯字符串'); process.exitCode = 1;
+  }
+  await page.fill('#use-key', fullKey.trim());
   const piJson = JSON.parse(await page.locator('#pi-json').textContent());
   const piSettings = JSON.parse(await page.locator('#pi-settings-json').textContent());
   const piProvider = piJson.providers['private-llm'];
@@ -205,6 +214,7 @@ const AUTOFILL_EMAIL = ['autofill', 'example.com'].join('@');
     dshSettings.includes('contextWindow: 1048576'),
     dshSettings.includes('maxTokens: 32768'),
     dshSettings.includes('reasoningEfforts:\n            high: high\n            max: max'),
+    dshSettings.includes('agent-default-model:\n  provider: private-llm\n  model: deepseek-v4-flash-0731\n  reasoningEffort: high'),
     !dshSettings.includes('thinkingFormat:')
   ];
   console.log('dsh config checks:', dshChecks);
