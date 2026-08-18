@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -78,7 +79,15 @@ def test_release_package_binds_commit_and_has_file_inventory(tmp_path):
     subprocess.run([str(HERE / "release-package.sh"), commit, str(tmp_path)],
                    cwd=root, check=True)
     assert (tmp_path / f"private-llm-{commit}.commit").read_text().strip() == commit
-    assert (tmp_path / f"private-llm-{commit}.tar.sha256").stat().st_size > 64
+    checksum = tmp_path / f"private-llm-{commit}.tar.sha256"
+    assert checksum.read_text().split()[1] == f"private-llm-{commit}.tar"
     inventory = (tmp_path / f"private-llm-{commit}.files.sha256").read_text()
     assert "./console/console.py" in inventory
     assert "vps/.env\n" not in inventory
+
+    relocated = tmp_path / "relocated"
+    relocated.mkdir()
+    shutil.copy2(tmp_path / f"private-llm-{commit}.tar", relocated)
+    shutil.copy2(checksum, relocated)
+    subprocess.run(["shasum", "-a", "256", "-c", checksum.name],
+                   cwd=relocated, check=True)

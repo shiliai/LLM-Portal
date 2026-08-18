@@ -17,6 +17,7 @@ tar -xf "$OUT/private-llm-$COMMIT.tar" -C "$TMP"
   cd "$TMP/execution/proto-remote-access"
   find . -type f -print0 | LC_ALL=C sort -z | xargs -0 shasum -a 256
 ) > "$OUT/private-llm-$COMMIT.files.sha256"
-shasum -a 256 "$OUT/private-llm-$COMMIT.tar" > "$OUT/private-llm-$COMMIT.tar.sha256"
+(cd "$OUT" && shasum -a 256 "private-llm-$COMMIT.tar" \
+  > "private-llm-$COMMIT.tar.sha256")
 printf '%s\n' "$COMMIT" > "$OUT/private-llm-$COMMIT.commit"
 echo "$OUT/private-llm-$COMMIT.tar"
