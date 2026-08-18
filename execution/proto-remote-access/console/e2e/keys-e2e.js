@@ -196,6 +196,7 @@ const AUTOFILL_EMAIL = ['autofill', 'example.com'].join('@');
       || !piProvider.baseUrl.endsWith('/v1')
       || piProvider.api !== 'openai-completions'
       || piProvider.compat.supportsReasoningEffort !== true
+      || piProvider.compat.requiresReasoningContentOnAssistantMessages !== true
       || piModel.reasoning !== true
       || JSON.stringify(piLevels) !== JSON.stringify(['high', 'max'])
       || piSettings.defaultProvider !== 'private-llm'

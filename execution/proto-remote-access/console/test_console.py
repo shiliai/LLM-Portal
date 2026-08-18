@@ -496,6 +496,7 @@ def test_pi_and_dsh_use_config_contracts():
     assert "pi-settings-json" in source
     assert "api: 'openai-completions'" in source
     assert "supportsReasoningEffort: true" in source
+    assert "requiresReasoningContentOnAssistantMessages: true" in source
     assert "defaultThinkingLevel: 'high'" in source
     for level in ("off", "minimal", "low", "medium", "xhigh"):
         assert f"{level}: null" in source
