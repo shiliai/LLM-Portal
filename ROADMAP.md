@@ -5,6 +5,7 @@
 - 通用 Provider 管理：注册本地或远程上游、托管上游凭据，并对远程地址执行 SSRF 与 DNS rebinding 防护。
 - 原生 Anthropic 上游：支持 OpenAI Chat Completions 到 Anthropic Messages 的反向协议转换。
 - 有序主备路由：为模型配置主上游和备选上游，并记录、展示故障切换事件。
+- Provider 并发限制：按私有节点算力配置最大并发，只向有空余容量的节点路由；全部可用节点达到上限时返回 `429 Too Many Requests` 和 `Retry-After`，通知客户端稍后重试。
 - System Prompt 策略：按 Key 或模型配置注入、追加和替换规则。
 - Key 配额与限流：按 Key 设置额度、请求速率和 token 速率限制。
 - 成本与 Prompt Cache 治理：配置模型价格，展示估算成本、缓存命中率和节省金额，并支持自动注入缓存断点。
