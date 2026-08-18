@@ -53,6 +53,7 @@ body:
       options:
         - standalone（本栈 edge-nginx + edge-certbot 发布 80/443）
         - external（注入既有 nginx 容器）
+        - offload（上游设备终结 TLS，本栈 HTTP-only edge 发布 80）
         - 未部署 / 只跑测试
         - 其他 / 不确定
     validations:

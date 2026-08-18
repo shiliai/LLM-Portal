@@ -6,7 +6,7 @@
 
 | 版本 | 支持状态 |
 |------|----------|
-| `main` 分支（开源首个发布） | ✅ 支持 |
+| 最新 `main` 分支 | ✅ 支持 |
 | 旧Tag/历史提交 | ❌ 不支持，请先升级到最新 `main` 再报告 |
 
 ## 报告漏洞
@@ -37,14 +37,14 @@
 |------|----------|------|
 | console / onboardd | **高（≈宿主机 root）** | 挂载 `/var/run/docker.sock`：console 经 `docker exec` 管理 WireGuard peer、`docker restart` 重启 mcp-hub；onboardd 经 `docker exec` 管理 wg0。**有意取舍**：这两个容器本身就是管理员权限面（会话鉴权 / admin token），挂 sock 仅限这两个管理面容器 |
 | compat | 低 | 无状态、不落盘、非 root（UID 10001）、不持任何密钥（鉴权头原样透传，鉴权/路由/记账仍归 LiteLLM） |
-| litellm | 中 | 端口仅发布到 `127.0.0.1:4000`；master key 经 env 注入，公网无任何接受 master key 的端点 |
+| litellm | 中 | 端口仅发布到 `127.0.0.1:4000`；master key 经 env 注入。配置 `ADMIN_EMAIL` 后外部入口不接受 master key；留空时 console 保留旧版网页登录回退 |
 | postgres | 低 | 仅 compose 内网互通，无端口发布 |
 | mcp-hub | 低 | 状态落宿主机 bind mount；不挂 docker.sock |
 | wireguard sidecar | 高（NET_ADMIN） | host 网络 + NET_ADMIN 用于创建 wg0 接口；不挂 docker.sock |
 
 ### 网关凭据模型（三层）
 
-1. **master key**（`LITELLM_MASTER_KEY`）：LiteLLM 管理密钥，r6 起公网收敛后**仅服务端内部与回环使用**（onboardd/consoled 调 LiteLLM、本机 CLI、`ssh -L 4000:127.0.0.1:4000` 应急通道）；控制台管理员登录走独立的邮箱+密码+2FA 页面，不接受 master key。
+1. **master key**（`LITELLM_MASTER_KEY`）：LiteLLM 管理密钥。配置 `ADMIN_EMAIL` 后仅服务端内部与回环使用（onboardd/consoled 调 LiteLLM、本机 CLI、`ssh -L 4000:127.0.0.1:4000` 应急通道），控制台管理员登录走独立的邮箱+密码+2FA 页面。若 `ADMIN_EMAIL` 留空，控制台为兼容旧部署仍允许 master key 网页登录；生产部署必须配置 `ADMIN_EMAIL` 与 `ADMIN_PASSWORD` 关闭该回退。
 2. **用户虚拟 Key**：管理员在控制台签发给业务方/用户的 LiteLLM 虚拟 Key，用于 `/v1/*` API 鉴权、限额与记账；用户 Key 永不出网关（mcp-hub 只用它调 `/key/info` 与回环 LiteLLM）。
 3. **Key 明文保险库**：为满足「管理员可再查明文 Key」需求，consoled 在创建 Key 时把明文 **Fernet 加密**落盘到 `/var/lib/private-llm/console/keyvault.db`（密钥文件 `keyvault.key` 0600，独立于密文），仅管理员经 `POST /console/api/keys/reveal` 解密取回。
 
@@ -54,7 +54,7 @@ nginx（`vps/nginx/private-llm.conf`）按 allowlist 分发，**其余路径一�
 
 - 允许：`/`（网关主页）、`/v1/*`（双协议 API；三条 compat 路径精确匹配接管）、`/key/info`（用户自查）、`/health/liveliness`、`/mcp*`、`/onboard/install|register|confirm`、`/console`；
 - 拦截（404）：LiteLLM `/ui`、`/login`、`/sso`、`/openapi.json`、`/redoc`、`/key/generate` 等全部管理 API、`/onboard/admin/*`；
-- 所有容器服务端口仅发布到 `127.0.0.1`（4000/8100/8200/8300/8400），公网只开 80/443/tcp 与 51820/udp（WireGuard）。
+- 所有核心业务容器端口仅发布到 `127.0.0.1`（4000/8100/8200/8300/8400）。standalone 模式对公网发布 80/443/tcp 与 51820/udp；external 复用既有 nginx 入口；offload 的 HTTP 80 只应由受信 LAN 上游访问，TLS 在上游终结。
 
 ### 已知取舍（明确声明，非漏洞）
 
@@ -68,7 +68,7 @@ nginx（`vps/nginx/private-llm.conf`）按 allowlist 分发，**其余路径一�
 
 按 `execution/proto-remote-access/docs/runbook.md` 部署时，逐项确认：
 
-1. **防火墙 / 云安全组**：仅放行 `80/tcp`、`443/tcp`、`51820/udp`（WireGuard）与 SSH（建议限源 IP）；其余一律拒绝。云安全组与主机 ufw 两层都要查——WireGuard 端口漏放会导致隧道不通（历史踩坑见 runbook §1）。
+1. **防火墙 / 云安全组**：standalone 仅放行 `80/tcp`、`443/tcp`、`51820/udp`（WireGuard）与 SSH（建议限源 IP）；external 按既有入口收敛；offload 的 `80/tcp` 必须限源到受信 LAN 上游设备。其余一律拒绝。云安全组与主机 ufw 两层都要查——WireGuard 端口漏放会导致隧道不通（历史踩坑见 runbook §1）。
 2. **强凭据生成**：复制 `vps/.env.example` 为 `.env` 后，全部 `REPLACE_ME` 用随机值替换（**禁止**使用示例值/弱口令）：
    ```bash
    openssl rand -hex 16 | sed 's/^/sk-/'   # LITELLM_MASTER_KEY（LiteLLM 要求 sk- 前缀）
@@ -77,7 +77,7 @@ nginx（`vps/nginx/private-llm.conf`）按 allowlist 分发，**其余路径一�
    openssl rand -base64 18                  # ADMIN_PASSWORD（管理员初始密码）
    ```
    `.env` 文件权限 0600、不入库（已 gitignore）。
-3. **管理员 2FA**：部署后在 `/console/2fa.html` 扫码启用 TOTP（或预置 `.env` 的 `ADMIN_TOTP_SECRET`，生成方式见 `.env.example`）；master key 不再作为网页登录方式（配置 `ADMIN_EMAIL` 后自动生效）。
+3. **管理员登录与 2FA**：必须配置 `ADMIN_EMAIL` 与 `ADMIN_PASSWORD`，确认 master key 网页登录兼容路径已关闭；随后在 `/console/2fa.html` 扫码启用 TOTP（或预置 `.env` 的 `ADMIN_TOTP_SECRET`，生成方式见 `.env.example`）。
 4. **公网收敛自检**：`deploy.sh` 步骤 7b 自动执行；手动复查（无 `!!` 输出即通过）：
    ```bash
    for path in /ui /login /sso /openapi.json /key/generate /onboard/admin/list /spend/logs /team/list; do

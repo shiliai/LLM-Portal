@@ -1,5 +1,7 @@
 # LLM-portal
 
+[English](README.en.md) | **中文**
+
 面向**中小企业**的自部署统一 AI 网关（Unified AI Gateway）：在一台公网 VPS 上聚合散布于
 多个内网站点的私有推理模型，以 **OpenAI / Anthropic 兼容 API** 统一对外，并提供虚拟密钥、
 分组路由、用量计量与 Web 管理控制台。参考产品：token.love（见 `planning/02-working/`）。
@@ -42,9 +44,10 @@
                                           └───────────────────────────────────────────────────────────┘
 ```
 
-七个 compose 服务：`litellm`（路由/鉴权/记账，仅回环发布）、`compat`（协议兼容层，非 root）、
+七个核心 compose 服务：`litellm`（路由/鉴权/记账，仅回环发布）、`compat`（协议兼容层，非 root）、
 `postgres`、`mcp-hub`、`onboardd`（站点注册）、`console`（管理面）、`wireguard` sidecar；
-对外入口 `edge-nginx` + `edge-certbot`（standalone 模式，或复用既有 nginx 容器）。
+standalone 模式另启 `edge-nginx` + `edge-certbot`。也可复用既有 nginx（external），或由局域网
+上游设备终结 TLS、仅启 HTTP edge-nginx（offload）。
 
 ## 快速开始
 
@@ -80,9 +83,10 @@ curl https://llm-portal.example.com/v1/chat/completions \
 
 - `EDGE_MODE=standalone`（默认）：本栈自带 edge-nginx/edge-certbot 发布 80/443，全新 VPS
   零依赖；`external`：复用既有 nginx 容器（另设 `EDGE_NGINX_CONTAINER` / `NGINX_CONF_DIR` /
-  `CERTBOT_DIR`）。
-- `LITELLM_MASTER_KEY` 仅管理用途（公网无接受它的端点）；网页管理走 `ADMIN_EMAIL` /
-  `ADMIN_PASSWORD` + 可选 TOTP 两步验证。
+  `CERTBOT_DIR`）；`offload`：上游设备终结 TLS，本栈只发布 HTTP 80，需同步设置 `PUBLIC_BASE`
+  与 WireGuard 直连地址 `WG_ENDPOINT_HOST`。
+- `LITELLM_MASTER_KEY` 仅用于管理；生产环境必须配置 `ADMIN_EMAIL` / `ADMIN_PASSWORD`，使网页
+  管理改走独立账号 + 可选 TOTP，并关闭旧版 master key 网页登录兼容路径。
 - WireGuard：`WG_PORT` / `WG_SUBNET` / `WG_VPS_IP`，站点侧模板见 `vps/wireguard/`。
 
 ## 测试与开发
@@ -111,7 +115,8 @@ secret 扫描/依赖审计）见 `.github/workflows/ci.yml`。
 
 - console / onboardd 挂载 docker.sock（≈宿主机 root）——管理面有意取舍，详见 `SECURITY.md`；
   compat 无状态非 root 运行。
-- 密钥模型：master key 仅回环；用户虚拟 Key 明文只在签发时返回一次（加密保险库可再查）；
+- 密钥模型：配置 `ADMIN_EMAIL` 后 master key 仅回环；若留空会启用旧版 master key 网页登录兼容
+  模式，因此生产部署必须配置管理员邮箱和密码。用户虚拟 Key 明文只在签发时返回一次（加密保险库可再查）；
   会话库只存哈希。
 - 上游模型服务在隧道内网且默认无鉴权——**安全边界是 WireGuard 隧道**，请勿将上游端口
   暴露到站点局域网之外。
