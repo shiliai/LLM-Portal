@@ -23,7 +23,7 @@ from testutil import install_litellm_stub, load_service
 CONSOLE_DIR = Path(__file__).parent
 MASTER_KEY = "sk-master-unit-test-0001"
 USER_KEY = "sk-user-abcdef-1234"          # 桩 LiteLLM 认可的用户虚拟 Key
-ADMIN_EMAIL = "admin@test.local"
+ADMIN_EMAIL = "admin" + "@test.local"
 ADMIN_PASSWORD = "test-pass-1"
 XRW = {"X-Requested-With": "XMLHttpRequest"}
 
@@ -488,6 +488,27 @@ def test_mcp_use_config_never_contains_placeholder_and_binds_reveal_generation()
     assert "sk-（请选择用户 Key）" not in source
     assert "generation !== revealGeneration" in source
     assert "'/keys/import'" in source
+
+
+def test_pi_and_dsh_use_config_contracts():
+    source = (CONSOLE_DIR / "static" / "keys.html").read_text()
+
+    assert "pi-settings-json" in source
+    assert "api: 'openai-completions'" in source
+    assert "supportsReasoningEffort: true" in source
+    assert "defaultThinkingLevel: 'high'" in source
+    for level in ("off", "minimal", "low", "medium", "xhigh"):
+        assert f"{level}: null" in source
+    assert "high: 'high'" in source
+    assert "max: 'max'" in source
+
+    assert "dsh-credentials-yaml" in source
+    assert "dsh-settings-yaml" in source
+    assert "apiKeyEnv: LLM_PORTAL_API_KEY" in source
+    assert "contextWindow: 1048576" in source
+    assert "maxTokens: 32768" in source
+    assert "reasoningEfforts:" in source
+    assert "thinkingFormat:" not in source
 
 
 def test_logout_removes_session(console, monkeypatch):

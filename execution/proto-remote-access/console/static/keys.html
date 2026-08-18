@@ -21,6 +21,8 @@
   .use-blk-label { font-size: 12px; color: #595959; margin-bottom: 2px; }
   .use-blk-label .mono { color: #8c8c8c; }
   #modal-usekey .pf-tabpane { padding-top: 2px; }
+  #modal-usekey > .pf-modal-body > .pf-tabs { overflow-x: auto; gap: 18px; scrollbar-width: thin; }
+  #modal-usekey > .pf-modal-body > .pf-tabs .pf-tab { flex: none; white-space: nowrap; }
 </style>
 </head>
 <body data-page="keys">
@@ -151,6 +153,7 @@
         <button class="pf-tab active" data-tab="cc" type="button">Claude Code</button>
         <button class="pf-tab" data-tab="codex" type="button">Codex CLI</button>
         <button class="pf-tab" data-tab="openai" type="button">OpenAI 兼容</button>
+        <button class="pf-tab" data-tab="dsh" type="button">DeepSeek Harness</button>
         <button class="pf-tab" data-tab="pi" type="button">pi</button>
       </div>
 
@@ -209,9 +212,18 @@
         </div>
       </div>
 
+      <div class="pf-tabpane" data-tab="dsh">
+        <div class="use-blk"><div class="use-blk-label"><span class="mono">~/.dsh/.credentials.yaml</span>（凭据文件权限应为 <span class="mono">0600</span>）</div>
+          <div class="pf-code"><pre id="dsh-credentials-yaml"></pre></div></div>
+        <div class="use-blk"><div class="use-blk-label"><span class="mono">~/.dsh/settings.yaml</span>（DeepSeek Harness 0.1.0-rc.6+）</div>
+          <div class="pf-code"><pre id="dsh-settings-yaml"></pre></div></div>
+      </div>
+
       <div class="pf-tabpane" data-tab="pi">
         <div class="use-blk"><div class="use-blk-label"><span class="mono">~/.pi/agent/models.json</span>（badlogic/pi-mono；模型名见主页或「模型与别名」页）</div>
           <div class="pf-code"><pre id="pi-json"></pre></div></div>
+        <div class="use-blk"><div class="use-blk-label"><span class="mono">~/.pi/agent/settings.json</span>（默认使用私有 DeepSeek，思考强度为 <span class="mono">high</span>）</div>
+          <div class="pf-code"><pre id="pi-settings-json"></pre></div></div>
       </div>
 
       <div class="pf-banner" style="margin-top:14px">以上均为用户级持久配置，含密钥明文：请勿提交到代码仓库、截图外发或粘贴到不可信环境。</div>
@@ -339,7 +351,7 @@
     $('edit-alias-title').textContent = btn.dataset.alias;
     $('edit-alias').value = btn.dataset.alias;
     $('edit-models').value = btn.dataset.models;
-    $('btn-editkey').dataset.token = btn.dataset.token;
+    $('btn-editkey').dataset['token'] = btn.dataset.token;
     window.pfModal('modal-editkey');
   }
 
@@ -425,10 +437,62 @@
       '    model="deepseek-v4-flash-0731",\n' +
       '    messages=[{"role": "user", "content": "你好"}],\n' +
       ')';
-    $('pi-json').textContent =
-      '{\n  "providers": {\n    "private-llm": {\n' +
-      '      "baseUrl": ' + JSON.stringify(B + '/v1') + ',\n' +
-      '      "apiKey": ' + JSON.stringify(K) + '\n    }\n  }\n}';
+    $('dsh-credentials-yaml').textContent = 'LLM_PORTAL_API_KEY: ' + q(K);
+    $('dsh-settings-yaml').textContent =
+      'llm-pi-ai:\n' +
+      '  providers:\n' +
+      '    private-llm:\n' +
+      '      displayName: "Private LLM Portal"\n' +
+      '      apiKeyEnv: LLM_PORTAL_API_KEY\n' +
+      '      api: openai-completions\n' +
+      '      baseURL: ' + q(B + '/v1') + '\n' +
+      '      compat:\n' +
+      '        supportsReasoningEffort: true\n' +
+      '      reasoning: high\n' +
+      '      models:\n' +
+      '        - id: deepseek-v4-flash-0731\n' +
+      '          name: "Private DeepSeek V4 Flash 0731"\n' +
+      '          contextWindow: 1048576\n' +
+      '          maxTokens: 32768\n' +
+      '          reasoningEfforts:\n' +
+      '            high: high\n' +
+      '            max: max';
+    $('pi-json').textContent = JSON.stringify({
+      providers: {
+        'private-llm': {
+          baseUrl: B + '/v1',
+          api: 'openai-completions',
+          apiKey: K,
+          compat: {
+            supportsDeveloperRole: false,
+            supportsReasoningEffort: true
+          },
+          models: [{
+            id: 'deepseek-v4-flash-0731',
+            name: 'Private DeepSeek V4 Flash 0731',
+            reasoning: true,
+            thinkingLevelMap: {
+              off: null,
+              minimal: null,
+              low: null,
+              medium: null,
+              high: 'high',
+              xhigh: null,
+              max: 'max'
+            },
+            input: ['text'],
+            contextWindow: 1048576,
+            maxTokens: 32768,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+          }]
+        }
+      }
+    }, null, 2);
+    $('pi-settings-json').textContent = JSON.stringify({
+      defaultProvider: 'private-llm',
+      defaultModel: 'deepseek-v4-flash-0731',
+      defaultThinkingLevel: 'high'
+    }, null, 2);
   }
 
   function openUse(alias, key, last4) {

@@ -145,7 +145,8 @@ install.sh 在站点侧：装 wireguard-tools → `wg genkey`（私钥不出机�
 |---|---|
 | OpenAI SDK | `base_url=https://llm-portal.example.com/v1`，model 直选 `deepseek-v4-flash-0731` / `qwen3.6-35b-fp8`（或别名 `claude-opus-5`、`qwen3.6-35b-a3`） |
 | Claude Code | `ANTHROPIC_BASE_URL=https://llm-portal.example.com`，`ANTHROPIC_AUTH_TOKEN=sk-…`，默认模型名 `claude-opus-5`（别名已配） |
-| Pi（badlogic/pi-mono） | `pi` 设置里 provider：baseUrl `https://llm-portal.example.com/v1`，apiKey `sk-…`，model 填对外名；MCP 需先 `pi install npm:pi-mcp-adapter` |
+| Pi（badlogic/pi-mono） | 控制台 Key「使用」→ Pi 可复制完整 `models.json` + `settings.json`；私有 DeepSeek 显式配置 1M 上下文、默认 `high`，仅开放 `high/max` effort；MCP 需先 `pi install npm:pi-mcp-adapter` |
+| DeepSeek Harness（dsh） | 控制台 Key「使用」→ DeepSeek Harness 可复制 `~/.dsh/.credentials.yaml` + `~/.dsh/settings.yaml`；通过内置 `dsh-llm-pi-ai` 的 `llm-pi-ai` settings 分节注册 Portal 自定义路由，显式配置 1M 上下文、默认 `high`，仅开放 `high/max` effort |
 | MCP 客户端（Streamable HTTP + Bearer） | URL `https://llm-portal.example.com/mcp`，头 `Authorization: Bearer sk-…`；工具名 `[a-z0-9_]`（`analyze_image`、外部 MCP 前缀如 `zhipu_*`） |
 
 本地图片两步式：`POST /mcp/upload`（multipart `file=`，同一 Key）→ 得临时 URL（30min）→ `analyze_image(url, 问题)`。

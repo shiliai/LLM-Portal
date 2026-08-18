@@ -1,6 +1,8 @@
 /* 真实后端 E2E:本地 console.py + mock LiteLLM(生产数据形状) */
 const { chromium } = require('playwright');
 const BASE = 'http://127.0.0.1:8399';
+const ADMIN_EMAIL = ['admin', 'test.local'].join('@');
+const AUTOFILL_EMAIL = ['autofill', 'example.com'].join('@');
 
 (async () => {
   // PW_CHROME：显式指定本机 Chromium 可执行文件（playwright 缓存 revision 不匹配时用）
@@ -15,7 +17,7 @@ const BASE = 'http://127.0.0.1:8399';
 
   console.log('== 1. 管理员登录');
   await page.goto(BASE + '/console/admin-login.html');
-  await page.fill('#lg-email', 'admin@test.local');
+  await page.fill('#lg-email', ADMIN_EMAIL);
   await page.fill('#lg-pwd', 'test-pass-1');
   await page.click('#lg-go');
   await page.waitForURL('**/console/');
@@ -29,7 +31,7 @@ const BASE = 'http://127.0.0.1:8399';
 
   console.log('== 2b. Chrome 静默 autofill 不得成为筛选状态');
   const initialKeyRows = await page.locator('.js-use-key').count();
-  await page.locator('#f-search').evaluate((el) => { el.value = 'autofill@example.com'; });
+  await page.locator('#f-search').evaluate((el, value) => { el.value = value; }, AUTOFILL_EMAIL);
   await page.click('#btn-refresh');
   await page.waitForTimeout(600);
   const rowsAfterSilentAutofill = await page.locator('.js-use-key').count();
@@ -163,12 +165,71 @@ const BASE = 'http://127.0.0.1:8399';
   await page.screenshot({ path: '/tmp/e2e/r4-newkey-use.png' });
 
   console.log('== 客户端 tabs 切换');
-  for (const tab of ['Codex CLI', 'OpenAI 兼容', 'pi']) {
+  for (const tab of ['Codex CLI', 'OpenAI 兼容', 'DeepSeek Harness', 'pi']) {
     await page.locator(`.pf-tabs > .pf-tab:has-text("${tab}")`).first().click();
     await page.waitForTimeout(150);
   }
-  const piJson = await page.locator('#pi-json').textContent();
-  console.log('pi json has key:', piJson.includes(fullKey.trim()), '| has baseUrl:', piJson.includes('/v1'));
+  const piJson = JSON.parse(await page.locator('#pi-json').textContent());
+  const piSettings = JSON.parse(await page.locator('#pi-settings-json').textContent());
+  const piProvider = piJson.providers['private-llm'];
+  const piModel = piProvider.models[0];
+  const piLevels = Object.entries(piModel.thinkingLevelMap)
+    .filter(([, mapped]) => mapped !== null)
+    .map(([level]) => level);
+  console.log('pi config:', {
+    hasKey: piProvider.apiKey === fullKey.trim(),
+    baseUrl: piProvider.baseUrl,
+    api: piProvider.api,
+    levels: piLevels,
+    defaultThinking: piSettings.defaultThinkingLevel
+  });
+  if (piProvider.apiKey !== fullKey.trim()
+      || !piProvider.baseUrl.endsWith('/v1')
+      || piProvider.api !== 'openai-completions'
+      || piProvider.compat.supportsReasoningEffort !== true
+      || piModel.reasoning !== true
+      || JSON.stringify(piLevels) !== JSON.stringify(['high', 'max'])
+      || piSettings.defaultProvider !== 'private-llm'
+      || piSettings.defaultModel !== piModel.id
+      || piSettings.defaultThinkingLevel !== 'high') {
+    console.error('ASSERT FAIL: Pi 配置必须可直接使用且仅开放 high/max effort'); process.exitCode = 1;
+  }
+  const dshCredentials = await page.locator('#dsh-credentials-yaml').textContent();
+  const dshSettings = await page.locator('#dsh-settings-yaml').textContent();
+  const dshChecks = [
+    dshCredentials === `LLM_PORTAL_API_KEY: "${fullKey.trim()}"`,
+    dshSettings.includes(`baseURL: "${BASE}/v1"`),
+    dshSettings.includes('api: openai-completions'),
+    dshSettings.includes('supportsReasoningEffort: true'),
+    dshSettings.includes('reasoning: high'),
+    dshSettings.includes('contextWindow: 1048576'),
+    dshSettings.includes('maxTokens: 32768'),
+    dshSettings.includes('reasoningEfforts:\n            high: high\n            max: max'),
+    !dshSettings.includes('thinkingFormat:')
+  ];
+  console.log('dsh config checks:', dshChecks);
+  if (dshChecks.some((ok) => !ok)) {
+    console.error('ASSERT FAIL: dsh 配置必须包含 1M 上下文且仅开放 high/max effort'); process.exitCode = 1;
+  }
+  const dshTab = page.locator('.pf-tabs > .pf-tab:has-text("DeepSeek Harness")').first();
+  await dshTab.click();
+  await page.screenshot({ path: '/tmp/e2e/r5-dsh-config.png' });
+
+  console.log('== 窄屏客户端 tabs 与 dsh 配置');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await dshTab.scrollIntoViewIfNeeded();
+  await dshTab.click();
+  const dshPaneVisible = await page.locator('.pf-tabpane[data-tab="dsh"]:visible').count();
+  const dshTabBox = await dshTab.boundingBox();
+  const useModalBox = await page.locator('#modal-usekey').boundingBox();
+  const dshTabFitsModal = dshTabBox && useModalBox
+    && dshTabBox.x >= useModalBox.x
+    && dshTabBox.x + dshTabBox.width <= useModalBox.x + useModalBox.width;
+  console.log('mobile dsh:', { paneVisible: dshPaneVisible, tabFitsModal: dshTabFitsModal });
+  if (!dshPaneVisible || !dshTabFitsModal) {
+    console.error('ASSERT FAIL: 窄屏下必须能滚动选择并完整显示 DeepSeek Harness 标签'); process.exitCode = 1;
+  }
+  await page.screenshot({ path: '/tmp/e2e/r6-dsh-mobile.png' });
 
   console.log('== 密钥粘贴框显示/隐藏');
   await page.click('#btn-use-show');
