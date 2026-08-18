@@ -180,6 +180,7 @@
                autocomplete="off" autocapitalize="none" spellcheck="false" data-lpignore="true" data-1p-ignore
                placeholder="选择用户 Key 后自动从保险库取回">
         <button class="pf-btn" id="btn-mcp-use-show" type="button" title="显示或隐藏密钥">显示</button>
+        <button class="pf-btn primary" id="btn-mcp-use-import" type="button" hidden>校验并保存</button>
       </div>
       <div class="pf-desc" id="mcp-use-key-note" style="margin-top:-8px;margin-bottom:12px"></div>
 
@@ -212,6 +213,7 @@
 <script>
 (function () {
   'use strict';
+  var revealGeneration = 0;
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function fmtN(n) { return Number(n || 0).toLocaleString('zh-CN'); }
@@ -230,7 +232,7 @@
   }
 
   function mcpKeyValue() {
-    return document.getElementById('mcp-use-key').value.trim() || 'sk-（请选择用户 Key）';
+    return document.getElementById('mcp-use-key').value.trim();
   }
 
   function fillMcpUse() {
@@ -238,6 +240,12 @@
     var key = mcpKeyValue();
     var quote = function (s) { return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'; };
     document.getElementById('mcp-use-url').textContent = url;
+    if (!key) {
+      ['mcp-codex-nix', 'mcp-codex-win', 'mcp-claude-command', 'mcp-generic-json'].forEach(function (id) {
+        document.getElementById(id).textContent = '';
+      });
+      return;
+    }
     document.getElementById('mcp-codex-nix').textContent =
       'export LLM_PORTAL_KEY=' + quote(key) + '\n' +
       'codex mcp add llm-portal --url ' + quote(url) + ' --bearer-token-env-var LLM_PORTAL_KEY';
@@ -255,23 +263,29 @@
   }
 
   function revealMcpUseKey(token) {
+    var generation = ++revealGeneration;
     var key = document.getElementById('mcp-use-key');
     var note = document.getElementById('mcp-use-key-note');
+    var importBtn = document.getElementById('btn-mcp-use-import');
     key.value = '';
     key.readOnly = true;
+    importBtn.hidden = true;
     key.placeholder = token ? '正在从保险库取回…' : '暂无启用的用户 Key';
     note.textContent = '';
     fillMcpUse();
     if (!token) return;
     window.pfApi('POST', '/keys/reveal', { key: token }).then(function (d) {
+      if (generation !== revealGeneration || document.getElementById('mcp-use-key-select').value !== token) return;
       key.value = d.key || '';
       key.placeholder = '';
       note.textContent = '已从加密保险库取回；切换上方用户 Key 会同步刷新配置。';
       fillMcpUse();
     }).catch(function () {
+      if (generation !== revealGeneration || document.getElementById('mcp-use-key-select').value !== token) return;
       key.readOnly = false;
       key.placeholder = '该 Key 明文不在保险库，请手动粘贴完整 Key';
-      note.textContent = '这是保险库启用前创建的历史 Key；可手动粘贴，或禁用后重新签发。';
+      note.textContent = '这是保险库启用前创建的历史 Key；粘贴完整 Key 并校验保存后才会生成配置。';
+      importBtn.hidden = false;
       key.focus();
       fillMcpUse();
     });
@@ -356,6 +370,7 @@
       key.value = '';
       key.readOnly = true;
       key.classList.add('mcp-use-key-masked');
+      document.getElementById('btn-mcp-use-import').hidden = true;
       document.getElementById('btn-mcp-use-show').textContent = '显示';
       fillMcpUse();
       window.pfModal('modal-usemcp');
@@ -364,7 +379,28 @@
     document.getElementById('mcp-use-key-select').addEventListener('change', function () {
       revealMcpUseKey(this.value);
     });
-    document.getElementById('mcp-use-key').addEventListener('input', fillMcpUse);
+    document.getElementById('mcp-use-key').addEventListener('input', function () {
+      fillMcpUse();
+      var selected = document.getElementById('mcp-use-key-select').value;
+      document.getElementById('btn-mcp-use-import').disabled = !selected || !this.value.trim();
+    });
+    document.getElementById('btn-mcp-use-import').addEventListener('click', function () {
+      var token = document.getElementById('mcp-use-key-select').value;
+      var key = document.getElementById('mcp-use-key');
+      var generation = revealGeneration;
+      this.disabled = true;
+      window.pfApi('POST', '/keys/import', { key: token, plaintext: key.value.trim() }).then(function (d) {
+        if (generation !== revealGeneration || document.getElementById('mcp-use-key-select').value !== token) return;
+        key.value = d.key;
+        key.readOnly = true;
+        document.getElementById('btn-mcp-use-import').hidden = true;
+        document.getElementById('mcp-use-key-note').textContent = '已校验并存入加密保险库。';
+        fillMcpUse();
+      }).catch(function (e) {
+        document.getElementById('btn-mcp-use-import').disabled = false;
+        window.pfErr(e.error || 'Key 校验失败');
+      });
+    });
     document.getElementById('btn-mcp-use-show').addEventListener('click', function () {
       var key = document.getElementById('mcp-use-key');
       var masked = key.classList.toggle('mcp-use-key-masked');

@@ -6,8 +6,10 @@
 
 ```text
 ├── vps/                    # VPS 侧部署物
-│   ├── deploy.sh           # 一键部署：wg0 + 证书 + nginx + compose + systemd
-│   ├── docker-compose.yml  # litellm + postgres（litellm 只发布到 127.0.0.1:4000）
+│   ├── deploy.sh           # 7 个核心服务 + 边缘入口构建、启动、严格冒烟
+│   ├── release-package.sh  # 从 Git commit 生成源码包与逐文件 SHA-256 清单
+│   ├── prepare_legacy_mcp_rollback.py # 回退旧版前隔离受限/畸形 MCP 条目
+│   ├── docker-compose.yml  # litellm/compat/postgres/mcp-hub/onboardd/console/wireguard
 │   ├── .env.example        # LITELLM_MASTER_KEY / POSTGRES_PASSWORD / ... 占位
 │   ├── nginx/private-llm.conf       # nginx server block（SSE 不缓冲）
 │   ├── litellm/config.yaml          # 静态别名 + 路由 + tag 过滤
@@ -38,9 +40,11 @@
 VPS 侧（详见 `docs/runbook.md`）：
 
 ```bash
-cd execution/proto-remote-access/vps
-cp .env.example .env && vi .env        # 填 master key / postgres 密码 / 域名
-sudo ./deploy.sh                       # wg0 + 证书 + nginx + litellm compose + systemd 服务
+execution/proto-remote-access/vps/release-package.sh <commit> /tmp/private-llm-release
+# 将 tar、tar.sha256、files.sha256 和 commit 文件传到目标机并逐项校验；详见 runbook §2。
+cd <release-tree>/vps
+cp .env.example .env && vi .env        # 仅首次部署；升级必须保留已有 .env
+./deploy.sh                            # docker 组用户执行，不要 sudo
 ```
 
 站点侧（在 VPS 上签发，拷到站点机器执行）：

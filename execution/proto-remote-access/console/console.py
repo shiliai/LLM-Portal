@@ -51,6 +51,7 @@ Key 的 sha256 哈希与尾 4 位——完整用户 Key 与 master key 均不落
 /spend/logs 过滤参数不可靠故全量拉取本地聚合。
 """
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -1293,12 +1294,26 @@ async def api_groups_rename(request: Request) -> Response:
     if errors:
         return jerr("; ".join(errors), 502)
     moved = 0
+    updated_keys: list[tuple[str, dict]] = []
     for k in snap["keys"]:
         md = dict(k.get("metadata") or {})
         if md.get("group") == old:
+            previous_md = dict(md)
             md["group"] = new
             code, body = await ll_json("POST", "/key/update", json={"key": k["token"], "metadata": md})
-            moved += 1 if code == 200 else 0
+            if code != 200:
+                rollback_errors = []
+                for token, original in reversed(updated_keys):
+                    rollback_code, _ = await ll_json(
+                        "POST", "/key/update", json={"key": token, "metadata": original})
+                    if rollback_code != 200:
+                        rollback_errors.append(token[-8:])
+                detail = f"key update failed for {k['token'][-8:]}"
+                if rollback_errors:
+                    detail += f"; rollback failed for {','.join(rollback_errors)}"
+                return jerr(detail, 502)
+            updated_keys.append((k["token"], previous_md))
+            moved += 1
     entries = read_mcp_conf()
     mcp_moved = 0
     for entry in entries:
@@ -1492,6 +1507,29 @@ async def api_keys_reveal(request: Request) -> Response:
     return JSONResponse({"key": plaintext})
 
 
+async def api_keys_import(request: Request) -> Response:
+    """补录保险库启用前的 Key；哈希与 LiteLLM 验真均通过才保存明文。"""
+    sess = await require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    try:
+        body = await request.json()
+        token, plaintext = body["key"], body["plaintext"].strip()
+    except (ValueError, KeyError, AttributeError):
+        return jerr("bad request: expect {key, plaintext}", 400)
+    if not re.fullmatch(r"[0-9a-f]{64}", token) or not plaintext:
+        return jerr("bad key or plaintext", 400)
+    if not hmac.compare_digest(hashlib.sha256(plaintext.encode()).hexdigest(), token):
+        return jerr("完整 Key 与所选用户 Key 不匹配", 400)
+    code, _ = await ll_json("GET", "/key/info", key=plaintext)
+    if code != 200:
+        return jerr("用户 Key 已失效或被禁用，未写入保险库", 400)
+    vault_store(token, plaintext)
+    if not hmac.compare_digest(vault_get(token), plaintext):
+        return jerr("保险库写入校验失败", 500)
+    return JSONResponse({"ok": True, "key": plaintext})
+
+
 async def api_keys_update(request: Request) -> Response:
     """列表页行内改分组 / 编辑弹窗改名与白名单（LiteLLM /key/update，key 传哈希）。"""
     sess = await require(request)
@@ -1633,7 +1671,7 @@ async def api_my(request: Request) -> Response:
 # ---------------------------------------------------------------- MCP 管理面
 
 def valid_mcp_groups(entry: dict) -> list[str]:
-    groups = entry.get("groups") or []
+    groups = entry.get("groups", [])
     if not isinstance(groups, list):
         return []
     return sorted({group for group in groups if isinstance(group, str) and group})
@@ -1665,13 +1703,59 @@ def read_mcp_conf() -> list[dict]:
 
 def write_mcp_conf(entries: list[dict]) -> None:
     EXTERNAL_MCP_CONF.parent.mkdir(parents=True, exist_ok=True)
-    EXTERNAL_MCP_CONF.write_text(json.dumps(entries, ensure_ascii=False, indent=2) + "\n")
+    data = (json.dumps(entries, ensure_ascii=False, indent=2) + "\n").encode()
+    with EXTERNAL_MCP_CONF.open("wb") as fh:
+        fh.write(data)
     os.chmod(EXTERNAL_MCP_CONF, 0o600)
 
 
 def restart_mcp_hub() -> str:
-    r = subprocess.run(MCP_RESTART_CMD, capture_output=True, text=True, timeout=60)
-    return "ok" if r.returncode == 0 else r.stderr.strip()[:200]
+    try:
+        r = subprocess.run(MCP_RESTART_CMD, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return "restart timed out"
+    return "ok" if r.returncode == 0 else (r.stderr.strip()[:200] or f"exit {r.returncode}")
+
+
+async def mcp_hub_ready(expected_sha256: str) -> bool:
+    for _ in range(10):
+        try:
+            async with httpx.AsyncClient(timeout=2) as client:
+                r = await client.get(f"{MCP_HUB_URL}/internal/config-state")
+            if r.status_code == 200 and hmac.compare_digest(
+                    str(r.json().get("sha256") or ""), expected_sha256):
+                return True
+        except (httpx.HTTPError, ValueError):
+            pass
+        await asyncio.sleep(0.2)
+    return False
+
+
+async def apply_mcp_conf(entries: list[dict]) -> tuple[bool, str]:
+    """配置与运行态同步提交；任一步失败都恢复原字节并重启旧运行态。"""
+    existed = EXTERNAL_MCP_CONF.exists()
+    previous = EXTERNAL_MCP_CONF.read_bytes() if existed else b""
+    previous_sha256 = hashlib.sha256(previous).hexdigest()
+    previous_mode = EXTERNAL_MCP_CONF.stat().st_mode & 0o777 if existed else 0o600
+    write_mcp_conf(entries)
+    expected_sha256 = hashlib.sha256(EXTERNAL_MCP_CONF.read_bytes()).hexdigest()
+    restart = restart_mcp_hub()
+    ready = restart == "ok" and await mcp_hub_ready(expected_sha256)
+    if ready:
+        return True, "ok"
+    if existed:
+        with EXTERNAL_MCP_CONF.open("wb") as fh:
+            fh.write(previous)
+        os.chmod(EXTERNAL_MCP_CONF, previous_mode)
+    else:
+        EXTERNAL_MCP_CONF.unlink(missing_ok=True)
+    restore_restart = restart_mcp_hub()
+    reason = restart if restart != "ok" else "mcp-hub readiness check failed"
+    if restore_restart != "ok":
+        reason += f"; prior runtime restart failed: {restore_restart}"
+    elif not await mcp_hub_ready(previous_sha256):
+        reason += "; prior runtime readiness check failed"
+    return False, reason
 
 
 async def api_mcp(request: Request) -> Response:
@@ -1699,7 +1783,7 @@ async def api_mcp_register(request: Request) -> Response:
         body = await request.json()
         name, url, api_key = body["name"], body["url"], body.get("api_key") or ""
         prefix = body.get("prefix") or f"{name}_"
-        groups = body.get("groups") or []
+        groups = body["groups"] if "groups" in body else []
     except (ValueError, KeyError):
         return jerr("bad request: expect {name, url, api_key?, prefix?}", 400)
     if not NAME_RE.fullmatch(name or ""):
@@ -1722,8 +1806,10 @@ async def api_mcp_register(request: Request) -> Response:
         return jerr(f"mcp {name} already registered", 409)
     entries.append({"name": name, "url": url, "api_key": api_key, "prefix": prefix,
                     "groups": groups})
-    write_mcp_conf(entries)
-    return JSONResponse({"ok": True, "restart": restart_mcp_hub(),
+    ok, restart = await apply_mcp_conf(entries)
+    if not ok:
+        return jerr(f"mcp-hub 更新失败，配置已恢复：{restart}", 502)
+    return JSONResponse({"ok": True, "restart": restart,
                          "note": "已重启 mcp-hub 生效；进行中的工具调用会被中断"})
 
 
@@ -1733,7 +1819,8 @@ async def api_mcp_groups(request: Request) -> Response:
         return sess
     try:
         body = await request.json()
-        name, groups = body["name"], body.get("groups") or []
+        name = body["name"]
+        groups = body["groups"] if "groups" in body else []
     except (ValueError, KeyError):
         return jerr("bad request: expect {name, groups:[]}", 400)
     if (not isinstance(groups, list)
@@ -1750,8 +1837,10 @@ async def api_mcp_groups(request: Request) -> Response:
     if entry is None:
         return jerr(f"mcp {name} not registered", 404)
     entry["groups"] = groups
-    write_mcp_conf(entries)
-    return JSONResponse({"ok": True, "groups": groups, "restart": restart_mcp_hub()})
+    ok, restart = await apply_mcp_conf(entries)
+    if not ok:
+        return jerr(f"mcp-hub 更新失败，配置已恢复：{restart}", 502)
+    return JSONResponse({"ok": True, "groups": groups, "restart": restart})
 
 
 async def api_mcp_remove(request: Request) -> Response:
@@ -1766,8 +1855,10 @@ async def api_mcp_remove(request: Request) -> Response:
     kept = [e for e in entries if e["name"] != name]
     if len(kept) == len(entries):
         return jerr(f"mcp {name} not registered", 404)
-    write_mcp_conf(kept)
-    return JSONResponse({"ok": True, "restart": restart_mcp_hub()})
+    ok, restart = await apply_mcp_conf(kept)
+    if not ok:
+        return jerr(f"mcp-hub 更新失败，配置已恢复：{restart}", 502)
+    return JSONResponse({"ok": True, "restart": restart})
 
 
 async def api_mcp_tools(request: Request) -> Response:
@@ -1889,6 +1980,7 @@ api_routes = [
     Route("/console/api/keys", api_keys, methods=["GET"]),
     Route("/console/api/keys/create", api_keys_create, methods=["POST"]),
     Route("/console/api/keys/reveal", api_keys_reveal, methods=["POST"]),
+    Route("/console/api/keys/import", api_keys_import, methods=["POST"]),
     Route("/console/api/keys/update", api_keys_update, methods=["POST"]),
     Route("/console/api/keys/block", api_keys_block, methods=["POST"]),
     Route("/console/api/keys/unblock", api_keys_unblock, methods=["POST"]),

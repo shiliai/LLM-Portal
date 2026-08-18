@@ -81,9 +81,9 @@ def test_valid_bearer_actually_hits_key_info(hub, monkeypatch):
     calls = install_litellm_stub(monkeypatch, _handler)   # 重装以拿本次调用记录
     with TestClient(hub.app) as client:
         assert client.get("/mcp/usage", headers=_bearer(VALID_KEY)).status_code == 200
-    assert [c["path"] for c in calls] == ["/key/info"]
-    assert calls[0]["method"] == "GET"
-    assert calls[0]["bearer"] == VALID_KEY
+    assert calls and {c["path"] for c in calls} == {"/key/info"}
+    assert {c["method"] for c in calls} == {"GET"}
+    assert {c["bearer"] for c in calls} == {VALID_KEY}
 
 
 def test_disabled_key_rejected(hub):
@@ -121,6 +121,20 @@ def test_token_verifier_rejects_bad_and_empty(hub):
     assert asyncio.run(verifier.verify_token(DISABLED_KEY)) is None
 
 
+def test_key_group_reassignment_is_not_cached(hub, monkeypatch):
+    current = {"group": "home"}
+    calls = install_litellm_stub(monkeypatch, lambda method, path, bearer, body: (
+        200, {"key_info": {"metadata": {"group": current["group"]}, "is_disabled": False}}))
+    verifier = hub.LiteLLMTokenVerifier()
+    first = asyncio.run(verifier.verify_token(VALID_KEY))
+    current["group"] = "work"
+    second = asyncio.run(verifier.verify_token(VALID_KEY))
+    assert first.scopes == ["home"]
+    assert second.scopes == ["work"]
+    assert len(calls) == 2
+    assert hub.group_access(_auth_ctx(hub, ["home"], second.scopes)) is False
+
+
 def test_usage_counts_recorded_per_key_hash(hub):
     hub.record_usage(VALID_KEY, "analyze_image")
     hub.record_usage(VALID_KEY, "upload")
@@ -150,6 +164,14 @@ def test_group_access_matrix(hub):
 
 def test_auth_middleware_is_installed(hub):
     assert any(isinstance(item, hub.AuthMiddleware) for item in hub.mcp.middleware)
+
+
+def test_internal_config_state_binds_loaded_registry(hub):
+    expected = hashlib.sha256(b"").hexdigest()
+    with TestClient(hub.app) as client:
+        resp = client.get("/internal/config-state")
+    assert resp.status_code == 200
+    assert resp.json() == {"sha256": expected}
 
 
 def test_external_tools_inherit_configured_groups(hub, monkeypatch):
@@ -182,6 +204,23 @@ def test_external_tool_with_malformed_groups_is_not_registered(hub, monkeypatch)
     hub.EXTERNAL_MCP_CONF.write_text(json.dumps([{
         "name": "svc", "url": "https://mcp.invalid/mcp", "api_key": "secret",
         "prefix": "svc_", "groups": "home",
+    }]))
+
+    class UnexpectedClient:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("malformed authorization config must fail before connecting")
+
+    monkeypatch.setattr(hub, "Client", UnexpectedClient)
+    asyncio.run(hub.register_external_tools())
+    assert asyncio.run(hub.mcp.get_tool("svc_ping")) is None
+
+
+@pytest.mark.parametrize("groups", [None, False, 0, "", {}, [""], [0]])
+def test_external_tool_with_any_present_malformed_groups_is_not_registered(
+        hub, monkeypatch, groups):
+    hub.EXTERNAL_MCP_CONF.write_text(json.dumps([{
+        "name": "svc", "url": "https://mcp.invalid/mcp", "api_key": "secret",
+        "prefix": "svc_", "groups": groups,
     }]))
 
     class UnexpectedClient:

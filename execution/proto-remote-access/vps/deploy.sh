@@ -15,6 +15,7 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
+source ./deploy-lib.sh
 docker info >/dev/null 2>&1 || { echo "docker 不可用（用户需在 docker 组）"; exit 1; }
 [ -f .env ] || { echo "missing .env (copy from .env.example)"; exit 1; }
 set -a; . ./.env; set +a
@@ -161,15 +162,23 @@ sed -e "s|{{LITELLM_UPSTREAM}}|litellm:4000|g" \
 if [ "$EDGE_MODE" = external ]; then
   # 幂等：先移除旧块再追加。注意必须保留 inode 原地写（cat > / >>）——此文件被单文件 bind-mount 进
   # nginx 容器，sed -i 会换 inode，容器内仍是旧内容、reload 也不生效（2026-08-14 实测踩坑，需重启容器才恢复）
-  cp "$NGINX_CONF_DIR/nginx.conf" "$NGINX_CONF_DIR/nginx.conf.backup-$(date +%Y%m%d-%H%M%S)"
+  NGINX_BACKUP="$NGINX_CONF_DIR/nginx.conf.backup-$(date +%Y%m%d-%H%M%S)"
+  cp "$NGINX_CONF_DIR/nginx.conf" "$NGINX_BACKUP"
   awk '/# BEGIN private-llm/,/# END private-llm/{next}1' "$NGINX_CONF_DIR/nginx.conf" > "$STRIPPED"
   cat "$STRIPPED" > "$NGINX_CONF_DIR/nginx.conf"
   { echo "# BEGIN private-llm (managed by private-llm deploy.sh)"; cat "$RENDERED"; echo "# END private-llm"; } >> "$NGINX_CONF_DIR/nginx.conf"
   if ! docker exec "$EDGE_NGINX_CONTAINER" nginx -t 2>/dev/null; then
     echo "!! nginx config test failed; rendering diagnostics:"; docker exec "$EDGE_NGINX_CONTAINER" nginx -t || true
-    # 回滚：删除刚追加的块
-    sed -i '/# BEGIN private-llm/,/# END private-llm/d' "$NGINX_CONF_DIR/nginx.conf"
-    docker exec "$EDGE_NGINX_CONTAINER" nginx -t && docker exec "$EDGE_NGINX_CONTAINER" nginx -s reload && echo "(rolled back, existing sites intact)" || echo "!! manual fix needed in $NGINX_CONF_DIR/nginx.conf"
+    # 回滚：原位恢复旧字节，保留单文件 bind mount 的 inode。
+    restore_file_same_inode "$NGINX_BACKUP" "$NGINX_CONF_DIR/nginx.conf" || {
+      echo "!! nginx backup restore failed: $NGINX_BACKUP"; exit 1;
+    }
+    if docker exec "$EDGE_NGINX_CONTAINER" nginx -t \
+        && docker exec "$EDGE_NGINX_CONTAINER" nginx -s reload; then
+      echo "(rolled back, existing sites intact)"
+    else
+      echo "!! restored nginx config failed validation/reload; manual recovery required"
+    fi
     exit 1
   fi
   docker exec "$EDGE_NGINX_CONTAINER" nginx -s reload
@@ -190,27 +199,41 @@ done
 case ":$PATH:" in *":$BIN_DIR:"*) : ;; *) echo "   note: $BIN_DIR 不在 PATH，请加入 ~/.profile" ;; esac
 
 echo "== [7/7] smoke"
-echo "-- litellm health:"; curl -sf -m 5 http://127.0.0.1:4000/health/liveliness && echo || echo "!! litellm not up (docker compose logs litellm)"
-echo "-- compat-proxy:"; code=$(curl -s -m 5 -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8400/v1/chat/completions -H 'content-type: application/json' -d '{"model":"x","messages":[]}'); [ "$code" = "401" ] && echo "   ok (no-key 401 passthrough)" || echo "!! expect 401 via compat, got $code (docker compose logs compat)"
-echo "-- onboardd:"; curl -s -m 5 -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:8100/onboard/install?token=x" | sed 's/^/   (expect 403): /'
-echo "-- mcp-hub:"; curl -s -m 5 -o /dev/null -w '%{http_code}\n' -H 'authorization: Bearer invalid' http://127.0.0.1:8200/mcp/usage | sed 's/^/   (expect 401): /'
-echo "-- consoled:"; curl -s -m 5 -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8300/console/api/me | sed 's/^/   (expect 401): /'
-echo "-- wireguard:"; docker exec private-llm-wireguard wg show wg0 | head -3
+SMOKE_FAILURES=0
+fail_smoke() { echo "!! $*"; SMOKE_FAILURES=$((SMOKE_FAILURES + 1)); }
+http_code() { curl -sS -m 10 -o /dev/null -w '%{http_code}' "$@" || true; }
+echo "-- wait for core services"
+for _ in $(seq 1 30); do
+  [ "$(http_code http://127.0.0.1:4000/health/liveliness)" = "200" ] \
+    && [ "$(http_code http://127.0.0.1:8300/console/api/me)" = "401" ] && break
+  sleep 2
+done
+echo "-- litellm health:"; [ "$(http_code http://127.0.0.1:4000/health/liveliness)" = "200" ] || fail_smoke "litellm health failed"
+echo "-- compat-proxy:"; code=$(http_code -X POST http://127.0.0.1:8400/v1/chat/completions -H 'content-type: application/json' -d '{"model":"x","messages":[]}'); [ "$code" = "401" ] || fail_smoke "expect compat 401, got $code"
+echo "-- onboardd:"; code=$(http_code "http://127.0.0.1:8100/onboard/install?token=x"); [ "$code" = "403" ] || fail_smoke "expect onboardd 403, got $code"
+echo "-- mcp-hub:"; code=$(http_code -H 'authorization: Bearer invalid' http://127.0.0.1:8200/mcp/usage); [ "$code" = "401" ] || fail_smoke "expect mcp-hub 401, got $code"
+echo "-- consoled:"; code=$(http_code http://127.0.0.1:8300/console/api/me); [ "$code" = "401" ] || fail_smoke "expect console 401, got $code"
+echo "-- wireguard:"; docker exec private-llm-wireguard wg show wg0 | head -3 || fail_smoke "wireguard unavailable"
+for container in litellm private-llm-compat private-llm-postgres private-llm-mcp-hub private-llm-onboardd private-llm-console private-llm-wireguard; do
+  [ "$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || true)" = "running" ] \
+    || fail_smoke "$container is not running"
+done
 echo "== [7b/7] 暴露面收敛检查（r6 allowlist）"
 # offload 无本机 https 入口（TLS 在上游设备），经 80 端口本地校验同一路径分发
 CHECK_BASE="https://$DOMAIN"
 [ "$EDGE_MODE" = offload ] && CHECK_BASE="http://127.0.0.1"
 for path in /ui /login /sso /openapi.json /key/generate /onboard/admin/list /spend/logs /team/list; do
-  code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "$CHECK_BASE$path")
-  [ "$code" = "404" ] || echo "!! $path 未收敛（$code，应 404）"
+  code=$(http_code "$CHECK_BASE$path")
+  [ "$code" = "404" ] || fail_smoke "$path 未收敛（$code，应 404）"
 done
 for path in /v1/models /key/info; do
-  code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "$CHECK_BASE$path")
-  [ "$code" = "401" ] || echo "!! $path 应保留但未带 Key 应 401（实际 $code）"
+  code=$(http_code "$CHECK_BASE$path")
+  [ "$code" = "401" ] || fail_smoke "$path 应保留但未带 Key 应 401（实际 $code）"
 done
-code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "$CHECK_BASE/console/")
-{ [ "$code" = "200" ] || [ "$code" = "302" ] || [ "$code" = "307" ]; } || echo "!! /console/ 应可达（实际 $code）"
-echo "   收敛检查完成（无 !! 即全过）"
+code=$(http_code "$CHECK_BASE/console/")
+{ [ "$code" = "200" ] || [ "$code" = "302" ] || [ "$code" = "307" ]; } || fail_smoke "/console/ 应可达（实际 $code）"
+[ "$SMOKE_FAILURES" -eq 0 ] || { echo "deployment smoke failed: $SMOKE_FAILURES check(s)"; exit 1; }
+echo "   收敛检查完成"
 
 echo "== done"
 echo "next: site-add <name> --model <model>:<port> ...   # 然后把输出的命令拷到站点机器执行"
