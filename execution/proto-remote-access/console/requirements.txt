@@ -1,6 +1,6 @@
 starlette>=1.6.0
 uvicorn>=0.52.2
 httpx>=0.28.1
-fastmcp>=3.4.7,<4
+fastmcp==3.4.7
 segno>=1.6.6
 cryptography>=50.0.0

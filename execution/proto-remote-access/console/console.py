@@ -38,6 +38,7 @@
   GET  /console/api/my                 用户自查（/key/info + /mcp/usage 代查）
   GET  /console/api/mcp                外部 MCP 注册清单（脱敏）
   POST /console/api/mcp/register       注册外部 MCP（写配置 + 重启 mcp-hub）
+  POST /console/api/mcp/groups         更新外部 MCP 的分组绑定
   POST /console/api/mcp/remove         移除（写配置 + 重启 mcp-hub）
   GET  /console/api/mcp/tools          聚合 tools/list 预览（直连各外部 MCP）
   GET  /console/api/mcp/usage?days=N   按 Key 工具调用计数（usage.db）
@@ -50,6 +51,7 @@ Key 的 sha256 哈希与尾 4 位——完整用户 Key 与 master key 均不落
 /spend/logs 过滤参数不可靠故全量拉取本地聚合。
 """
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -1204,7 +1206,11 @@ async def group_snapshot() -> dict:
             groups.setdefault(g, {"sites": set(), "keys": 0})["keys"] += 1
     bound_default = sum(1 for k in keys if ((k.get("metadata") or {}).get("group") or "default") == "default")
     live = [s["name"] for s in sites if s["status"] != "revoked"]
+    mcp_counts = mcp_counts_by_group()
+    for group in mcp_counts:
+        groups.setdefault(group, {"sites": set(), "keys": 0})
     return {"groups": groups, "default": {"sites": set(live), "keys": bound_default},
+            "mcp_counts": mcp_counts,
             "sites": sites, "keys": keys}
 
 
@@ -1214,8 +1220,9 @@ async def api_groups(request: Request) -> Response:
         return sess
     snap = await group_snapshot()
     rows = [{"name": "default", "system": True, "sites": sorted(snap["default"]["sites"]),
-             "keys": snap["default"]["keys"]}]
-    rows += [{"name": g, "system": False, "sites": sorted(v["sites"]), "keys": v["keys"]}
+             "keys": snap["default"]["keys"], "mcps": 0}]
+    rows += [{"name": g, "system": False, "sites": sorted(v["sites"]), "keys": v["keys"],
+              "mcps": snap["mcp_counts"].get(g, 0)}
              for g, v in sorted(snap["groups"].items())]
     return JSONResponse({"groups": rows,
                          "sites": [{"name": s["name"], "wg_ip": s["wg_ip"], "status": s["status"]}
@@ -1287,13 +1294,39 @@ async def api_groups_rename(request: Request) -> Response:
     if errors:
         return jerr("; ".join(errors), 502)
     moved = 0
+    updated_keys: list[tuple[str, dict]] = []
     for k in snap["keys"]:
         md = dict(k.get("metadata") or {})
         if md.get("group") == old:
+            previous_md = dict(md)
             md["group"] = new
             code, body = await ll_json("POST", "/key/update", json={"key": k["token"], "metadata": md})
-            moved += 1 if code == 200 else 0
-    return JSONResponse({"ok": True, "from": old, "to": new, "keys_rebound": moved})
+            if code != 200:
+                rollback_errors = []
+                for token, original in reversed(updated_keys):
+                    rollback_code, _ = await ll_json(
+                        "POST", "/key/update", json={"key": token, "metadata": original})
+                    if rollback_code != 200:
+                        rollback_errors.append(token[-8:])
+                detail = f"key update failed for {k['token'][-8:]}"
+                if rollback_errors:
+                    detail += f"; rollback failed for {','.join(rollback_errors)}"
+                return jerr(detail, 502)
+            updated_keys.append((k["token"], previous_md))
+            moved += 1
+    entries = read_mcp_conf()
+    mcp_moved = 0
+    for entry in entries:
+        groups = set(valid_mcp_groups(entry))
+        if old in groups:
+            entry["groups"] = sorted((groups - {old}) | {new})
+            mcp_moved += 1
+    restart = "not-needed"
+    if mcp_moved:
+        write_mcp_conf(entries)
+        restart = restart_mcp_hub()
+    return JSONResponse({"ok": True, "from": old, "to": new, "keys_rebound": moved,
+                         "mcps_rebound": mcp_moved, "restart": restart})
 
 
 async def api_groups_delete(request: Request) -> Response:
@@ -1311,6 +1344,8 @@ async def api_groups_delete(request: Request) -> Response:
         return jerr(f"unknown group {name}", 404)
     if snap["groups"][name]["keys"] > 0:
         return jerr(f"分组 {name} 仍有 {snap['groups'][name]['keys']} 把 Key 绑定，先改绑或删除这些 Key", 409)
+    if snap["mcp_counts"].get(name, 0) > 0:
+        return jerr(f"分组 {name} 仍有 {snap['mcp_counts'][name]} 个 MCP 绑定，先解除绑定", 409)
     errors = []
     for s in snap["sites"]:
         cur = await site_current_tags(s["wg_ip"])
@@ -1472,6 +1507,29 @@ async def api_keys_reveal(request: Request) -> Response:
     return JSONResponse({"key": plaintext})
 
 
+async def api_keys_import(request: Request) -> Response:
+    """补录保险库启用前的 Key；哈希与 LiteLLM 验真均通过才保存明文。"""
+    sess = await require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    try:
+        body = await request.json()
+        token, plaintext = body["key"], body["plaintext"].strip()
+    except (ValueError, KeyError, AttributeError):
+        return jerr("bad request: expect {key, plaintext}", 400)
+    if not re.fullmatch(r"[0-9a-f]{64}", token) or not plaintext:
+        return jerr("bad key or plaintext", 400)
+    if not hmac.compare_digest(hashlib.sha256(plaintext.encode()).hexdigest(), token):
+        return jerr("完整 Key 与所选用户 Key 不匹配", 400)
+    code, _ = await ll_json("GET", "/key/info", key=plaintext)
+    if code != 200:
+        return jerr("用户 Key 已失效或被禁用，未写入保险库", 400)
+    vault_store(token, plaintext)
+    if not hmac.compare_digest(vault_get(token), plaintext):
+        return jerr("保险库写入校验失败", 500)
+    return JSONResponse({"ok": True, "key": plaintext})
+
+
 async def api_keys_update(request: Request) -> Response:
     """列表页行内改分组 / 编辑弹窗改名与白名单（LiteLLM /key/update，key 传哈希）。"""
     sess = await require(request)
@@ -1612,11 +1670,27 @@ async def api_my(request: Request) -> Response:
 
 # ---------------------------------------------------------------- MCP 管理面
 
+def valid_mcp_groups(entry: dict) -> list[str]:
+    groups = entry.get("groups", [])
+    if not isinstance(groups, list):
+        return []
+    return sorted({group for group in groups if isinstance(group, str) and group})
+
+
 def mask_entry(e: dict) -> dict:
     ak = e.get("api_key") or ""
     return {"name": e.get("name"), "url": e.get("url"),
             "api_key_last4": f"…{ak[-4:]}" if len(ak) >= 8 else (ak or "未配置"),
-            "prefix": e.get("prefix", f"{e.get('name')}_")}
+            "prefix": e.get("prefix", f"{e.get('name')}_"),
+            "groups": valid_mcp_groups(e)}
+
+
+def mcp_counts_by_group(entries: list[dict] | None = None) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for entry in entries if entries is not None else read_mcp_conf():
+        for group in valid_mcp_groups(entry):
+            counts[group] = counts.get(group, 0) + 1
+    return counts
 
 
 def read_mcp_conf() -> list[dict]:
@@ -1629,24 +1703,73 @@ def read_mcp_conf() -> list[dict]:
 
 def write_mcp_conf(entries: list[dict]) -> None:
     EXTERNAL_MCP_CONF.parent.mkdir(parents=True, exist_ok=True)
-    EXTERNAL_MCP_CONF.write_text(json.dumps(entries, ensure_ascii=False, indent=2) + "\n")
+    data = (json.dumps(entries, ensure_ascii=False, indent=2) + "\n").encode()
+    with EXTERNAL_MCP_CONF.open("wb") as fh:
+        fh.write(data)
     os.chmod(EXTERNAL_MCP_CONF, 0o600)
 
 
 def restart_mcp_hub() -> str:
-    r = subprocess.run(MCP_RESTART_CMD, capture_output=True, text=True, timeout=60)
-    return "ok" if r.returncode == 0 else r.stderr.strip()[:200]
+    try:
+        r = subprocess.run(MCP_RESTART_CMD, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return "restart timed out"
+    return "ok" if r.returncode == 0 else (r.stderr.strip()[:200] or f"exit {r.returncode}")
+
+
+async def mcp_hub_ready(expected_sha256: str) -> bool:
+    for _ in range(10):
+        try:
+            async with httpx.AsyncClient(timeout=2) as client:
+                r = await client.get(f"{MCP_HUB_URL}/internal/config-state")
+            if r.status_code == 200 and hmac.compare_digest(
+                    str(r.json().get("sha256") or ""), expected_sha256):
+                return True
+        except (httpx.HTTPError, ValueError):
+            pass
+        await asyncio.sleep(0.2)
+    return False
+
+
+async def apply_mcp_conf(entries: list[dict]) -> tuple[bool, str]:
+    """配置与运行态同步提交；任一步失败都恢复原字节并重启旧运行态。"""
+    existed = EXTERNAL_MCP_CONF.exists()
+    previous = EXTERNAL_MCP_CONF.read_bytes() if existed else b""
+    previous_sha256 = hashlib.sha256(previous).hexdigest()
+    previous_mode = EXTERNAL_MCP_CONF.stat().st_mode & 0o777 if existed else 0o600
+    write_mcp_conf(entries)
+    expected_sha256 = hashlib.sha256(EXTERNAL_MCP_CONF.read_bytes()).hexdigest()
+    restart = restart_mcp_hub()
+    ready = restart == "ok" and await mcp_hub_ready(expected_sha256)
+    if ready:
+        return True, "ok"
+    if existed:
+        with EXTERNAL_MCP_CONF.open("wb") as fh:
+            fh.write(previous)
+        os.chmod(EXTERNAL_MCP_CONF, previous_mode)
+    else:
+        EXTERNAL_MCP_CONF.unlink(missing_ok=True)
+    restore_restart = restart_mcp_hub()
+    reason = restart if restart != "ok" else "mcp-hub readiness check failed"
+    if restore_restart != "ok":
+        reason += f"; prior runtime restart failed: {restore_restart}"
+    elif not await mcp_hub_ready(previous_sha256):
+        reason += "; prior runtime readiness check failed"
+    return False, reason
 
 
 async def api_mcp(request: Request) -> Response:
     sess = await require(request)
     if isinstance(sess, JSONResponse):
         return sess
+    snap = await group_snapshot()
+    group_names = sorted(snap["groups"])
     return JSONResponse({
         "builtin": {"tool": "analyze_image(image_url, question)", "model": MCP_VISION_MODEL,
                     "endpoint": "/mcp（Streamable HTTP + Bearer）",
                     "boundary": "以调用者 Key 回调回环模型通道，凭据不出网关（C5）"},
         "external": [mask_entry(e) for e in read_mcp_conf()],
+        "groups": group_names,
         "upload": {"endpoint": "POST /mcp/upload（multipart file=，同一 Key）",
                    "ttl": "30 分钟", "limit": "≤10MB，jpg/png/webp/gif"},
     })
@@ -1660,6 +1783,7 @@ async def api_mcp_register(request: Request) -> Response:
         body = await request.json()
         name, url, api_key = body["name"], body["url"], body.get("api_key") or ""
         prefix = body.get("prefix") or f"{name}_"
+        groups = body["groups"] if "groups" in body else []
     except (ValueError, KeyError):
         return jerr("bad request: expect {name, url, api_key?, prefix?}", 400)
     if not NAME_RE.fullmatch(name or ""):
@@ -1668,13 +1792,55 @@ async def api_mcp_register(request: Request) -> Response:
         return jerr("bad url", 400)
     if not re.fullmatch(r"[a-z0-9_]{1,16}", prefix or ""):
         return jerr("bad prefix ([a-z0-9_]{1,16})", 400)
+    if (not isinstance(groups, list)
+            or any(not isinstance(g, str) or g == "default" or not GROUP_RE.fullmatch(g)
+                   for g in groups)):
+        return jerr("bad groups list", 400)
+    groups = sorted(set(groups))
+    known_groups = set((await group_snapshot())["groups"])
+    unknown = sorted(set(groups) - known_groups)
+    if unknown:
+        return jerr(f"unknown groups: {unknown}", 400)
     entries = read_mcp_conf()
     if any(e["name"] == name for e in entries):
         return jerr(f"mcp {name} already registered", 409)
-    entries.append({"name": name, "url": url, "api_key": api_key, "prefix": prefix})
-    write_mcp_conf(entries)
-    return JSONResponse({"ok": True, "restart": restart_mcp_hub(),
+    entries.append({"name": name, "url": url, "api_key": api_key, "prefix": prefix,
+                    "groups": groups})
+    ok, restart = await apply_mcp_conf(entries)
+    if not ok:
+        return jerr(f"mcp-hub 更新失败，配置已恢复：{restart}", 502)
+    return JSONResponse({"ok": True, "restart": restart,
                          "note": "已重启 mcp-hub 生效；进行中的工具调用会被中断"})
+
+
+async def api_mcp_groups(request: Request) -> Response:
+    sess = await require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    try:
+        body = await request.json()
+        name = body["name"]
+        groups = body["groups"] if "groups" in body else []
+    except (ValueError, KeyError):
+        return jerr("bad request: expect {name, groups:[]}", 400)
+    if (not isinstance(groups, list)
+            or any(not isinstance(g, str) or g == "default" or not GROUP_RE.fullmatch(g)
+                   for g in groups)):
+        return jerr("bad groups list", 400)
+    groups = sorted(set(groups))
+    known_groups = set((await group_snapshot())["groups"])
+    unknown = sorted(set(groups) - known_groups)
+    if unknown:
+        return jerr(f"unknown groups: {unknown}", 400)
+    entries = read_mcp_conf()
+    entry = next((e for e in entries if e.get("name") == name), None)
+    if entry is None:
+        return jerr(f"mcp {name} not registered", 404)
+    entry["groups"] = groups
+    ok, restart = await apply_mcp_conf(entries)
+    if not ok:
+        return jerr(f"mcp-hub 更新失败，配置已恢复：{restart}", 502)
+    return JSONResponse({"ok": True, "groups": groups, "restart": restart})
 
 
 async def api_mcp_remove(request: Request) -> Response:
@@ -1689,8 +1855,10 @@ async def api_mcp_remove(request: Request) -> Response:
     kept = [e for e in entries if e["name"] != name]
     if len(kept) == len(entries):
         return jerr(f"mcp {name} not registered", 404)
-    write_mcp_conf(kept)
-    return JSONResponse({"ok": True, "restart": restart_mcp_hub()})
+    ok, restart = await apply_mcp_conf(kept)
+    if not ok:
+        return jerr(f"mcp-hub 更新失败，配置已恢复：{restart}", 502)
+    return JSONResponse({"ok": True, "restart": restart})
 
 
 async def api_mcp_tools(request: Request) -> Response:
@@ -1812,6 +1980,7 @@ api_routes = [
     Route("/console/api/keys", api_keys, methods=["GET"]),
     Route("/console/api/keys/create", api_keys_create, methods=["POST"]),
     Route("/console/api/keys/reveal", api_keys_reveal, methods=["POST"]),
+    Route("/console/api/keys/import", api_keys_import, methods=["POST"]),
     Route("/console/api/keys/update", api_keys_update, methods=["POST"]),
     Route("/console/api/keys/block", api_keys_block, methods=["POST"]),
     Route("/console/api/keys/unblock", api_keys_unblock, methods=["POST"]),
@@ -1819,6 +1988,7 @@ api_routes = [
     Route("/console/api/my", api_my, methods=["GET"]),
     Route("/console/api/mcp", api_mcp, methods=["GET"]),
     Route("/console/api/mcp/register", api_mcp_register, methods=["POST"]),
+    Route("/console/api/mcp/groups", api_mcp_groups, methods=["POST"]),
     Route("/console/api/mcp/remove", api_mcp_remove, methods=["POST"]),
     Route("/console/api/mcp/tools", api_mcp_tools, methods=["GET"]),
     Route("/console/api/mcp/usage", api_mcp_usage, methods=["GET"]),

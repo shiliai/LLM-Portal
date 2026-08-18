@@ -35,6 +35,8 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AccessToken, TokenVerifier
 from fastmcp.server.context import Context
 from fastmcp.server.dependencies import get_http_request
+from fastmcp.server.middleware.authorization import AuthMiddleware
+from fastmcp.utilities.authorization import AuthContext
 
 # ---------------------------------------------------------------- 配置
 
@@ -48,7 +50,6 @@ EXTERNAL_MCP_CONF = Path(os.environ.get("EXTERNAL_MCP_CONF", "/etc/private-llm/e
 UPLOAD_TTL = int(os.environ.get("UPLOAD_TTL", "1800"))  # 30 分钟
 MAX_UPLOAD = 10 * 1024 * 1024
 ALLOWED_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif"}
-KEY_CACHE_TTL = 60  # /key/info 结果进程内缓存，秒
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -67,19 +68,13 @@ with sqlite3.connect(DB_PATH) as _db:
     _db.execute("CREATE TABLE IF NOT EXISTS usage (key_hash TEXT, tool TEXT, ts INTEGER)")
 
 
-# ---------------------------------------------------------------- Key 验证（LiteLLM /key/info，带缓存）
-
-_key_cache: dict[str, tuple[float, dict]] = {}
+# ---------------------------------------------------------------- Key 验证（LiteLLM /key/info）
 
 
 async def check_key(key: str) -> dict | None:
     """验真用户虚拟 Key；返回 key info（含 metadata），无效返回 None。Key 旅程到此为止。"""
     if not key:
         return None
-    hit = _key_cache.get(key)
-    now = time.time()
-    if hit and now - hit[0] < KEY_CACHE_TTL:
-        return hit[1]
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get(f"{LITELLM_BASE}/key/info", headers={"Authorization": f"Bearer {key}"})
@@ -90,7 +85,6 @@ async def check_key(key: str) -> dict | None:
     info = r.json().get("key_info", {})
     if info.get("is_disabled"):
         return None
-    _key_cache[key] = (now, info)
     return info
 
 
@@ -101,7 +95,14 @@ class LiteLLMTokenVerifier(TokenVerifier):
         info = await check_key(token)
         if info is None:
             return None
-        return AccessToken(token=token, client_id=key_hash(token), scopes=[])
+        group = (info.get("metadata") or {}).get("group") or "default"
+        return AccessToken(token=token, client_id=key_hash(token), scopes=[str(group)])
+
+
+def group_access(ctx: AuthContext) -> bool:
+    """无 tags 的工具全局可用；有 tags 的外部工具仅向命中分组的 Key 开放。"""
+    groups = ctx.component.tags
+    return not groups or bool(ctx.token and groups.intersection(ctx.token.scopes))
 
 
 def current_key(ctx) -> str:
@@ -141,8 +142,11 @@ async def fetch_image_data(url: str) -> tuple[bytes, str]:
 
 @asynccontextmanager
 async def lifespan(app):
+    global loaded_config_sha256
     task = asyncio.create_task(ttl_loop())
     await register_external_tools()
+    config_bytes = EXTERNAL_MCP_CONF.read_bytes() if EXTERNAL_MCP_CONF.exists() else b""
+    loaded_config_sha256 = hashlib.sha256(config_bytes).hexdigest()
     try:
         yield
     finally:
@@ -154,7 +158,12 @@ async def lifespan(app):
                 pass
 
 
-mcp = FastMCP("mcp-hub", auth=LiteLLMTokenVerifier(), lifespan=lifespan)
+mcp = FastMCP(
+    "mcp-hub",
+    auth=LiteLLMTokenVerifier(),
+    lifespan=lifespan,
+    middleware=[AuthMiddleware(auth=group_access)],
+)
 
 
 @mcp.tool
@@ -191,6 +200,7 @@ async def analyze_image(image_url: str, question: str, ctx: Context) -> str:
 # ---------------------------------------------------------------- 外部 MCP 代理（US-P12）
 
 external_clients: dict[str, Client] = {}
+loaded_config_sha256 = ""
 
 
 async def register_external_tools() -> None:
@@ -204,6 +214,12 @@ async def register_external_tools() -> None:
         return
     for entry in entries:
         name, prefix = entry["name"], entry.get("prefix", f"{entry['name']}_")
+        raw_groups = entry.get("groups", [])
+        if not isinstance(raw_groups, list) or any(not isinstance(group, str) or not group
+                                                   for group in raw_groups):
+            print(f"[mcp-hub] external mcp '{name}': skipped (invalid groups list)")
+            continue
+        groups = set(raw_groups)
         if "REPLACE" in str(entry.get("api_key", "")) or "REPLACE" in entry.get("url", ""):
             print(f"[mcp-hub] external mcp '{name}': skipped (placeholder credentials)")
             continue
@@ -211,22 +227,31 @@ async def register_external_tools() -> None:
             client = Client(entry["url"], auth=BearerAuth(entry["api_key"]) if entry.get("api_key") else None)
             await client.__aenter__()
             tools = await client.list_tools()
+            external_clients[name] = client
             for tool in tools:
 
                 async def _proxy(_client=client, _name=tool.name, **kwargs):
                     result = await _client.call_tool(_name, kwargs)
                     return result.content[0].text if result.content else "(empty)"
 
-                from fastmcp.tools import Tool as FastTool
-                mcp.add_tool(FastTool(
+                from fastmcp.tools import FunctionTool
+                mcp.add_tool(FunctionTool(
                     fn=_proxy,
                     name=f"{prefix}{tool.name}",
                     description=f"[{name}] {tool.description or ''}".strip(),
-                    parameters=tool.parameters or {"type": "object", "properties": {}},
+                    parameters=tool.inputSchema or {"type": "object", "properties": {}},
+                    tags=groups,
+                    run_in_thread=False,
                 ))
-            print(f"[mcp-hub] external mcp '{name}': {len(tools)} tools proxied (prefix '{prefix}')")
+            scope = ",".join(sorted(groups)) if groups else "global"
+            print(f"[mcp-hub] external mcp '{name}': {len(tools)} tools proxied "
+                  f"(prefix '{prefix}', groups '{scope}')")
         except Exception as exc:  # 外部服务不可达不阻断启动
             print(f"[mcp-hub] external mcp '{name}' unavailable: {exc}")
+
+
+async def config_state(request: Request) -> Response:
+    return JSONResponse({"sha256": loaded_config_sha256})
 
 
 # ---------------------------------------------------------------- 临时文件清理
@@ -310,6 +335,7 @@ app.routes.append(Route("/", homepage, methods=["GET"]))
 app.routes.append(Route("/mcp/upload", upload, methods=["POST"]))
 app.routes.append(Route("/mcp/usage", usage, methods=["GET"]))
 app.routes.append(Route("/mcp/files/{name}", files, methods=["GET"]))
+app.routes.append(Route("/internal/config-state", config_state, methods=["GET"]))
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("MCP_HUB_PORT", "8200")), log_level="info")

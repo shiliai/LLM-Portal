@@ -47,7 +47,7 @@
 前置：DNS A 记录已指向 VPS；云安全组放行 443/tcp 与 51820/udp；`ssh your-vps` 可登；VPS 用户在 docker 组；**一次性 sudo**（#7 容器化后仅剩这些）：`sudo ufw allow 51820/udp`、BBR sysctl（`/etc/sysctl.d/99-private-llm-tunnel.conf`，已配置的 VPS 跳过）。
 
 ```bash
-# 本地：同步代码上 VPS
+# 本地：首次部署可同步工作树；生产升级必须使用下节的 commit 包
 rsync -av --exclude .env execution/proto-remote-access/ your-vps:~/LLM-Portal/
 
 # VPS：
@@ -57,6 +57,51 @@ cp .env.example .env && vi .env       # LITELLM_MASTER_KEY=sk-$(openssl rand -he
 ```
 
 deploy.sh 幂等；首次在存量部署上运行会自动停用旧 systemd 单元（该步若非免密 sudo 会提示手动执行；wg-quick 切换瞬间隧道短暂中断）；nginx 改动带备份与 `nginx -t` 失败自动回滚（不影响 sub2api 等既有站点）。
+
+### 2.1 生产升级与回滚（commit 包）
+
+固定顺序：先 `vps-tencent-tokyo`（`/home/chriswang/private-llm-src/execution/proto-remote-access`，`EDGE_MODE=external`），验收通过后再 `nasubuntu`（`/home/chriswang/project/docker/private-llm`，`EDGE_MODE=offload`）。不得并行升级两端。
+
+```bash
+# 本地仓库；MERGE_SHA 必须是已合并 main 的 commit
+execution/proto-remote-access/vps/release-package.sh "$MERGE_SHA" /tmp/private-llm-release
+cd /tmp/private-llm-release
+shasum -a 256 -c "private-llm-$MERGE_SHA.tar.sha256"
+
+# 每台目标机先记录恢复点（ROOT 按上面的主机取值）
+STAMP=$(date +%Y%m%d-%H%M%S)
+tar --exclude='./vps/.env' -C "$ROOT" -czf "$HOME/private-llm-source-$STAMP.tgz" .
+cd "$ROOT/vps"
+docker inspect -f '{{.Name}} {{.Image}} {{.State.Status}}' \
+  litellm private-llm-compat private-llm-postgres private-llm-mcp-hub \
+  private-llm-onboardd private-llm-console private-llm-wireguard \
+  > "$HOME/private-llm-images-$STAMP.txt"
+
+# 上传四个发布文件到独立目录后：先验 tar，再解到暂存目录，再原子口径同步；.env 永不覆盖/删除
+RELEASE_DIR=$HOME/private-llm-release-$MERGE_SHA
+cd "$RELEASE_DIR"
+shasum -a 256 -c "private-llm-$MERGE_SHA.tar.sha256"
+STAGE=$(mktemp -d)
+tar -xf "private-llm-$MERGE_SHA.tar" -C "$STAGE"
+MANIFEST=$(pwd)/private-llm-$MERGE_SHA.files.sha256
+(cd "$STAGE/execution/proto-remote-access" && shasum -a 256 -c "$MANIFEST")
+rsync -a --delete --exclude 'vps/.env' "$STAGE/execution/proto-remote-access/" "$ROOT/"
+(cd "$ROOT" && shasum -a 256 -c "$MANIFEST")
+cd "$ROOT/vps" && ./deploy.sh          # 任一必需检查失败即非零退出
+```
+
+发布后从目标机确认 7 个核心容器均为 `running`，本机 console 无会话为 401、无效 MCP Key 为 401；再从发布控制端检查对应公网域名的 `/console/` 可达、`/mcp` 无效 Key 为 401。源码清单、镜像 ID、HTTP 状态和备份路径共同组成发布 receipt。
+
+单端失败必须先恢复该端，恢复通过前不得继续下一端。恢复源码备份后保留现有 `vps/.env`，重跑该备份版本的 `vps/deploy.sh` 并重复全部健康检查。若目标版本早于 issue #51，**必须在覆盖当前源码前**运行：
+
+```bash
+cd "$ROOT"
+./vps/prepare_legacy_mcp_rollback.py /etc/private-llm/external-mcp.json
+# 仅 groups 字段缺失或严格等于 [] 的合法条目保留；其余受限、畸形或结构错误条目全部隔离。
+# 任一备份、解析、写入或验证失败都会非零退出，此时禁止启动旧 mcp-hub。
+```
+
+隔离器生成 0600 原字节备份与 quarantine 文件；故障排除后可恢复。GitHub 侧用 revert merge commit，不改写 main 历史。
 
 ### 建用户 Key（C3：管理员创建分发）
 
@@ -105,6 +150,11 @@ install.sh 在站点侧：装 wireguard-tools → `wg genkey`（私钥不出机�
 
 本地图片两步式：`POST /mcp/upload`（multipart `file=`，同一 Key）→ 得临时 URL（30min）→ `analyze_image(url, 问题)`。
 
+外部 MCP 由管理员在「MCP 管理」绑定零个或多个分组：不绑定（`groups: []` 或旧条目无
+`groups`）表示全局可用；绑定后，仅 `metadata.group` 命中的 Key 能在 `tools/list`
+发现并通过 `tools/call` 使用。未绑定/`default` Key 只见全局工具；内建
+`analyze_image` 默认全局。客户端 URL、Bearer Key 与传输协议不变。
+
 ## 5. 验收记录（T1~T13，2026-08-14 首站 site-a 实测）
 
 | # | 故事 | 验证步骤与通过标准 | 结果 |
@@ -120,7 +170,7 @@ install.sh 在站点侧：装 wireguard-tools → `wg genkey`（私钥不出机�
 | T9 | US-P9 | Admin UI 建/禁 Key 即时生效；用量可筛 | ✅ `/ui` 可用（master key 登录）；建 Key 即时生效（home-key 实测） |
 | T10 | US-P10 | `/key/info` 仅见自身用量 | ✅ 用户 Key 自查 200 |
 | T11 | US-P11 | `/v1/models` 见全部对外名；未知名→400/404 | ✅ 4 个对外名（deepseek/qwen 直选 + claude-opus-5/qwen3.6-35b-a3 别名） |
-| T12 | US-P12 | 外部 MCP 注册后 tools/list 前缀工具可用 | ◐ 框架就绪（配置文件 + 占位符过滤 + 前缀代理）；智谱真实凭据待录入验证 |
+| T12 | US-P12/#51 | 外部 MCP 注册后前缀工具可用，按 Key 分组裁剪 tools/list/tools/call | ✅ FastMCP 3.4.7 授权矩阵与 console 配置测试通过；Codex `web-reader` 真实注册为 `web_webReader`（home 标签）并经代理读取 example.com 通过 |
 | T13 | US-P13 | Key 绑组仅组内路由；伪造 tag 无法越组；组内无部署→可判读错误 | ✅ 六项矩阵全过：home Key→组外模型 401 可判读、组内 200、伪造 x-litellm-tags 双向无效、未绑组全量 |
 | T14 | US-P9 修订/P14 | 控制台全流程（2026-08-14 晚实测） | ✅ 登录三态（master→admin / 用户 Key→user / 错 Key 401，连错 5 次 60s 内 429）；user 访问管理 API 全 403、/my 数据真实（今日 133 次 + 分模型）；Key 建/禁/解禁/删全链路（blocked→chat 401、mcp 401，删除→401）；分组 create/rename/delete 的 retag 实效（/model/info tags 逐条核对）；站点 token 下发（900s + 安装命令）；别名创建（/v1/models 可见 + 调用 200）；MCP 注册/移除（配置 0600 + restart + 凭据只显尾 4 位 + 不可达服务优雅降级） |
 | T15 | US-P14 | 暴露面收敛回归（2026-08-14 晚实测） | ✅ 管理面 404 矩阵：/ui、/login、/sso、/openapi.json、/redoc、/health、/key/generate、/key/block、/key/update、/key/list、/model/new、/model/info、/team/list、/global/spend、/spend/logs、/onboard/admin/*、任意未知名全 404；保留面正常：/（主页 200）、/v1/models（带 Key 200）、SSE 流式 chat、/v1/messages（CC 协议 200）、/key/info、/health/liveliness、/mcp（无 Key 401）、/onboard/install（坏 token 403）、/console/（200）；site-add/list CLI 走本机 8100 不受影响；deploy.sh 冒烟含收敛自检 |
@@ -163,5 +213,5 @@ cd ~/LLM-Portal/vps && ./deploy.sh    # 幂等升级（compose build + up + 收�
 - **docker.sock 取舍（#7）**：console/onboardd 容器挂 `/var/run/docker.sock`（执行 wg peer 管理 / mcp-hub 重启），挂 sock 的容器 ≈ 宿主机 root——只给这两个管理面容器，且它们本身已是管理员权限面；其余容器（litellm/compat/postgres/mcp-hub/wireguard）不挂（compat 亦不持任何密钥，鉴权头原样透传）。
 - WG 私钥：VPS `/var/lib/private-llm/wireguard-private.key`（0600）与 `/etc/wireguard/wg0.conf`（0600）；站点私钥仅站点本机。
 - 用户 Key 永不出网关：mcp-hub 只用它调 `/key/info` 与回环 LiteLLM；上游无鉴权直连不带 Key。
-- **Key 明文保险库（2026-08-15，管理员可再查）**：管理员需求「查看生成的 key，而非仅一次展示」——consoled 在创建时把明文 Fernet 加密存 `/var/lib/private-llm/console/keyvault.db`（密钥文件 `keyvault.key` 0600，独立于密文），`POST /console/api/keys/reveal`（仅管理员）解密取回；「使用」弹窗自动取回代入。**边界变化：网关成为密钥保管者**——VPS 失陷即密钥失陷（加密仅防离库拖走）；保险库启用前的旧 Key 只有哈希，reveal 404 提示重签；轮换保险库 = 删 `keyvault.key`（旧密文不可解，等同重签）。
+- **Key 明文保险库（2026-08-15，管理员可再查）**：管理员需求「查看生成的 key，而非仅一次展示」——consoled 在创建时把明文 Fernet 加密存 `/var/lib/private-llm/console/keyvault.db`（密钥文件 `keyvault.key` 0600，独立于密文），`POST /console/api/keys/reveal`（仅管理员）解密取回；「使用」弹窗自动取回代入。保险库启用前的旧 Key 无法由哈希反推：配置区在取得真实明文前保持为空；管理员可粘贴完整 Key，经所选 token 的 SHA-256 与在线 `/key/info` 双重校验后补录保险库，不轮换、不改动该 Key。**边界变化：网关成为密钥保管者**——VPS 失陷即密钥失陷（加密仅防离库拖走）；轮换保险库 = 删 `keyvault.key`（旧密文不可解，等同重签）。
 - 公网面：443/tcp（nginx）、51820/udp（WG）、SSH；其余容器仅 127.0.0.1 回环发布或 compose 内网互通，不监听公网。

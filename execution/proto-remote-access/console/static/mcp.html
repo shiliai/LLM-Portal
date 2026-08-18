@@ -9,13 +9,25 @@
 <link rel="icon" href="assets/brand/favicon.svg" type="image/svg+xml" sizes="any">
 <link rel="apple-touch-icon" href="assets/brand/apple-touch-icon.png">
 <link rel="manifest" href="manifest.webmanifest">
+<style>
+  #modal-usemcp { width: 680px; max-width: 94vw; }
+  #modal-usemcp .pf-modal-body { max-height: 62vh; overflow-y: auto; }
+  .mcp-use-key-row { display: flex; gap: 8px; align-items: center; margin: 8px 0 14px; }
+  .mcp-use-key-row .pf-input { flex: 1; }
+  .mcp-use-key-masked { -webkit-text-security: disc; }
+  .mcp-use-blk { margin-top: 12px; }
+  .mcp-use-blk-label { font-size: 12px; color: #595959; margin-bottom: 2px; }
+</style>
 </head>
 <body data-page="mcp">
 <template id="page">
 
   <div class="pf-page-head">
-    <div class="pf-desc">客户端以 <span class="mono">/mcp</span> + 与 API 相同的 Key 注册网关 MCP（Streamable HTTP）；网关聚合内建视觉工具与已注册外部 MCP 工具，用户的 Key 只用于网关鉴权与记账，永不发往任何上游（US-P4/C5）。</div>
-    <button class="pf-btn primary" data-modal="modal-newmcp">注册外部 MCP</button>
+    <div class="pf-desc">客户端以 <span class="mono">/mcp</span> + 与 API 相同的 Key 注册网关 MCP（Streamable HTTP）；网关按 Key 所属分组裁剪外部工具，用户的 Key 只用于网关鉴权与记账，永不发往任何上游（US-P4/C5）。</div>
+    <div style="display:flex;gap:8px">
+      <button class="pf-btn" id="btn-use-mcp" type="button">使用</button>
+      <button class="pf-btn primary" data-modal="modal-newmcp">注册外部 MCP</button>
+    </div>
   </div>
 
   <!-- 内建工具 -->
@@ -47,7 +59,7 @@
     </div>
     <table class="pf-table">
       <thead>
-        <tr><th>名称</th><th>URL</th><th>凭据</th><th>工具前缀</th><th>操作</th></tr>
+        <tr><th>名称</th><th>URL</th><th>凭据</th><th>工具前缀</th><th>绑定分组</th><th>操作</th></tr>
       </thead>
       <tbody id="mcp-rows"></tbody>
     </table>
@@ -120,6 +132,13 @@
           <div class="pf-desc">聚合 tools/list 时用前缀防止命名冲突；限小写字母/数字/下划线（<span class="mono">[a-z0-9_]</span>）。</div>
         </div>
       </div>
+      <div class="pf-form-row">
+        <label>绑定分组</label>
+        <div>
+          <div id="mcp-group-checks"></div>
+          <div class="pf-desc">可多选；不绑定表示全局可用。受限 MCP 仅对所属分组 Key 可见、可调用。</div>
+        </div>
+      </div>
     </div>
     <div class="pf-modal-foot">
       <button class="pf-btn" data-close>取消</button>
@@ -127,16 +146,172 @@
     </div>
   </div>
 
+  <div class="pf-modal" id="modal-mcpgroups" style="width:460px">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title">绑定分组 · <span id="edit-mcp-name" class="mono"></span></div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-modal-body">
+      <div id="edit-mcp-group-checks"></div>
+      <div class="pf-desc" style="margin-top:8px">清空全部选项后，该 MCP 将对所有有效 Key 开放。</div>
+    </div>
+    <div class="pf-modal-foot">
+      <button class="pf-btn" data-close>取消</button>
+      <button class="pf-btn primary" id="btn-save-mcp-groups">保存并重载</button>
+    </div>
+  </div>
+
+  <div class="pf-modal" id="modal-usemcp">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title">使用 MCP 网关</div>
+      <button class="pf-x" data-close>×</button>
+    </div>
+    <div class="pf-modal-body">
+      <div class="pf-kv" style="margin-bottom:10px">
+        <div class="pf-kv-k">Server URL</div><div class="pf-kv-v mono" id="mcp-use-url"></div>
+        <div class="pf-kv-k">鉴权</div><div class="pf-kv-v">与模型 API 使用同一把用户 Key</div>
+      </div>
+      <div class="pf-form-row" style="margin-bottom:8px">
+        <label>用户 Key</label>
+        <div><select class="pf-select" id="mcp-use-key-select"></select></div>
+      </div>
+      <div class="mcp-use-key-row">
+        <input class="pf-input mono mcp-use-key-masked" id="mcp-use-key" type="text"
+               autocomplete="off" autocapitalize="none" spellcheck="false" data-lpignore="true" data-1p-ignore
+               placeholder="选择用户 Key 后自动从保险库取回">
+        <button class="pf-btn" id="btn-mcp-use-show" type="button" title="显示或隐藏密钥">显示</button>
+        <button class="pf-btn primary" id="btn-mcp-use-import" type="button" hidden>校验并保存</button>
+      </div>
+      <div class="pf-desc" id="mcp-use-key-note" style="margin-top:-8px;margin-bottom:12px"></div>
+
+      <div class="pf-tabs">
+        <button class="pf-tab active" data-tab="mcp-codex" type="button">Codex CLI</button>
+        <button class="pf-tab" data-tab="mcp-claude" type="button">Claude Code</button>
+        <button class="pf-tab" data-tab="mcp-generic" type="button">通用配置</button>
+      </div>
+      <div class="pf-tabpane active" data-tab="mcp-codex">
+        <div class="mcp-use-blk"><div class="mcp-use-blk-label">macOS · Linux</div>
+          <div class="pf-code"><pre id="mcp-codex-nix"></pre></div></div>
+        <div class="mcp-use-blk"><div class="mcp-use-blk-label">Windows PowerShell</div>
+          <div class="pf-code"><pre id="mcp-codex-win"></pre></div></div>
+      </div>
+      <div class="pf-tabpane" data-tab="mcp-claude">
+        <div class="mcp-use-blk"><div class="mcp-use-blk-label">用户级配置</div>
+          <div class="pf-code"><pre id="mcp-claude-command"></pre></div></div>
+      </div>
+      <div class="pf-tabpane" data-tab="mcp-generic">
+        <div class="mcp-use-blk"><div class="mcp-use-blk-label">支持 Streamable HTTP 的 MCP 客户端</div>
+          <div class="pf-code"><pre id="mcp-generic-json"></pre></div></div>
+      </div>
+      <div class="pf-banner" style="margin-top:14px">配置包含用户 Key 明文时，请勿提交到代码仓库、截图外发或粘贴到不可信环境。</div>
+    </div>
+    <div class="pf-modal-foot"><button class="pf-btn" data-close>关闭</button></div>
+  </div>
+
 </template>
 <script src="assets/portal.js"></script>
 <script>
 (function () {
   'use strict';
+  var revealGeneration = 0;
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function fmtN(n) { return Number(n || 0).toLocaleString('zh-CN'); }
+  var availableGroups = [];
+
+  function groupChecks(id, selected, cls) {
+    var chosen = new Set(selected || []);
+    document.getElementById(id).innerHTML = availableGroups.map(function (g) {
+      return '<label style="display:block;margin:6px 0"><input type="checkbox" class="' + cls + '" value="' + esc(g) + '"' +
+        (chosen.has(g) ? ' checked' : '') + '> <span class="mono">' + esc(g) + '</span></label>';
+    }).join('') || '<div class="pf-desc">暂无可绑定的自定义分组</div>';
+  }
+
+  function selectedGroups(cls) {
+    return Array.from(document.querySelectorAll('.' + cls + ':checked')).map(function (cb) { return cb.value; });
+  }
+
+  function mcpKeyValue() {
+    return document.getElementById('mcp-use-key').value.trim();
+  }
+
+  function fillMcpUse() {
+    var url = location.origin + '/mcp';
+    var key = mcpKeyValue();
+    var quote = function (s) { return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'; };
+    document.getElementById('mcp-use-url').textContent = url;
+    if (!key) {
+      ['mcp-codex-nix', 'mcp-codex-win', 'mcp-claude-command', 'mcp-generic-json'].forEach(function (id) {
+        document.getElementById(id).textContent = '';
+      });
+      return;
+    }
+    document.getElementById('mcp-codex-nix').textContent =
+      'export LLM_PORTAL_KEY=' + quote(key) + '\n' +
+      'codex mcp add llm-portal --url ' + quote(url) + ' --bearer-token-env-var LLM_PORTAL_KEY';
+    document.getElementById('mcp-codex-win').textContent =
+      '$env:LLM_PORTAL_KEY = ' + quote(key) + '\n' +
+      'codex mcp add llm-portal --url ' + quote(url) + ' --bearer-token-env-var LLM_PORTAL_KEY';
+    document.getElementById('mcp-claude-command').textContent =
+      'claude mcp add --transport http --scope user llm-portal ' + quote(url) +
+      ' --header ' + quote('Authorization: Bearer ' + key);
+    document.getElementById('mcp-generic-json').textContent = JSON.stringify({
+      mcpServers: {
+        'llm-portal': { type: 'http', url: url, headers: { Authorization: 'Bearer ' + key } }
+      }
+    }, null, 2);
+  }
+
+  function revealMcpUseKey(token) {
+    var generation = ++revealGeneration;
+    var key = document.getElementById('mcp-use-key');
+    var note = document.getElementById('mcp-use-key-note');
+    var importBtn = document.getElementById('btn-mcp-use-import');
+    key.value = '';
+    key.readOnly = true;
+    importBtn.hidden = true;
+    key.placeholder = token ? '正在从保险库取回…' : '暂无启用的用户 Key';
+    note.textContent = '';
+    fillMcpUse();
+    if (!token) return;
+    window.pfApi('POST', '/keys/reveal', { key: token }).then(function (d) {
+      if (generation !== revealGeneration || document.getElementById('mcp-use-key-select').value !== token) return;
+      key.value = d.key || '';
+      key.placeholder = '';
+      note.textContent = '已从加密保险库取回；切换上方用户 Key 会同步刷新配置。';
+      fillMcpUse();
+    }).catch(function () {
+      if (generation !== revealGeneration || document.getElementById('mcp-use-key-select').value !== token) return;
+      key.readOnly = false;
+      key.placeholder = '该 Key 明文不在保险库，请手动粘贴完整 Key';
+      note.textContent = '这是保险库启用前创建的历史 Key；粘贴完整 Key 并校验保存后才会生成配置。';
+      importBtn.hidden = false;
+      key.focus();
+      fillMcpUse();
+    });
+  }
+
+  function loadMcpUseKeys() {
+    var select = document.getElementById('mcp-use-key-select');
+    select.innerHTML = '<option value="">加载中…</option>';
+    window.pfApi('GET', '/keys').then(function (d) {
+      var keys = (d.keys || []).filter(function (key) { return !key.blocked; })
+        .sort(function (a, b) { return String(b.created_at || '').localeCompare(String(a.created_at || '')); });
+      select.innerHTML = keys.map(function (key) {
+        return '<option value="' + esc(key.token) + '">' + esc(key.alias) + ' · ' +
+          esc(key.group) + ' · sk-' + esc(key.key_last4) + '</option>';
+      }).join('') || '<option value="">暂无启用的用户 Key</option>';
+      revealMcpUseKey(select.value);
+    }).catch(function (e) {
+      select.innerHTML = '<option value="">用户 Key 加载失败</option>';
+      document.getElementById('mcp-use-key-note').textContent = e.error || '用户 Key 加载失败';
+      revealMcpUseKey('');
+    });
+  }
 
   function renderMcp(d) {
+    availableGroups = d.groups || [];
+    groupChecks('mcp-group-checks', [], 'new-mcp-group');
     document.getElementById('builtin-sig').textContent = d.builtin.tool;
     document.getElementById('builtin-model').textContent = 'standing on ' + d.builtin.model;
     document.getElementById('mcp-extra').textContent = '共 ' + d.external.length + ' 个';
@@ -146,9 +321,19 @@
         '<td class="mono">' + esc(e.url) + '</td>' +
         '<td><span class="pf-chip ok">已保存</span> <span class="pf-key">' + esc(e.api_key_last4) + '</span></td>' +
         '<td class="mono">' + esc(e.prefix) + '</td>' +
-        '<td><button class="pf-link danger js-mcp-remove" data-name="' + esc(e.name) + '">移除</button></td>' +
+        '<td>' + ((e.groups || []).map(function (g) { return '<span class="pf-chip">' + esc(g) + '</span>'; }).join(' ') || '<span class="pf-chip ok">全局</span>') + '</td>' +
+        '<td><button class="pf-link js-mcp-groups" data-name="' + esc(e.name) + '">编辑分组</button> ' +
+        '<button class="pf-link danger js-mcp-remove" data-name="' + esc(e.name) + '">移除</button></td>' +
       '</tr>';
-    }).join('') || '<tr><td colspan="5" class="pf-desc" style="padding:10px">暂未注册外部 MCP（US-P12：注册后用户无需自备外部服务凭据）</td></tr>';
+    }).join('') || '<tr><td colspan="6" class="pf-desc" style="padding:10px">暂未注册外部 MCP（US-P12：注册后用户无需自备外部服务凭据）</td></tr>';
+    document.querySelectorAll('.js-mcp-groups').forEach(function (btn) {
+      btn.onclick = function () {
+        var entry = d.external.find(function (e) { return e.name === btn.dataset.name; });
+        document.getElementById('edit-mcp-name').textContent = btn.dataset.name;
+        groupChecks('edit-mcp-group-checks', entry ? entry.groups : [], 'edit-mcp-group');
+        window.pfModal('modal-mcpgroups');
+      };
+    });
     document.querySelectorAll('.js-mcp-remove').forEach(function (btn) {
       btn.onclick = function () {
         if (!confirm('移除外部 MCP「' + btn.dataset.name + '」？将重启 mcp-hub 生效，进行中的工具调用会被中断。')) return;
@@ -180,6 +365,47 @@
 
   window.pfReady.then(function () {
     load();
+    document.getElementById('btn-use-mcp').addEventListener('click', function () {
+      var key = document.getElementById('mcp-use-key');
+      key.value = '';
+      key.readOnly = true;
+      key.classList.add('mcp-use-key-masked');
+      document.getElementById('btn-mcp-use-import').hidden = true;
+      document.getElementById('btn-mcp-use-show').textContent = '显示';
+      fillMcpUse();
+      window.pfModal('modal-usemcp');
+      loadMcpUseKeys();
+    });
+    document.getElementById('mcp-use-key-select').addEventListener('change', function () {
+      revealMcpUseKey(this.value);
+    });
+    document.getElementById('mcp-use-key').addEventListener('input', function () {
+      fillMcpUse();
+      var selected = document.getElementById('mcp-use-key-select').value;
+      document.getElementById('btn-mcp-use-import').disabled = !selected || !this.value.trim();
+    });
+    document.getElementById('btn-mcp-use-import').addEventListener('click', function () {
+      var token = document.getElementById('mcp-use-key-select').value;
+      var key = document.getElementById('mcp-use-key');
+      var generation = revealGeneration;
+      this.disabled = true;
+      window.pfApi('POST', '/keys/import', { key: token, plaintext: key.value.trim() }).then(function (d) {
+        if (generation !== revealGeneration || document.getElementById('mcp-use-key-select').value !== token) return;
+        key.value = d.key;
+        key.readOnly = true;
+        document.getElementById('btn-mcp-use-import').hidden = true;
+        document.getElementById('mcp-use-key-note').textContent = '已校验并存入加密保险库。';
+        fillMcpUse();
+      }).catch(function (e) {
+        document.getElementById('btn-mcp-use-import').disabled = false;
+        window.pfErr(e.error || 'Key 校验失败');
+      });
+    });
+    document.getElementById('btn-mcp-use-show').addEventListener('click', function () {
+      var key = document.getElementById('mcp-use-key');
+      var masked = key.classList.toggle('mcp-use-key-masked');
+      this.textContent = masked ? '显示' : '隐藏';
+    });
     document.getElementById('btn-refresh-tools').addEventListener('click', function () {
       document.getElementById('tools-preview').textContent = '拉取中…';
       window.pfApi('GET', '/mcp/tools').then(function (d) {
@@ -191,7 +417,8 @@
         name: document.getElementById('mcp-name').value.trim(),
         url: document.getElementById('mcp-url').value.trim(),
         api_key: document.getElementById('mcp-apikey').value.trim(),
-        prefix: document.getElementById('mcp-prefix').value.trim()
+        prefix: document.getElementById('mcp-prefix').value.trim(),
+        groups: selectedGroups('new-mcp-group')
       };
       if (!body.name || !body.url || !body.prefix) { window.pfErr('名称、URL、前缀必填'); return; }
       if (!confirm('保存将重启 mcp-hub 生效，进行中的工具调用会被中断。继续？')) return;
@@ -200,6 +427,16 @@
         window.pfToast('已注册' + (d.restart === 'ok' ? '，mcp-hub 已重启生效' : '（重启失败，请检查服务）'));
         load();
       }).catch(function (e) { window.pfErr(e.error || '注册失败'); });
+    });
+    document.getElementById('btn-save-mcp-groups').addEventListener('click', function () {
+      var name = document.getElementById('edit-mcp-name').textContent;
+      if (!confirm('保存将重启 mcp-hub 生效，进行中的工具调用会被中断。继续？')) return;
+      window.pfApi('POST', '/mcp/groups', { name: name, groups: selectedGroups('edit-mcp-group') })
+        .then(function (d) {
+          window.pfModalClose();
+          window.pfToast('分组绑定已更新' + (d.restart === 'ok' ? '，mcp-hub 已重启生效' : '（重启失败，请检查服务）'));
+          load();
+        }).catch(function (e) { window.pfErr(e.error || '分组绑定更新失败'); });
     });
   });
 })();

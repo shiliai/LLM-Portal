@@ -9,6 +9,7 @@ X-Requested-With → 403、未登录访问管理 API → 401、会话 cookie HMA
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import sqlite3
 import time
@@ -77,6 +78,20 @@ def console(tmp_path):
 def console_admin(tmp_path):
     """配置了 ADMIN_EMAIL/ADMIN_PASSWORD 的实例（master key 不再作网页登录）。"""
     return _load(tmp_path, {"ADMIN_EMAIL": ADMIN_EMAIL, "ADMIN_PASSWORD": ADMIN_PASSWORD})
+
+
+@pytest.fixture
+def mcp_console(tmp_path):
+    mod = _load(tmp_path, {
+        "EXTERNAL_MCP_CONF": str(tmp_path / "external-mcp.json"),
+        "MCP_RESTART_CMD": "true",
+    })
+
+    async def ready(_expected_sha256):
+        return True
+
+    mod.mcp_hub_ready = ready
+    return mod
 
 
 def _rows(mod) -> list[tuple]:
@@ -279,6 +294,200 @@ def test_user_role_cannot_access_admin_api(console, monkeypatch):
         assert me.json()["role"] == "user"            # 用户会话可用（role=any 端点）
         admin_api = client.get("/console/api/keys", headers={"Cookie": cookie})
         assert admin_api.status_code == 403           # 管理端点按角色拒绝
+
+
+# ---------------------------------------------------------------- MCP 分组分发（issue #51）
+
+def _mcp_handler(method, path, bearer, json_body):
+    if path == "/mcp/usage":
+        return 401, {"error": "invalid or missing key"}
+    if path == "/global/spend" and bearer == MASTER_KEY:
+        return 200, {}
+    if path == "/key/list":
+        return 200, {"keys": [{"token": "hash-home", "metadata": {"group": "home"}}]}
+    if path == "/model/info":
+        return 200, {"data": []}
+    if path == "/onboard/admin/list":
+        return 200, {"sites": []}
+    return 404, {"error": f"unexpected stub path {path}"}
+
+
+def _mcp_only_handler(method, path, bearer, json_body):
+    if path == "/key/list":
+        return 200, {"keys": []}
+    return _mcp_handler(method, path, bearer, json_body)
+
+
+def test_mcp_register_and_update_groups(mcp_console, monkeypatch):
+    install_litellm_stub(monkeypatch, _mcp_handler)
+    client, hdr = _admin_client(mcp_console)
+    created = client.post("/console/api/mcp/register", headers=hdr, json={
+        "name": "svc", "url": "https://mcp.invalid/mcp", "api_key": "secret-1234",
+        "prefix": "svc_", "groups": ["home"],
+    })
+    assert created.status_code == 200
+    assert json.loads(mcp_console.EXTERNAL_MCP_CONF.read_text())[0]["groups"] == ["home"]
+
+    listed = client.get("/console/api/mcp", headers=hdr)
+    assert listed.status_code == 200
+    assert listed.json()["external"][0]["groups"] == ["home"]
+    assert listed.json()["groups"] == ["home"]
+
+    updated = client.post("/console/api/mcp/groups", headers=hdr,
+                          json={"name": "svc", "groups": []})
+    assert updated.status_code == 200
+    assert json.loads(mcp_console.EXTERNAL_MCP_CONF.read_text())[0]["groups"] == []
+
+
+def test_mcp_register_rejects_unknown_group(mcp_console, monkeypatch):
+    install_litellm_stub(monkeypatch, _mcp_handler)
+    client, hdr = _admin_client(mcp_console)
+    resp = client.post("/console/api/mcp/register", headers=hdr, json={
+        "name": "svc", "url": "https://mcp.invalid/mcp", "prefix": "svc_",
+        "groups": ["unknown"],
+    })
+    assert resp.status_code == 400
+    assert "unknown groups" in resp.json()["error"]
+    assert not mcp_console.EXTERNAL_MCP_CONF.exists()
+
+
+@pytest.mark.parametrize("groups", [None, False, 0, "", {}, [""], [0]])
+def test_mcp_register_rejects_present_malformed_groups(mcp_console, monkeypatch, groups):
+    install_litellm_stub(monkeypatch, _mcp_handler)
+    client, hdr = _admin_client(mcp_console)
+    resp = client.post("/console/api/mcp/register", headers=hdr, json={
+        "name": "svc", "url": "https://mcp.invalid/mcp", "prefix": "svc_",
+        "groups": groups,
+    })
+    assert resp.status_code == 400
+    assert not mcp_console.EXTERNAL_MCP_CONF.exists()
+
+
+def test_mcp_config_restored_when_restart_fails(mcp_console, monkeypatch):
+    install_litellm_stub(monkeypatch, _mcp_handler)
+    original = b'[{"name":"old","url":"https://old.invalid","groups":[]}]\n'
+    mcp_console.EXTERNAL_MCP_CONF.write_bytes(original)
+    mcp_console.EXTERNAL_MCP_CONF.chmod(0o640)
+    monkeypatch.setattr(mcp_console, "restart_mcp_hub", lambda: "exit 1")
+    client, hdr = _admin_client(mcp_console)
+    resp = client.post("/console/api/mcp/register", headers=hdr, json={
+        "name": "svc", "url": "https://mcp.invalid/mcp", "prefix": "svc_", "groups": []})
+    assert resp.status_code == 502
+    assert mcp_console.EXTERNAL_MCP_CONF.read_bytes() == original
+    assert mcp_console.EXTERNAL_MCP_CONF.stat().st_mode & 0o777 == 0o640
+
+
+def test_mcp_config_restored_when_readiness_fails(mcp_console, monkeypatch):
+    install_litellm_stub(monkeypatch, _mcp_handler)
+    mcp_console.write_mcp_conf([])
+    original = mcp_console.EXTERNAL_MCP_CONF.read_bytes()
+    calls = []
+    monkeypatch.setattr(mcp_console, "restart_mcp_hub", lambda: calls.append(1) or "ok")
+
+    readiness = iter([False, True])
+
+    async def not_ready_then_restored(_expected_sha256):
+        return next(readiness)
+
+    monkeypatch.setattr(mcp_console, "mcp_hub_ready", not_ready_then_restored)
+    client, hdr = _admin_client(mcp_console)
+    resp = client.post("/console/api/mcp/register", headers=hdr, json={
+        "name": "svc", "url": "https://mcp.invalid/mcp", "prefix": "svc_", "groups": []})
+    assert resp.status_code == 502
+    assert mcp_console.EXTERNAL_MCP_CONF.read_bytes() == original
+    assert len(calls) == 2
+
+
+def test_restart_timeout_is_reported(mcp_console, monkeypatch):
+    def timeout(*args, **kwargs):
+        raise mcp_console.subprocess.TimeoutExpired(args[0], 60)
+
+    monkeypatch.setattr(mcp_console.subprocess, "run", timeout)
+    assert mcp_console.restart_mcp_hub() == "restart timed out"
+
+
+def test_groups_snapshot_counts_mcp_and_blocks_delete(mcp_console, monkeypatch):
+    install_litellm_stub(monkeypatch, _mcp_only_handler)
+    mcp_console.write_mcp_conf([{
+        "name": "svc", "url": "https://mcp.invalid/mcp", "api_key": "",
+        "prefix": "svc_", "groups": ["home"],
+    }])
+    client, hdr = _admin_client(mcp_console)
+    rows = client.get("/console/api/groups", headers=hdr).json()["groups"]
+    assert next(row for row in rows if row["name"] == "home")["mcps"] == 1
+    blocked = client.post("/console/api/groups/delete", headers=hdr, json={"name": "home"})
+    assert blocked.status_code == 409
+    assert "MCP" in blocked.json()["error"]
+
+
+def test_group_rename_updates_mcp_bindings(mcp_console, monkeypatch):
+    install_litellm_stub(monkeypatch, _mcp_only_handler)
+    mcp_console.write_mcp_conf([{
+        "name": "svc", "url": "https://mcp.invalid/mcp", "api_key": "",
+        "prefix": "svc_", "groups": ["home"],
+    }])
+    client, hdr = _admin_client(mcp_console)
+    resp = client.post("/console/api/groups/rename", headers=hdr,
+                       json={"from": "home", "to": "family"})
+    assert resp.status_code == 200
+    assert resp.json()["mcps_rebound"] == 1
+    assert json.loads(mcp_console.EXTERNAL_MCP_CONF.read_text())[0]["groups"] == ["family"]
+
+
+def test_group_rename_rolls_back_keys_before_mcp_on_partial_failure(mcp_console, monkeypatch):
+    keys = [
+        {"token": "a" * 64, "metadata": {"group": "home"}},
+        {"token": "b" * 64, "metadata": {"group": "home"}},
+    ]
+    updates = []
+
+    def handler(method, path, bearer, body):
+        if path == "/global/spend":
+            return 200, {}
+        if path == "/key/list":
+            return 200, {"keys": keys}
+        if path == "/model/info":
+            return 200, {"data": []}
+        if path == "/onboard/admin/list":
+            return 200, {"sites": []}
+        if path == "/key/update":
+            updates.append(body)
+            if body["key"] == "b" * 64:
+                return 500, {"error": "failed"}
+            return 200, {"ok": True}
+        return 404, {"error": path}
+
+    install_litellm_stub(monkeypatch, handler)
+    original = [{"name": "svc", "url": "https://mcp.invalid/mcp", "groups": ["home"]}]
+    mcp_console.write_mcp_conf(original)
+    client, hdr = _admin_client(mcp_console)
+    resp = client.post("/console/api/groups/rename", headers=hdr,
+                       json={"from": "home", "to": "family"})
+    assert resp.status_code == 502
+    assert json.loads(mcp_console.EXTERNAL_MCP_CONF.read_text()) == original
+    assert updates[-1] == {"key": "a" * 64, "metadata": {"group": "home"}}
+
+
+def test_historic_key_import_requires_matching_live_key(console, monkeypatch):
+    install_litellm_stub(monkeypatch, _handler)
+    token = hashlib.sha256(USER_KEY.encode()).hexdigest()
+    client, hdr = _admin_client(console)
+    bad = client.post("/console/api/keys/import", headers=hdr,
+                      json={"key": token, "plaintext": "sk-wrong"})
+    assert bad.status_code == 400
+    assert console.vault_get(token) == ""
+    ok = client.post("/console/api/keys/import", headers=hdr,
+                     json={"key": token, "plaintext": USER_KEY})
+    assert ok.status_code == 200
+    assert ok.json()["key"] == USER_KEY
+    assert console.vault_get(token) == USER_KEY
+
+
+def test_mcp_use_config_never_contains_placeholder_and_binds_reveal_generation():
+    source = (CONSOLE_DIR / "static" / "mcp.html").read_text()
+    assert "sk-（请选择用户 Key）" not in source
+    assert "generation !== revealGeneration" in source
+    assert "'/keys/import'" in source
 
 
 def test_logout_removes_session(console, monkeypatch):
