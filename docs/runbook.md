@@ -70,7 +70,8 @@ shasum -a 256 -c "private-llm-$MERGE_SHA.tar.sha256"
 # 每台目标机先记录恢复点
 ROOT=${ROOT:-$HOME/LLM-Portal}
 STAMP=$(date +%Y%m%d-%H%M%S)
-tar --exclude='./vps/.env' -C "$ROOT" -czf "$HOME/private-llm-source-$STAMP.tgz" .
+tar --exclude='./vps/.env' --exclude='./vps/observability/.env' \
+  -C "$ROOT" -czf "$HOME/private-llm-source-$STAMP.tgz" .
 cd "$ROOT/vps"
 docker inspect -f '{{.Name}} {{.Image}} {{.State.Status}}' \
   litellm private-llm-compat private-llm-postgres private-llm-mcp-hub \
@@ -85,7 +86,10 @@ STAGE=$(mktemp -d)
 tar -xf "private-llm-$MERGE_SHA.tar" -C "$STAGE"
 MANIFEST=$(pwd)/private-llm-$MERGE_SHA.files.sha256
 (cd "$STAGE" && shasum -a 256 -c "$MANIFEST")
-rsync -a --delete --exclude '.git/' --exclude 'vps/.env' "$STAGE/" "$ROOT/"
+rsync -a --delete --exclude '.git/' --exclude 'vps/.env' \
+  --exclude 'vps/observability/.env' \
+  --exclude 'vps/observability/prometheus/prometheus.yml' \
+  "$STAGE/" "$ROOT/"
 (cd "$ROOT" && shasum -a 256 -c "$MANIFEST")
 cd "$ROOT/vps" && ./deploy.sh          # 任一必需检查失败即非零退出
 ```

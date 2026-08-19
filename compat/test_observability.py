@@ -15,6 +15,10 @@ def histogram_count(histogram) -> float:
     return next(sample.value for sample in histogram.collect()[0].samples if sample.name.endswith("_count"))
 
 
+def counter_value(counter) -> float:
+    return counter._value.get()
+
+
 class FakeUpstreamResponse:
     """模拟 LiteLLM 非流式 JSON 200 响应，供请求级测试。"""
 
@@ -46,6 +50,15 @@ class FakeStreamingUpstreamResponse(FakeUpstreamResponse):
         await asyncio.Event().wait()
 
 
+class BlockingReadUpstreamResponse(FakeUpstreamResponse):
+    def __init__(self):
+        super().__init__({"content-type": "application/json"}, b"")
+
+    async def aread(self) -> bytes:
+        await asyncio.Event().wait()
+        return b""  # pragma: no cover
+
+
 class FakeUpstreamClient:
     """替换 cp.client：捕获转发头 + 返回固定响应。"""
 
@@ -64,6 +77,12 @@ class FakeUpstreamClient:
 
     async def aclose(self):
         pass
+
+
+class BlockingSendClient(FakeUpstreamClient):
+    async def send(self, request, stream=True):
+        await asyncio.Event().wait()
+        return self.upstream  # pragma: no cover
 
 
 class MetricsEndpointTest(unittest.TestCase):
@@ -134,23 +153,34 @@ class RequestIdPassthroughTest(unittest.TestCase):
         self.assertEqual(r.headers.get("x-request-id"), forwarded)
         self.assertEqual(len(forwarded), 32)  # uuid4().hex
 
+    def test_local_reject_counts_one_ingress_request(self):
+        body = {
+            "model": "m",
+            "messages": [],
+            "tool_choice": "required",
+            "tools": [
+                {"type": "function", "function": {"name": "a"}},
+                {"type": "function", "function": {"name": "b"}},
+            ],
+        }
+        requests = cp.metrics["requests"].labels(
+            endpoint="/v1/chat/completions", proto="openai", stream="", status_class="4xx")
+        before = counter_value(requests)
+        with TestClient(cp.app) as client:
+            response = client.post("/v1/chat/completions", json=body)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(counter_value(requests), before + 1)
+
 
 class StreamingLifecycleTest(unittest.IsolatedAsyncioTestCase):
-    async def test_client_cancellation_is_accounted_once(self):
-        upstream = FakeStreamingUpstreamResponse()
-        client = FakeUpstreamClient(upstream)
-        original_client = cp.client
-        cp.client = client  # type: ignore[assignment]
-        active = cp.metrics["active"].labels(proto="openai")
-        cancelled_total = cp.metrics["total"].labels(proto="openai", status_class="client_disconnect")
-        active_before = active._value.get()
-        cancelled_before = histogram_count(cancelled_total)
-        body = json.dumps({"model": "m", "stream": True, "messages": [{"role": "user", "content": "hi"}]}).encode()
+    BODY = json.dumps({"model": "m", "stream": True, "messages": [{"role": "user", "content": "hi"}]}).encode()
 
+    @staticmethod
+    def request(body: bytes):
         async def receive():
             return {"type": "http.request", "body": body, "more_body": False}
 
-        request = cp.Request(
+        return cp.Request(
             {
                 "type": "http",
                 "asgi": {"version": "3.0"},
@@ -166,6 +196,17 @@ class StreamingLifecycleTest(unittest.IsolatedAsyncioTestCase):
             },
             receive,
         )
+
+    async def test_client_cancellation_is_accounted_once(self):
+        upstream = FakeStreamingUpstreamResponse()
+        client = FakeUpstreamClient(upstream)
+        original_client = cp.client
+        cp.client = client  # type: ignore[assignment]
+        active = cp.metrics["active"].labels(proto="openai")
+        cancelled_total = cp.metrics["total"].labels(proto="openai", status_class="client_disconnect")
+        active_before = active._value.get()
+        cancelled_before = histogram_count(cancelled_total)
+        request = self.request(self.BODY)
         try:
             response = await cp.compat_proxy(request)
             iterator = response.body_iterator
@@ -178,6 +219,44 @@ class StreamingLifecycleTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(active._value.get(), active_before)
         self.assertEqual(histogram_count(cancelled_total), cancelled_before + 1)
+
+    async def _assert_cancelled_before_response(self, fake_client, body: bytes, stream: str):
+        original_client = cp.client
+        cp.client = fake_client  # type: ignore[assignment]
+        active = cp.metrics["active"].labels(proto="openai")
+        cancelled_total = cp.metrics["total"].labels(proto="openai", status_class="client_disconnect")
+        requests = cp.metrics["requests"].labels(
+            endpoint="/v1/chat/completions", proto="openai", stream=stream,
+            status_class="client_disconnect",
+        )
+        active_before = active._value.get()
+        cancelled_before = histogram_count(cancelled_total)
+        requests_before = counter_value(requests)
+        task = asyncio.create_task(cp.compat_proxy(self.request(body)))
+        await asyncio.sleep(0)
+        task.cancel()
+        try:
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        finally:
+            cp.client = original_client
+        self.assertEqual(active._value.get(), active_before)
+        self.assertEqual(histogram_count(cancelled_total), cancelled_before + 1)
+        self.assertEqual(counter_value(requests), requests_before + 1)
+
+    async def test_cancellation_during_upstream_header_wait_finalizes_once(self):
+        await self._assert_cancelled_before_response(
+            BlockingSendClient(FakeUpstreamResponse({}, b"")), self.BODY, "true")
+
+    async def test_cancellation_during_buffered_read_finalizes_once(self):
+        body = json.dumps({"model": "m", "stream": False, "messages": []}).encode()
+        await self._assert_cancelled_before_response(
+            FakeUpstreamClient(BlockingReadUpstreamResponse()), body, "false")
+
+
+class MetricsBoundsTest(unittest.TestCase):
+    def test_histograms_cover_configured_read_timeout(self):
+        self.assertIn(3600.0, cp.metrics["total"]._upper_bounds)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ INSTANCE=""
 TARGETS=""
 
 usage() {
-    echo "usage: $0 [--env-file FILE] [--instance NAME] [--targets URL[,URL...]] [--output FILE]" >&2
+    echo "usage: $0 [--env-file FILE] [--instance NAME] [--targets SITE=URL[,SITE=URL...]] [--output FILE]" >&2
     exit 2
 }
 
@@ -99,26 +99,37 @@ set -- $TARGETS
 IFS=$old_ifs
 [ "$#" -gt 0 ] || fail "at least one target is required"
 for raw_target in "$@"; do
-    target=$(printf '%s' "$raw_target" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-    [ -n "$target" ] || fail "empty target"
+    entry=$(printf '%s' "$raw_target" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    [ -n "$entry" ] || fail "empty target"
+    site=${entry%%=*}
+    target=${entry#*=}
+    [ "$site" != "$entry" ] && [ -n "$target" ] || fail "target must use SITE=URL: $entry"
+    case "$site" in
+        *[!A-Za-z0-9_.-]* | '') fail "invalid site label: $site" ;;
+    esac
     case "$target" in
         http://?* | https://?*) ;;
         *) fail "target must be an http(s) URL: $target" ;;
     esac
     case "$target" in
-        *[!A-Za-z0-9.:/?\&=_%+@~-]*) fail "target contains unsupported characters: $target" ;;
+        *://*@*) fail "target URL must not contain userinfo: $site" ;;
+        *[!A-Za-z0-9.:/?\&=_%+~-]*) fail "target contains unsupported characters: $site" ;;
     esac
-    printf '%s\n' "$target" >> "$target_file"
+    printf '%s\t%s\n' "$site" "$target" >> "$target_file"
 done
+awk -F '\t' 'seen[$1]++ { exit 1 }' "$target_file" || fail "site labels must be unique"
 LC_ALL=C sort -u "$target_file" -o "$target_file"
 
 awk -v instance="$INSTANCE" -v target_file="$target_file" '
     {
         line = $0
         gsub("__OBSERVABILITY_INSTANCE__", instance, line)
-        if (line ~ /__BLACKBOX_TARGETS__/) {
-            while ((getline target < target_file) > 0) {
-                printf "          - \"%s\"\n", target
+        if (line ~ /__BLACKBOX_STATIC_CONFIGS__/) {
+            while ((getline entry < target_file) > 0) {
+                split(entry, fields, "\t")
+                printf "      - targets: [\"%s\"]\n", fields[2]
+                printf "        labels:\n"
+                printf "          site: \"%s\"\n", fields[1]
             }
             close(target_file)
             next
@@ -127,4 +138,5 @@ awk -v instance="$INSTANCE" -v target_file="$target_file" '
     }
 ' "$TEMPLATE" > "$output_tmp"
 
+chmod 0644 "$output_tmp"
 mv "$output_tmp" "$OUTPUT"

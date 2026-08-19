@@ -15,23 +15,30 @@ groups:
         expr: histogram_quantile(0.95, sum(rate(compat_total_seconds_bucket[5m])) by (le, proto))
       # ---- LiteLLM 自定义（TTFT / generation / total）----
       - record: ll:ttft_p50
-        expr: histogram_quantile(0.50, sum(rate(litellm_ttft_seconds_bucket[5m])) by (le, model, stream))
+        expr: histogram_quantile(0.50, sum(rate(litellm_ttft_seconds_bucket[5m])) by (le, model, site, stream))
       - record: ll:ttft_p95
-        expr: histogram_quantile(0.95, sum(rate(litellm_ttft_seconds_bucket[5m])) by (le, model, stream))
+        expr: histogram_quantile(0.95, sum(rate(litellm_ttft_seconds_bucket[5m])) by (le, model, site, stream))
       - record: ll:ttft_p99
-        expr: histogram_quantile(0.99, sum(rate(litellm_ttft_seconds_bucket[5m])) by (le, model, stream))
+        expr: histogram_quantile(0.99, sum(rate(litellm_ttft_seconds_bucket[5m])) by (le, model, site, stream))
       - record: ll:generation_p95
-        expr: histogram_quantile(0.95, sum(rate(litellm_generation_seconds_bucket[5m])) by (le, model, stream))
+        expr: histogram_quantile(0.95, sum(rate(litellm_generation_seconds_bucket[5m])) by (le, model, site, stream))
+      - record: ll:total_p50
+        expr: histogram_quantile(0.50, sum(rate(litellm_total_seconds_bucket[5m])) by (le, model, site, stream))
       - record: ll:total_p95
-        expr: histogram_quantile(0.95, sum(rate(litellm_total_seconds_bucket[5m])) by (le, model, stream))
+        expr: histogram_quantile(0.95, sum(rate(litellm_total_seconds_bucket[5m])) by (le, model, site, stream))
+      - record: ll:total_p99
+        expr: histogram_quantile(0.99, sum(rate(litellm_total_seconds_bucket[5m])) by (le, model, site, stream))
       # ---- 请求量 / 错误率 / token ----
       - record: ll:reqs_rate
-        expr: sum(rate(litellm_requests_total[5m])) by (model)
+        expr: sum(rate(litellm_requests_total[5m])) by (model, site)
       - record: ll:error_ratio
-        expr: sum by (model) (rate(litellm_errors_total[5m]))
+        expr: sum by (model, site) (rate(litellm_errors_total[5m]))
           / clamp_min(
-              sum by (model) (rate(litellm_requests_total[5m])),
+              sum by (model, site) (rate(litellm_requests_total[5m])),
               1e-9)
+      - record: ll:error_ratio_by_status
+        expr: sum by (status_class) (rate(litellm_errors_total[5m]))
+          / scalar(clamp_min(sum(rate(litellm_requests_total[5m])), 1e-9))
       - record: ll:tokens_rate
         expr: sum(rate(litellm_tokens_total[5m])) by (type)
 
@@ -51,9 +58,9 @@ groups:
         annotations:
           summary: "compat 指标端点不可达，仍不阻断请求（见 README D8）"
       - alert: HighErrorRate
-        expr: sum by (model) (rate(litellm_errors_total[5m]))
+        expr: sum by (model, site) (rate(litellm_errors_total[5m]))
           / clamp_min(
-              sum by (model) (rate(litellm_requests_total[5m])),
+              sum by (model, site) (rate(litellm_requests_total[5m])),
               1e-9)
           > 0.1
         for: 5m
@@ -72,6 +79,12 @@ groups:
         labels: { severity: warning }
         annotations:
           summary: "WG 站点 {{ $labels.instance }} health 连续 10m 不可达"
+      - alert: BlackboxScrapeDown
+        expr: up{job="blackbox-sites"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "blackbox exporter 或探针抓取失败，站点可达性数据不可用"
       - alert: PrometheusDiskSpace
         expr: (prometheus_tsdb_storage_blocks_bytes / 1024 / 1024 / 1024) > 8
         for: 10m

@@ -72,12 +72,11 @@ scrape_configs:
     params:
       module: [http_2xx]
     static_configs:
-      - targets:
-          __BLACKBOX_TARGETS__
+      __BLACKBOX_STATIC_CONFIGS__
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
-      - source_labels: [__param_target]
+      - source_labels: [site]
         target_label: instance
       - target_label: __address__
         replacement: 127.0.0.1:9115

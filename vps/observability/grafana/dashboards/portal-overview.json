@@ -16,7 +16,40 @@
     "to": "now"
   },
   "templating": {
-    "list": []
+    "list": [
+      {
+        "name": "model",
+        "label": "Model",
+        "type": "query",
+        "query": "label_values(litellm_requests_total, model)",
+        "definition": "label_values(litellm_requests_total, model)",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "site",
+        "label": "Site",
+        "type": "query",
+        "query": "label_values(litellm_requests_total, site)",
+        "definition": "label_values(litellm_requests_total, site)",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
   },
   "annotations": {
     "list": []
@@ -35,8 +68,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(litellm_requests_total[$__rate_interval])) by (model)",
-          "legendFormat": "{{model}}"
+          "expr": "sum(rate(litellm_requests_total{model=~\"$model\",site=~\"$site\"}[$__rate_interval])) by (model,site)",
+          "legendFormat": "{{model}} @ {{site}}"
         }
       ]
     },
@@ -53,15 +86,15 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(litellm_active_requests) by (model)",
-          "legendFormat": "{{model}}"
+          "expr": "sum(litellm_active_requests{model=~\"$model\",site=~\"$site\"}) by (model,site)",
+          "legendFormat": "{{model}} @ {{site}}"
         }
       ]
     },
     {
       "id": 3,
       "type": "stat",
-      "title": "请求成功率（1h）",
+      "title": "外部网关成功率（1h）",
       "gridPos": {
         "h": 7,
         "w": 4,
@@ -71,7 +104,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "clamp_min(sum(increase(litellm_requests_total[1h])) - sum(increase(litellm_errors_total[1h])), 0) / clamp_min(sum(increase(litellm_requests_total[1h])), 1)",
+          "expr": "sum(increase(compat_requests_total{status_class=\"2xx\"}[1h])) / clamp_min(sum(increase(compat_requests_total[1h])), 1)",
           "format": "table"
         }
       ],
@@ -106,25 +139,25 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.5, sum(rate(litellm_ttft_seconds_bucket[5m])) by (le))",
-          "legendFormat": "P50"
+          "expr": "ll:ttft_p50{model=~\"$model\",site=~\"$site\"}",
+          "legendFormat": "{{model}} @ {{site}} P50"
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.95, sum(rate(litellm_ttft_seconds_bucket[5m])) by (le))",
-          "legendFormat": "P95"
+          "expr": "ll:ttft_p95{model=~\"$model\",site=~\"$site\"}",
+          "legendFormat": "{{model}} @ {{site}} P95"
         },
         {
           "refId": "C",
-          "expr": "histogram_quantile(0.99, sum(rate(litellm_ttft_seconds_bucket[5m])) by (le))",
-          "legendFormat": "P99"
+          "expr": "ll:ttft_p99{model=~\"$model\",site=~\"$site\"}",
+          "legendFormat": "{{model}} @ {{site}} P99"
         }
       ]
     },
     {
       "id": 5,
       "type": "timeseries",
-      "title": "总耗时 & 分段（P95，s）",
+      "title": "总耗时 P50/P95/P99 + compat P95（s）",
       "gridPos": {
         "h": 8,
         "w": 8,
@@ -134,18 +167,28 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum(rate(litellm_total_seconds_bucket[5m])) by (le))",
-          "legendFormat": "LL total P95"
+          "expr": "ll:total_p50{model=~\"$model\",site=~\"$site\"}",
+          "legendFormat": "{{model}} @ {{site}} total P50"
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.95, sum(rate(compat_upstream_header_seconds_bucket[5m])) by (le,proto))",
-          "legendFormat": "compat->LL头 {{proto}}"
+          "expr": "ll:total_p95{model=~\"$model\",site=~\"$site\"}",
+          "legendFormat": "{{model}} @ {{site}} total P95"
         },
         {
           "refId": "C",
-          "expr": "histogram_quantile(0.95, sum(rate(compat_parse_seconds_bucket[5m])) by (le))",
-          "legendFormat": "compat parse P95"
+          "expr": "ll:total_p99{model=~\"$model\",site=~\"$site\"}",
+          "legendFormat": "{{model}} @ {{site}} total P99"
+        },
+        {
+          "refId": "D",
+          "expr": "histogram_quantile(0.95, sum(rate(compat_upstream_header_seconds_bucket[5m])) by (le,proto))",
+          "legendFormat": "compat->LL头 {{proto}} P95"
+        },
+        {
+          "refId": "E",
+          "expr": "histogram_quantile(0.95, sum(rate(compat_parse_seconds_bucket[5m])) by (le,proto))",
+          "legendFormat": "compat parse {{proto}} P95"
         }
       ]
     },
@@ -162,8 +205,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum(rate(litellm_generation_seconds_bucket[5m])) by (le))",
-          "legendFormat": "generation P95"
+          "expr": "ll:generation_p95{model=~\"$model\",site=~\"$site\"}",
+          "legendFormat": "{{model}} @ {{site}} generation P95"
         }
       ]
     },
@@ -180,7 +223,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (status_class) (rate(litellm_errors_total[5m])) / clamp_min(sum(rate(litellm_requests_total[5m])), 1e-9)",
+          "expr": "ll:error_ratio_by_status",
           "legendFormat": "{{status_class}}"
         }
       ]
@@ -252,8 +295,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "probe_success{job=\"blackbox-sites\"}",
-          "legendFormat": "{{instance}}"
+          "expr": "probe_success{job=\"blackbox-sites\",site=~\"$site\"}",
+          "legendFormat": "{{site}}"
         }
       ]
     },
@@ -270,8 +313,8 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "probe_http_duration_seconds{job=\"blackbox-sites\"}",
-          "legendFormat": "{{instance}} {{phase}}"
+          "expr": "probe_http_duration_seconds{job=\"blackbox-sites\",site=~\"$site\"}",
+          "legendFormat": "{{site}} {{phase}}"
         }
       ]
     }

@@ -28,5 +28,5 @@ litellm_settings:
   callbacks:
     - proxy.group_routing.group_routing_hook   # US-P13：网关侧注入 Key 分组 tag（模块级实例；每请求强制 enable_tag_filtering）
     # issue #62 可观测性：分段指标（TTFT/生成/token/错误）+ request_id 对账（vps/litellm/observability_callback.py）。
-    # 部署观测栈时取消下一行注释启用（见 vps/observability/RUNBOOK.md §启用回调）：
-    # - proxy.observability_callback.obs_hook
+    # 声明式启用，确保正常发布/回滚不会因覆盖 tracked config 而静默丢失指标。
+    - proxy.observability_callback.obs_hook

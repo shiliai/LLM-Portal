@@ -382,6 +382,7 @@ async def compat_proxy(request: Request) -> Response:
     rid = request.headers.get("x-request-id") or _uuid.uuid4().hex
     metrics["active"].labels(proto=proto).inc()
 
+    stream_flag = ""
     finalized = False
 
     def finalize(resp_status: str, cause: str = "") -> None:
@@ -392,14 +393,12 @@ async def compat_proxy(request: Request) -> Response:
         finalized = True
         metrics["active"].labels(proto=proto).dec()
         metrics["total"].labels(proto=proto, status_class=resp_status).observe(_time.perf_counter() - t0)
-        if resp_status == "error":
+        metrics["requests"].labels(
+            endpoint=path, proto=proto, stream=stream_flag, status_class=resp_status).inc()
+        if cause:
             metrics["errors"].labels(cause=cause).inc()
-        elif resp_status != "client_disconnect":
-            metrics["requests"].labels(
-                endpoint=path, proto=proto, stream=stream_flag, status_class=resp_status).inc()
 
     out_body = raw
-    stream_flag = ""
     try:
         parsed = json.loads(raw) if raw else None
     except ValueError:
@@ -411,7 +410,7 @@ async def compat_proxy(request: Request) -> Response:
             tc_info = rewrite_forced_tool_choice(parsed, proto)
         except CompatReject as exc:
             metric("compat.reject", request_id=rid, endpoint=path, reason=exc.code, tools=len(parsed.get("tools") or []))
-            finalize("error", cause="reject_" + exc.code)
+            finalize(_status_class(exc.status), cause="reject_" + exc.code)
             return error_response(exc, proto, rid=rid)
         sys_info = normalize_anthropic_messages(parsed) if proto == "anthropic" else None
         dsml_info = normalize_dsml_history(parsed) if proto == "openai" else None
@@ -432,9 +431,12 @@ async def compat_proxy(request: Request) -> Response:
     upstream_request = client.build_request(request.method, url, headers=fwd, content=out_body)
     try:
         upstream = await client.send(upstream_request, stream=True)
+    except asyncio.CancelledError:
+        finalize("client_disconnect")
+        raise
     except httpx.HTTPError as exc:
         metric("compat.upstream_error", request_id=rid, endpoint=path, error=type(exc).__name__)
-        finalize("error", cause="upstream_" + type(exc).__name__)
+        finalize("5xx", cause="upstream_" + type(exc).__name__)
         return error_response(CompatReject(502, "upstream_unavailable", UPSTREAM_MESSAGE), proto, rid=rid)
     metrics["upstream_header"].labels(endpoint=path, proto=proto).observe(_time.perf_counter() - t_parsed)
 
@@ -449,8 +451,17 @@ async def compat_proxy(request: Request) -> Response:
     # OpenAI 非流式响应：forced 路径下 vLLM 会回 DSML 标记文本作 arguments——读转 JSON 再回客户端。
     # 非流式响应本就要完整到达，读改写不引入缓冲延迟；流式仍走逐行转发不受影响。
     if path == "/v1/chat/completions" and upstream.status_code == 200 and content_type == "application/json":
-        raw_response = await upstream.aread()
-        await upstream.aclose()
+        try:
+            raw_response = await upstream.aread()
+        except asyncio.CancelledError:
+            finalize("client_disconnect")
+            raise
+        except httpx.HTTPError as exc:
+            metric("compat.upstream_error", request_id=rid, endpoint=path, error=type(exc).__name__)
+            finalize("5xx", cause="upstream_" + type(exc).__name__)
+            return error_response(CompatReject(502, "upstream_unavailable", UPSTREAM_MESSAGE), proto, rid=rid)
+        finally:
+            await upstream.aclose()
         try:
             value = json.loads(raw_response)
         except ValueError:

@@ -7,6 +7,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 HERE = Path(__file__).parent
 
@@ -95,3 +97,37 @@ def test_release_package_binds_commit_and_has_file_inventory(tmp_path):
     shutil.copy2(checksum, relocated)
     subprocess.run(["shasum", "-a", "256", "-c", checksum.name],
                    cwd=relocated, check=True)
+
+
+def test_release_sync_preserves_observability_runtime_files(tmp_path):
+    if shutil.which("rsync") is None:
+        pytest.skip("rsync is required by the documented release workflow")
+
+    stage = tmp_path / "stage"
+    target = tmp_path / "target"
+    (stage / "vps/litellm").mkdir(parents=True)
+    (stage / "vps/observability/prometheus").mkdir(parents=True)
+    (target / "vps/observability/prometheus").mkdir(parents=True)
+    (stage / "vps/litellm/config.yaml").write_text(
+        "callbacks:\n  - proxy.observability_callback.obs_hook\n")
+    (stage / "vps/observability/prometheus/prometheus.yml.tmpl").write_text("template\n")
+    runtime_env = target / "vps/observability/.env"
+    runtime_config = target / "vps/observability/prometheus/prometheus.yml"
+    runtime_env.write_text("runtime-only\n")
+    runtime_config.write_text("rendered-runtime-only\n")
+    (target / "obsolete").write_text("delete-me\n")
+
+    subprocess.run([
+        "rsync", "-a", "--delete",
+        "--exclude", ".git/",
+        "--exclude", "vps/.env",
+        "--exclude", "vps/observability/.env",
+        "--exclude", "vps/observability/prometheus/prometheus.yml",
+        f"{stage}/", f"{target}/",
+    ], check=True)
+
+    assert runtime_env.read_text() == "runtime-only\n"
+    assert runtime_config.read_text() == "rendered-runtime-only\n"
+    assert not (target / "obsolete").exists()
+    assert "proxy.observability_callback.obs_hook" in (
+        target / "vps/litellm/config.yaml").read_text()

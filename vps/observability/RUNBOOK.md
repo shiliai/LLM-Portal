@@ -20,26 +20,26 @@ cp .env.example .env && vi .env
 ```
 
 必填：
-- `NGINX_SHARED_NETWORK`：与 `vps/.env` 同值（探测：`docker inspect nginx-sub2api | grep -i networks`）。
+- `PRIVATE_LLM_BACKEND_NETWORK`：private-llm 核心 compose 的后端网络，默认固定为 `private-llm_default`；用 `docker inspect private-llm-postgres` 核对。
 - `POSTGRES_PASSWORD`：复用 private-llm 的 postgres 密码；**建议**建只读账号再填（见 §5.2）。
 - `GF_ADMIN_PASSWORD`：Grafana 初始管理员密码。
 - `OBSERVABILITY_INSTANCE`：本机稳定名称（`vps` 或 `nas`），作为 Prometheus 的 `portal_instance` 外部标签。
-- `SITE_TARGETS`：WS 站点 health 目标（逗号分隔），如 `http://10.77.0.11:8890/health,http://10.77.0.11:8004/health`。
+- `SITE_TARGETS`：逗号分隔的 `SITE=http(s)://health-url`，如 `site-a=http://10.77.0.11:8890/health,site-b=http://10.77.0.12:8004/health`。`SITE` 是指标中的稳定低基数标签，URL 不持久化为指标标签且禁止 userinfo。
 
 ### 1.2 启用 compat 指标（compat 镜像已含 /metrics）
 
-compat 已内建 `/metrics`（compat_proxy.py + compat_metrics.py）。重新构建 compat 镜像后即生效：
+compat 已内建 `/metrics`（compat_proxy.py + compat_metrics.py）。使用正常部署入口完成重建、模式对应的 nginx reload 和冒烟，避免容器 IP 变化导致旧 upstream 返回 502：
 
 ```bash
 cd vps
-docker compose build compat && docker compose up -d compat
+./deploy.sh
+# 随后从公网入口分别冒烟 /v1/chat/completions、/v1/messages、/v1/messages/count_tokens
 ```
 
 ### 1.3 启用 litellm 回调（分段 TTFT/生成/token/错误）
 
-- 文件已就位于 `vps/litellm/observability_callback.py`（挂载点 `/app/proxy`，可导入 `proxy.observability_callback`）。
-- 编辑 `vps/litellm/config.yaml`：把 `callbacks` 里被注释的 `- proxy.observability_callback.obs_hook` 取消注释。
-- 重启 litellm 容器。回调自带指标端点 `127.0.0.1:48400/metrics`（`LITELLM_OBS_PORT` 可改）。
+- 文件已就位于 `vps/litellm/observability_callback.py`，且 tracked `config.yaml` 已声明式启用 `proxy.observability_callback.obs_hook`，正常发布/回滚不会静默丢失该开关。
+- `./deploy.sh` 会重建并重启 litellm。回调在容器内监听 `0.0.0.0:48400`，compose 仅发布到宿主机 `127.0.0.1:48400`。
 - 验证：`curl -s 127.0.0.1:48400/metrics | head` 出现 `litellm_ttft_seconds` / `litellm_total_seconds`。
 
 ### 1.4 起观测栈
@@ -57,6 +57,9 @@ sudo docker compose --env-file .env up -d
 ```bash
 # Prometheus target 健康（全 UP）
 curl -s 127.0.0.1:9090/api/v1/targets | python3 -m json.tool | grep -E '"health"|"job"'
+# Postgres exporter 必须真正连通且返回连接数
+curl -fsSG 127.0.0.1:9090/api/v1/query --data-urlencode 'query=pg_up == 1'
+curl -fsSG 127.0.0.1:9090/api/v1/query --data-urlencode 'query=pg_stat_database_numbackends{datname="litellm"}'
 # Grafana 仪表盘
 open http://127.0.0.1:3000   # admin / ${GF_ADMIN_PASSWORD}
 ```
@@ -84,12 +87,13 @@ sudo docker compose logs -f prometheus
 
 | 问什么 | PromQL |
 |--------|--------|
-| TTFT P95（5m） | `histogram_quantile(0.95, sum(rate(litellm_ttft_seconds_bucket[5m])) by (le))` |
-| 各模型请求量 | `sum(rate(litellm_requests_total[5m])) by (model)` |
-| 错误率 | `sum by (model) (rate(litellm_errors_total[5m])) / clamp_min(sum by (model) (rate(litellm_requests_total[5m])), 1e-9)` |
-| 活跃请求 | `sum(litellm_active_requests) by (model)` |
+| TTFT P95（5m） | `ll:ttft_p95{model=~"...",site=~"..."}` |
+| 各模型/站点 attempt 请求量 | `sum(rate(litellm_requests_total[5m])) by (model,site)` |
+| attempt 错误率 | `ll:error_ratio{model=~"...",site=~"..."}` |
+| 外部网关成功率 | `sum(rate(compat_requests_total{status_class="2xx"}[5m])) / clamp_min(sum(rate(compat_requests_total[5m])), 1e-9)` |
+| 活跃 attempt | `sum(litellm_active_requests) by (model,site)` |
 | compat→LL 头耗时 P95 | `histogram_quantile(0.95, sum(rate(compat_upstream_header_seconds_bucket[5m])) by (le,proto))` |
-| 站点可达 | `probe_success{job="blackbox-sites"}` |
+| 站点可达 | `probe_success{job="blackbox-sites",site="site-a"}` |
 | 站点 HTTP RTT | `probe_http_duration_seconds{job="blackbox-sites"}` |
 | PG 连接数 | `sum(pg_stat_database_numbackends{datname="litellm"})` |
 | 容器 OOM/重启 | `increase(container_oom_events_total[1h])` / `changes(container_start_time_seconds{container!=""}[1h])` |
@@ -137,7 +141,7 @@ prometheus.yml 的 relabel 已只保留低基数指标（pg 连接数等）；co
 
 - **监控侧故障不影响模型请求**（pull 模型，观测不在请求路径）：Prometheus/grafana/exporter 停机、磁盘满、回调异常，litellm/compat 照常服务。
 - litellm 回调全程 try/except（`observability_callback.py` 的 `_safe` 装饰器）：指标打点失败只记日志，绝不断流。
-- **停用观测栈**：compat 取消挂载即可；若要连 compat /metrics 也关，回滚 `compat_proxy.py` 中 /metrics Route（保留 request_id 透传不依赖 /metrics）。
+- **停用观测栈**：执行 `docker compose stop` 即停止所有 pull 采集，模型路径继续工作。若要停用进程内 callback，需在一个受控回滚版本中移除 tracked callback 配置并走正常 `deploy.sh`，不要现场修改 tracked 文件。
 
 ## 7. 验收对照（issue #62）
 
@@ -148,6 +152,6 @@ prometheus.yml 的 relabel 已只保留低基数指标（pg 连接数等）；co
 | 区分客户端取消/入口超时/上游连接失败/首 Token 慢/生成慢 | 已交付 | compat status_class + litellm 错误分类 + TTFT/生成分段 |
 | WireGuard 站点可达/RTT/连接错误趋势 | 已交付 | blackbox 60s 探针 + onboardd 站点状态页 |
 | 标签低基数 + 公网不可达 | 已交付 | D7 / §5 |
-| 采集开销 P95<=5ms 且不缓冲 | 代码满足，运行时验证待部署 | 固定小桶直方图 + SSE 逐行不改 |
+| 采集开销 P95<=5ms 且不缓冲 | 运行时验证待部署 | 固定桶直方图 + SSE 逐行不改；P95 必须实测 |
 | 连续采集 24h + 基线记录 | 待部署后 | §3.1 |
 | 部署/运维文档 + 监控故障不阻断 | 已交付 | 本手册 + README D8 |

@@ -18,23 +18,31 @@ def _at(seconds: float) -> datetime:
     return datetime.fromtimestamp(seconds, tz=timezone.utc)
 
 
-def _kwargs(call_id: str, *, stream: bool, request_id: str = "rid-123") -> dict:
-    return {
+def _kwargs(
+    call_id: str, *, stream: bool, request_id: str = "rid-123", trusted_request_id: bool = True,
+) -> dict:
+    value = {
         "litellm_call_id": call_id,
         "model": "client-model",
         "stream": stream,
         "litellm_params": {
             "model": "routed-model",
-            "model_info": {"id": "deployment-a"},
+            "model_info": {"id": "deployment-a", "site": "site-a"},
             "metadata": {"tags": ["group-a"], "request_id": request_id},
         },
     }
+    if request_id and trusted_request_id:
+        value["litellm_params"]["proxy_server_request"] = {
+            "headers": {"x-request-id": request_id},
+        }
+    return value
 
 
 @pytest.fixture
 def obs(monkeypatch):
     """Load an isolated callback module with real prometheus-client primitives."""
     monkeypatch.setattr(prometheus_client, "start_http_server", lambda *args, **kwargs: None)
+    monkeypatch.setenv("LITELLM_OBS_DISABLE_JANITOR", "1")
     module_name = "observability_callback_test_" + uuid.uuid4().hex
     path = Path(__file__).parent / "observability_callback.py"
     spec = importlib.util.spec_from_file_location(module_name, path)
@@ -51,6 +59,8 @@ def obs(monkeypatch):
 
 
 def _value(obs, name: str, labels: dict[str, str]) -> float:
+    if name == "litellm_active_requests" and "site" not in labels:
+        labels = {**labels, "site": "site-a"}
     return obs._REGISTRY.get_sample_value(name, labels) or 0.0
 
 
@@ -59,6 +69,7 @@ def _labels(*, stream: str) -> dict[str, str]:
         "model": "routed-model",
         "group": "group-a",
         "deployment": "deployment-a",
+        "site": "site-a",
         "stream": stream,
     }
 
@@ -70,8 +81,9 @@ def test_litellm_1962_callback_signatures(obs):
     assert list(inspect.signature(hook.async_log_success_event).parameters) == expected
     assert list(inspect.signature(hook.async_log_failure_event).parameters) == expected
     assert set(obs._METRICS["errors"]._labelnames) == {
-        "model", "group", "deployment", "stream", "status_class",
+        "model", "group", "deployment", "site", "stream", "status_class",
     }
+    assert set(obs._METRICS["active"]._labelnames) == {"model", "site"}
 
 
 def test_stream_records_first_ttft_then_total_generation_and_dict_usage(obs):
@@ -81,11 +93,13 @@ def test_stream_records_first_ttft_then_total_generation_and_dict_usage(obs):
         await hook.async_pre_call_hook(None, None, kwargs, "chat_completion")
         assert _value(obs, "litellm_active_requests", {"model": "routed-model"}) == 1
 
-        await hook.async_log_stream_event(kwargs, {}, _at(0), _at(2))
-        await hook.async_log_stream_event(kwargs, {}, _at(0), _at(3))
+        await hook.async_log_stream_event(
+            kwargs, {"choices": [{"delta": {"role": "assistant", "content": ""}}]}, _at(0), _at(2))
+        await hook.async_log_stream_event(
+            kwargs, {"choices": [{"delta": {"content": "hello"}}]}, _at(0), _at(3))
         labels = _labels(stream="true")
         assert _value(obs, "litellm_ttft_seconds_count", labels) == 1
-        assert _value(obs, "litellm_ttft_seconds_sum", labels) == 2
+        assert _value(obs, "litellm_ttft_seconds_sum", labels) == 3
 
         await hook.async_log_success_event(
             kwargs,
@@ -96,7 +110,7 @@ def test_stream_records_first_ttft_then_total_generation_and_dict_usage(obs):
         assert _value(obs, "litellm_active_requests", {"model": "routed-model"}) == 0
         assert _value(obs, "litellm_requests_total", labels) == 1
         assert _value(obs, "litellm_total_seconds_sum", labels) == 7
-        assert _value(obs, "litellm_generation_seconds_sum", labels) == 5
+        assert _value(obs, "litellm_generation_seconds_sum", labels) == 4
         assert _value(obs, "litellm_tokens_total", {"type": "prompt"}) == 3
         assert _value(obs, "litellm_tokens_total", {"type": "completion"}) == 5
         assert not obs._REQUESTS
@@ -117,6 +131,7 @@ def test_nonstream_usage_object_and_proxy_header_request_id(obs):
             headers={"x-request-id": "rid-from-header"}
         )
         assert obs._request_id(kwargs) == "rid-from-header"
+        kwargs["completion_start_time"] = _at(12)
 
         await hook.async_pre_call_hook(None, None, kwargs, "chat_completion")
         await hook.async_log_success_event(
@@ -129,8 +144,8 @@ def test_nonstream_usage_object_and_proxy_header_request_id(obs):
         assert _value(obs, "litellm_active_requests", {"model": "routed-model"}) == 0
         assert _value(obs, "litellm_requests_total", labels) == 1
         assert _value(obs, "litellm_total_seconds_sum", labels) == 4
-        assert _value(obs, "litellm_generation_seconds_sum", labels) == 4
-        assert obs._REGISTRY.get_sample_value("litellm_ttft_seconds_count", labels) is None
+        assert _value(obs, "litellm_ttft_seconds_sum", labels) == 2
+        assert _value(obs, "litellm_generation_seconds_sum", labels) == 2
         assert _value(obs, "litellm_tokens_total", {"type": "prompt"}) == 7
         assert _value(obs, "litellm_tokens_total", {"type": "completion"}) == 11
 
@@ -168,8 +183,8 @@ def test_request_id_only_pre_call_joins_terminal_callback_with_both_ids(obs):
         assert _value(obs, "litellm_active_requests", {"model": "routed-model"}) == 0
         assert _value(obs, "litellm_requests_total", _labels(stream="false")) == 1
         assert not obs._REQUESTS
-        assert "request:rid-canonical" in obs._FINISHED
-        assert "call:terminal-call-id" not in obs._FINISHED
+        assert "call:terminal-call-id" in obs._FINISHED
+        assert "request:rid-canonical" not in obs._FINISHED
 
     asyncio.run(scenario())
 
@@ -180,7 +195,8 @@ def test_failure_cancellation_cleans_up_once_and_has_bounded_status_label(obs):
         kwargs = _kwargs("cancel-1", stream=True)
         kwargs["exception"] = asyncio.CancelledError()
         await hook.async_pre_call_hook(None, None, kwargs, "chat_completion")
-        await hook.async_log_stream_event(kwargs, {}, _at(0), _at(1))
+        await hook.async_log_stream_event(
+            kwargs, {"choices": [{"delta": {"content": "x"}}]}, _at(0), _at(1))
         await hook.async_log_failure_event(kwargs, SimpleNamespace(status_code=499), _at(0), _at(4))
         labels = _labels(stream="true")
         assert _value(obs, "litellm_active_requests", {"model": "routed-model"}) == 0
@@ -197,7 +213,7 @@ def test_failure_cancellation_cleans_up_once_and_has_bounded_status_label(obs):
     asyncio.run(scenario())
 
 
-def test_stale_state_is_bounded_balanced_and_suppresses_late_terminal(obs, monkeypatch):
+def test_stale_state_expires_while_idle_and_suppresses_late_terminal(obs, monkeypatch):
     async def scenario():
         clock = [0.0]
         monkeypatch.setattr(obs.time, "monotonic", lambda: clock[0])
@@ -207,19 +223,101 @@ def test_stale_state_is_bounded_balanced_and_suppresses_late_terminal(obs, monke
         assert _value(obs, "litellm_active_requests", {"model": "routed-model"}) == 1
 
         clock[0] = obs._STALE_AFTER_SECONDS + 1
-        current = _kwargs("current-1", stream=False, request_id="rid-current")
-        await hook.async_pre_call_hook(None, None, current, "chat_completion")
-        assert _value(obs, "litellm_active_requests", {"model": "routed-model"}) == 1
+        assert obs._expire_stale_requests() == 1
+        assert _value(obs, "litellm_active_requests", {"model": "routed-model"}) == 0
         assert "call:stale-1" not in obs._REQUESTS
 
         await hook.async_log_success_event(stale, {}, _at(0), _at(999))
         assert _value(obs, "litellm_requests_total", _labels(stream="true")) == 0
+
+        current = _kwargs("current-1", stream=False, request_id="rid-current")
+        await hook.async_pre_call_hook(None, None, current, "chat_completion")
+        assert _value(obs, "litellm_active_requests", {"model": "routed-model"}) == 1
 
         await hook.async_log_failure_event(current, SimpleNamespace(status_code=503), _at(0), _at(1))
         assert _value(obs, "litellm_active_requests", {"model": "routed-model"}) == 0
         assert _value(obs, "litellm_errors_total", {**_labels(stream="false"), "status_class": "5xx"}) == 1
 
     asyncio.run(scenario())
+
+
+def test_failure_then_retry_success_counts_attempts_without_alias_suppression(obs):
+    async def scenario():
+        hook = obs.ObservabilityCallback()
+        pre_call = _kwargs("unused", stream=False, request_id="rid-retry")
+        pre_call.pop("litellm_call_id")
+        failed = _kwargs("attempt-1", stream=False, request_id="rid-retry")
+        failed["exception"] = SimpleNamespace(status_code=503)
+        succeeded = _kwargs("attempt-2", stream=False, request_id="rid-retry")
+
+        await hook.async_pre_call_hook(None, None, pre_call, "chat_completion")
+        await hook.async_log_failure_event(failed, SimpleNamespace(status_code=503), _at(0), _at(1))
+        await hook.async_log_success_event(succeeded, {}, _at(0), _at(2))
+
+        labels = _labels(stream="false")
+        assert _value(obs, "litellm_active_requests", {"model": "routed-model"}) == 0
+        assert _value(obs, "litellm_requests_total", labels) == 2
+        assert _value(obs, "litellm_errors_total", {**labels, "status_class": "5xx"}) == 1
+        assert "call:attempt-1" in obs._FINISHED
+        assert "call:attempt-2" in obs._FINISHED
+        assert "request:rid-retry" not in obs._FINISHED
+
+    asyncio.run(scenario())
+
+
+def test_duplicate_untrusted_metadata_ids_do_not_merge_calls(obs):
+    async def scenario():
+        hook = obs.ObservabilityCallback()
+        first = _kwargs("call-a", stream=False, request_id="forged", trusted_request_id=False)
+        second = _kwargs("call-b", stream=False, request_id="forged", trusted_request_id=False)
+        await hook.async_pre_call_hook(None, None, first, "chat_completion")
+        await hook.async_pre_call_hook(None, None, second, "chat_completion")
+        assert _value(obs, "litellm_active_requests", {"model": "routed-model"}) == 2
+        await hook.async_log_success_event(first, {}, _at(0), _at(1))
+        await hook.async_log_success_event(second, {}, _at(0), _at(1))
+        assert _value(obs, "litellm_requests_total", _labels(stream="false")) == 2
+        assert _value(obs, "litellm_active_requests", {"model": "routed-model"}) == 0
+
+    asyncio.run(scenario())
+
+
+def test_pre_token_failure_omits_ttft_and_generation(obs):
+    async def scenario():
+        hook = obs.ObservabilityCallback()
+        kwargs = _kwargs("pre-token-failure", stream=True)
+        await hook.async_pre_call_hook(None, None, kwargs, "chat_completion")
+        await hook.async_log_failure_event(kwargs, SimpleNamespace(status_code=503), _at(0), _at(4))
+        labels = _labels(stream="true")
+        assert obs._REGISTRY.get_sample_value("litellm_ttft_seconds_count", labels) is None
+        assert obs._REGISTRY.get_sample_value("litellm_generation_seconds_count", labels) is None
+        assert _value(obs, "litellm_total_seconds_sum", labels) == 4
+
+    asyncio.run(scenario())
+
+
+def test_metric_tuple_cardinality_is_bounded_across_dynamic_dimensions(obs):
+    for index in range(1000):
+        kwargs = _kwargs(f"call-{index}", stream=bool(index % 2), request_id=f"rid-{index}")
+        kwargs["litellm_params"]["model"] = f"model-{index}"
+        kwargs["litellm_params"]["model_info"] = {
+            "id": f"deployment-{index}", "site": f"site-{index}",
+        }
+        kwargs["litellm_params"]["metadata"]["tags"] = [f"group-{index}"]
+        labels = obs._labels_from(kwargs)
+        obs._inc("requests", labels)
+        obs._inc("errors", {**labels, "status_class": "5xx" if index % 2 else "4xx"})
+        obs._observe("total", labels, 1.0)
+        obs._gauge_add(labels["model"], labels["site"], 1)
+        obs._gauge_add(labels["model"], labels["site"], -1)
+
+    assert len(obs._METRICS["requests"]._metrics) <= 256
+    assert len(obs._METRICS["errors"]._metrics) <= 256
+    assert len(obs._METRICS["total"]._metrics) <= 256
+    assert len(obs._METRICS["active"]._metrics) <= 256
+
+
+def test_litellm_histograms_cover_router_timeout(obs):
+    assert 600.0 in obs._METRICS["total"]._upper_bounds
 
 
 def test_metrics_listen_inside_container_and_compose_stays_loopback(obs, monkeypatch):

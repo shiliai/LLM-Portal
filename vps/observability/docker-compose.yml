@@ -6,7 +6,7 @@
 # 网络策略：
 #  - prometheus / grafana / node-exporter / cadvisor / blackbox 用 host 网络：
 #    直连本机回环已发布的 4000/8400/48400 及 WG 子网（10.77.0.0/24，host netns）。
-#  - postgres-exporter 走 shared 外部网络（与 private-llm 同网络）按容器名达 private-llm-postgres，
+#  - postgres-exporter 走 private-llm 后端 external 网络，按容器名达 private-llm-postgres，
 #    仅把 9187 发布到回环供 prometheus 拉取。
 name: private-llm-observability
 
@@ -83,7 +83,7 @@ services:
     ports:
       - "127.0.0.1:9187:9187"
     networks:
-      - shared
+      - backend
 
   blackbox-exporter:
     image: prom/blackbox-exporter:v0.25.0
@@ -101,7 +101,7 @@ volumes:
   grafana-data:
 
 networks:
-  # private-llm compose 所在网络的 external 名（与 vps/docker-compose.yml 一致；deploy 时探测注入）
-  shared:
+  # private-llm 核心 compose 的默认后端网络，数据库与 exporter 在此互通。
+  backend:
     external: true
-    name: ${NGINX_SHARED_NETWORK:-docker_default}
+    name: ${PRIVATE_LLM_BACKEND_NETWORK:-private-llm_default}
