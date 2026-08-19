@@ -1,0 +1,104 @@
+# private-llm 全链路分段可观测性栈（issue #62）
+# 每实例（VPS / NAS）自建一套；与 private-llm 请求路径完全隔离（pull 模型）——
+# 监控组件任一挂掉都不影响 litellm/compat 服务。
+# 安全：所有管理面只在回环/内网可达，不发布公网端口。
+#
+# 网络策略：
+#  - prometheus / grafana / node-exporter / cadvisor / blackbox 用 host 网络：
+#    直连本机回环已发布的 4000/8400/48400 及 WG 子网（10.77.0.0/24，host netns）。
+#  - postgres-exporter 走 shared 外部网络（与 private-llm 同网络）按容器名达 private-llm-postgres，
+#    仅把 9187 发布到回环供 prometheus 拉取。
+name: private-llm-observability
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: private-llm-prometheus
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=${PROM_RETENTION:-14d}
+      - --storage.tsdb.retention.size=${PROM_RETENTION_SIZE:-10GB}
+      - --web.enable-lifecycle
+      - --web.listen-address=127.0.0.1:9090
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: private-llm-grafana
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      GF_SERVER_HTTP_ADDR: 127.0.0.1
+      GF_SERVER_HTTP_PORT: 3000
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-REPLACE_ME}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.0
+    container_name: private-llm-node-exporter
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    command:
+      - --path.rootfs=/host
+    volumes:
+      - /:/host:ro,rslave
+      - /sys:/sys:ro
+      - /proc:/proc:ro
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.0
+    container_name: private-llm-cadvisor
+    restart: unless-stopped
+    network_mode: host
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    command:
+      - --housekeeping_interval=15s
+      - --docker_only=true
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: private-llm-postgres-exporter
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: postgresql://${PG_EXPORTER_USER:-litellm}:${POSTGRES_PASSWORD}@private-llm-postgres:5432/litellm?sslmode=disable
+    ports:
+      - "127.0.0.1:9187:9187"
+    networks:
+      - shared
+
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: private-llm-blackbox
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - --config.file=/config/blackbox.yml
+      - --web.listen-address=127.0.0.1:9115
+    volumes:
+      - ./blackbox:/config:ro
+
+volumes:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  # private-llm compose 所在网络的 external 名（与 vps/docker-compose.yml 一致；deploy 时探测注入）
+  shared:
+    external: true
+    name: ${NGINX_SHARED_NETWORK:-docker_default}
