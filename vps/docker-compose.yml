@@ -29,6 +29,9 @@ services:
       net.ipv4.tcp_wmem: 4096 65536 16000000
     ports:
       - "127.0.0.1:4000:4000"
+      # issue #62：litellm 可观测性回调指标端点（observability_callback.py，独立 :48400）。
+      # 仅回环发布；回调未启用时无监听（连接拒绝，无害）。见 vps/observability/RUNBOOK.md
+      - "127.0.0.1:48400:48400"
     volumes:
       - ./litellm:/app/proxy:ro
     command: ["--config", "/app/proxy/config.yaml", "--port", "4000"]

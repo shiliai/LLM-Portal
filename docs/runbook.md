@@ -216,3 +216,15 @@ cd ~/LLM-Portal/vps && ./deploy.sh    # 幂等升级（compose build + up + 收�
 - 用户 Key 永不出网关：mcp-hub 只用它调 `/key/info` 与回环 LiteLLM；上游无鉴权直连不带 Key。
 - **Key 明文保险库（2026-08-15，管理员可再查）**：管理员需求「查看生成的 key，而非仅一次展示」——consoled 在创建时把明文 Fernet 加密存 `/var/lib/private-llm/console/keyvault.db`（密钥文件 `keyvault.key` 0600，独立于密文），`POST /console/api/keys/reveal`（仅管理员）解密取回；「使用」弹窗自动取回代入。保险库启用前的旧 Key 无法由哈希反推：配置区在取得真实明文前保持为空；管理员可粘贴完整 Key，经所选 token 的 SHA-256 与在线 `/key/info` 双重校验后补录保险库，不轮换、不改动该 Key。**边界变化：网关成为密钥保管者**——VPS 失陷即密钥失陷（加密仅防离库拖走）；轮换保险库 = 删 `keyvault.key`（旧密文不可解，等同重签）。
 - 对外面按入口模式收敛：standalone 为 80/443/tcp、51820/udp 与 SSH；external 以既有 nginx 实际入口为准；offload 的 HTTP 80 只允许受信 LAN 上游访问，另保留 51820/udp 与 SSH。其余容器仅回环或 compose 内网互通。
+
+
+## 8. 可观测性（issue #62）
+
+全链路分段指标监控基线：每实例本地 Prometheus + Grafana 观测栈、compat 层 `/metrics` 分段耗时
+（parse / 等 LiteLLM 响应头 / total）、LiteLLM 回调（TTFT/生成/token/错误）、以及 request_id
+贯穿（nginx → compat → LiteLLM，回传客户端 `x-request-id`）。
+
+- 观测栈部署物与运维手册：`vps/observability/RUNBOOK.md`（启用/停止、查询、数据保留、容量、故障降级）。
+- 架构决策与分段口径：`vps/observability/README.md`（D1~D8）。
+- 启用 litellm 回调：给 `vps/litellm/config.yaml` 的 `callbacks` 追加 `proxy.observability_callback.obs_hook`。
+- **监控故障不阻断模型请求**（pull 模型，观测代码不在请求路径）。

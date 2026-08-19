@@ -1,0 +1,75 @@
+# private-llm 分段可观测性 记录/告警规则（issue #62）
+# 记录规则：把 P50/P95/P99 等重计算固化，Grafana 直接引用，降低查询负载。
+# 告警规则：仅在明显异常时触发；通知投递（Alertmanager/Grafana Notify）为后续可选项（README D1）。
+
+groups:
+  - name: portal.latency
+    interval: 30s
+    rules:
+      # ---- compat 分段（parse / upstream_header）----
+      - record: compat:parse_p95
+        expr: histogram_quantile(0.95, sum(rate(compat_parse_seconds_bucket[5m])) by (le, protocol))
+      - record: compat:upstream_header_p95
+        expr: histogram_quantile(0.95, sum(rate(compat_upstream_header_seconds_bucket[5m])) by (le, protocol))
+      - record: compat:total_p95
+        expr: histogram_quantile(0.95, sum(rate(compat_total_seconds_bucket[5m])) by (le, protocol))
+      # ---- LiteLLM 自定义（TTFT / generation / total）----
+      - record: ll:ttft_p50
+        expr: histogram_quantile(0.50, sum(rate(litellm_ttft_seconds_bucket[5m])) by (le, model, stream))
+      - record: ll:ttft_p95
+        expr: histogram_quantile(0.95, sum(rate(litellm_ttft_seconds_bucket[5m])) by (le, model, stream))
+      - record: ll:ttft_p99
+        expr: histogram_quantile(0.99, sum(rate(litellm_ttft_seconds_bucket[5m])) by (le, model, stream))
+      - record: ll:generation_p95
+        expr: histogram_quantile(0.95, sum(rate(litellm_generation_seconds_bucket[5m])) by (le, model, stream))
+      - record: ll:total_p95
+        expr: histogram_quantile(0.95, sum(rate(litellm_total_seconds_bucket[5m])) by (le, model, stream))
+      # ---- 请求量 / 错误率 / token ----
+      - record: ll:reqs_rate
+        expr: sum(rate(litellm_requests_total[5m])) by (model)
+      - record: ll:error_rate
+        expr: sum(rate(litellm_errors_total[5m])) by (model, status_class)
+      - record: ll:tokens_rate
+        expr: sum(rate(litellm_tokens_total[5m])) by (type)
+
+  - name: portal.alerts
+    interval: 30s
+    rules:
+      - alert: LitellmScrapeDown
+        expr: up{job="litellm"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "LiteLLM 指标拉取失败（模型请求可能仍正常；仅监控失联）"
+      - alert: CompatScrapeDown
+        expr: up{job="compat"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "compat 指标端点不可达，仍不阻断请求（见 README D8）"
+      - alert: HighErrorRate
+        expr: sum by (model) (rate(litellm_errors_total{status_class!="success"}[5m]))
+          / clamp_min(sum by (model) (rate(litellm_requests_total[5m])), 1)
+          > 0.1
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.model }} 错误率 > 10%（5m）"
+      - alert: HighTTFT
+        expr: histogram_quantile(0.95, sum(rate(litellm_ttft_seconds_bucket[5m])) by (le)) > 12
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "全模型 TTFT P95 > 12s（10m 持续），疑似站点/隧道慢"
+      - alert: SiteUnreachable
+        expr: probe_success{job="blackbox-sites"} == 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "WG 站点 {{ $labels.instance }} health 连续 10m 不可达"
+      - alert: PrometheusDiskSpace
+        expr: (prometheus_tsdb_storage_blocks_bytes / 1024 / 1024 / 1024) > 8
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "Prometheus 磁盘占用 > 8GiB（保留上限 {{ PROM_RETENTION_SIZE }}）"
