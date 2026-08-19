@@ -51,6 +51,7 @@ services:
     pid: host
     command:
       - --path.rootfs=/host
+      - --web.listen-address=127.0.0.1:9100
     volumes:
       - /:/host:ro,rslave
       - /sys:/sys:ro
@@ -70,6 +71,8 @@ services:
     command:
       - --housekeeping_interval=15s
       - --docker_only=true
+      - --listen_ip=127.0.0.1
+      - --port=8080
 
   postgres-exporter:
     image: prometheuscommunity/postgres-exporter:v0.15.0

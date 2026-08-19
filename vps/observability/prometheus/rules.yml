@@ -8,11 +8,11 @@ groups:
     rules:
       # ---- compat 分段（parse / upstream_header）----
       - record: compat:parse_p95
-        expr: histogram_quantile(0.95, sum(rate(compat_parse_seconds_bucket[5m])) by (le, protocol))
+        expr: histogram_quantile(0.95, sum(rate(compat_parse_seconds_bucket[5m])) by (le, proto))
       - record: compat:upstream_header_p95
-        expr: histogram_quantile(0.95, sum(rate(compat_upstream_header_seconds_bucket[5m])) by (le, protocol))
+        expr: histogram_quantile(0.95, sum(rate(compat_upstream_header_seconds_bucket[5m])) by (le, proto))
       - record: compat:total_p95
-        expr: histogram_quantile(0.95, sum(rate(compat_total_seconds_bucket[5m])) by (le, protocol))
+        expr: histogram_quantile(0.95, sum(rate(compat_total_seconds_bucket[5m])) by (le, proto))
       # ---- LiteLLM 自定义（TTFT / generation / total）----
       - record: ll:ttft_p50
         expr: histogram_quantile(0.50, sum(rate(litellm_ttft_seconds_bucket[5m])) by (le, model, stream))
@@ -27,20 +27,23 @@ groups:
       # ---- 请求量 / 错误率 / token ----
       - record: ll:reqs_rate
         expr: sum(rate(litellm_requests_total[5m])) by (model)
-      - record: ll:error_rate
-        expr: sum(rate(litellm_errors_total[5m])) by (model, status_class)
+      - record: ll:error_ratio
+        expr: sum by (model) (rate(litellm_errors_total[5m]))
+          / clamp_min(
+              sum by (model) (rate(litellm_requests_total[5m])),
+              1e-9)
       - record: ll:tokens_rate
         expr: sum(rate(litellm_tokens_total[5m])) by (type)
 
   - name: portal.alerts
     interval: 30s
     rules:
-      - alert: LitellmScrapeDown
-        expr: up{job="litellm"} == 0
+      - alert: LitellmObservabilityScrapeDown
+        expr: up{job="litellm-observability"} == 0
         for: 2m
         labels: { severity: critical }
         annotations:
-          summary: "LiteLLM 指标拉取失败（模型请求可能仍正常；仅监控失联）"
+          summary: "LiteLLM 自定义观测指标拉取失败（模型请求可能仍正常；仅监控失联）"
       - alert: CompatScrapeDown
         expr: up{job="compat"} == 0
         for: 2m
@@ -48,8 +51,10 @@ groups:
         annotations:
           summary: "compat 指标端点不可达，仍不阻断请求（见 README D8）"
       - alert: HighErrorRate
-        expr: sum by (model) (rate(litellm_errors_total{status_class!="success"}[5m]))
-          / clamp_min(sum by (model) (rate(litellm_requests_total[5m])), 1)
+        expr: sum by (model) (rate(litellm_errors_total[5m]))
+          / clamp_min(
+              sum by (model) (rate(litellm_requests_total[5m])),
+              1e-9)
           > 0.1
         for: 5m
         labels: { severity: warning }
@@ -72,4 +77,4 @@ groups:
         for: 10m
         labels: { severity: warning }
         annotations:
-          summary: "Prometheus 磁盘占用 > 8GiB（保留上限 {{ PROM_RETENTION_SIZE }}）"
+          summary: "Prometheus 磁盘占用 > 8GiB，请检查保留上限与磁盘容量"

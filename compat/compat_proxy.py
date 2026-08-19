@@ -21,6 +21,7 @@ SSE 逐行流式转发、绝不缓冲完整响应；指标脱敏——只记规�
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import hashlib
 import json
@@ -381,7 +382,14 @@ async def compat_proxy(request: Request) -> Response:
     rid = request.headers.get("x-request-id") or _uuid.uuid4().hex
     metrics["active"].labels(proto=proto).inc()
 
+    finalized = False
+
     def finalize(resp_status: str, cause: str = "") -> None:
+        """Record exactly one terminal lifecycle outcome for this request."""
+        nonlocal finalized
+        if finalized:
+            return
+        finalized = True
         metrics["active"].labels(proto=proto).dec()
         metrics["total"].labels(proto=proto, status_class=resp_status).observe(_time.perf_counter() - t0)
         if resp_status == "error":
@@ -457,13 +465,22 @@ async def compat_proxy(request: Request) -> Response:
     else:
         body_stream = _passthrough(upstream.aiter_raw())
 
-    # 流式 total 观测在流真正结束时结算（含客户端提前断开→client_disconnect），不缓冲不等待。
+    # 流式 total 观测在流真正结束时结算。客户端取消会向生成器注入
+    # CancelledError（显式关闭时为 GeneratorExit，落入 finally），两者都只结算一次。
     async def _timed() -> AsyncIterator[bytes]:
+        completed = False
         try:
             async for chunk in body_stream:
                 yield chunk
+            completed = True
+        except asyncio.CancelledError:
+            finalize("client_disconnect")
+            raise
+        except Exception:
+            finalize("error", cause="upstream_stream")
+            raise
         finally:
-            finalize(status_class)
+            finalize(status_class if completed else "client_disconnect")
     return StreamingResponse(
         _timed(),
         status_code=upstream.status_code,

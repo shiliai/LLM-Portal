@@ -1,9 +1,10 @@
 # CI：push / PR 到 main 触发（issue #10 开源准备）
-# 五个 job：
+# 六个 job：
 #   unit-tests      根目录 pytest（测试配置/测试文件由配套 PR 提供；requirements-dev.txt 同理，
 #                   两者落地前用兜底 pip install 保证本 job 可独立跑通）
 #   py-syntax       全部 git 跟踪的 .py 文件过 py_compile 语法编译
 #   compose-validate docker compose config 校验 vps/ 部署物（默认 + edge profile 两种模式）
+#   observability-validate 渲染、Prometheus rules/config、Grafana PromQL 和观测 compose 语义校验
 #   secrets-scan    gitleaks 全 git 历史密钥扫描
 #   deps-audit      pip-audit 对四个服务的 requirements 逐个审计
 name: CI
@@ -24,7 +25,7 @@ permissions:
   contents: read
 
 jobs:
-  # ---- 1/5 单元测试 ----
+  # ---- 1/6 单元测试 ----
   unit-tests:
     name: 单元测试（pytest）
     runs-on: ubuntu-latest
@@ -50,7 +51,7 @@ jobs:
       - name: 运行测试（仓库根目录）
         run: python -m pytest
 
-  # ---- 2/5 Python 语法编译 ----
+  # ---- 2/6 Python 语法编译 ----
   py-syntax:
     name: Python 语法检查（py_compile）
     runs-on: ubuntu-latest
@@ -70,7 +71,7 @@ jobs:
           [ "$count" -gt 0 ] || { echo "未发现任何 .py 文件，异常"; exit 1; }
           git ls-files '*.py' | xargs python -m py_compile
 
-  # ---- 3/5 compose 配置校验 ----
+  # ---- 3/6 compose 配置校验 ----
   compose-validate:
     name: docker compose 配置校验
     runs-on: ubuntu-latest
@@ -97,7 +98,17 @@ jobs:
           COMPOSE_PROFILES: edge
         run: docker compose --env-file .env.example config --quiet
 
-  # ---- 4/5 密钥扫描 ----
+  # ---- 4/6 观测栈语义校验 ----
+  observability-validate:
+    name: 可观测性配置语义校验
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 渲染并校验 Prometheus、Grafana 与 compose
+        run: vps/observability/scripts/validate.sh
+
+  # ---- 5/6 密钥扫描 ----
   secrets-scan:
     name: 密钥扫描（gitleaks 全历史）
     runs-on: ubuntu-latest
@@ -117,7 +128,7 @@ jobs:
             | tar -xz -C /usr/local/bin gitleaks
           gitleaks git . --redact --no-banner --exit-code 1
 
-  # ---- 5/5 依赖安全审计 ----
+  # ---- 6/6 依赖安全审计 ----
   deps-audit:
     name: 依赖审计（pip-audit）
     runs-on: ubuntu-latest

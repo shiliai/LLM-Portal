@@ -1,0 +1,2 @@
+# Generated from prometheus.yml.tmpl by scripts/render-prometheus-config.sh.
+prometheus/prometheus.yml

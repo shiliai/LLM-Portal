@@ -36,6 +36,7 @@ LiteLLM 1.96.2 的 `/metrics` 原生给出**每模型**请求数/延迟/token �
 - `async_log_stream_event` **首个**事件 → 打点 **TTFT**（start_time → 首 chunk）；
 - `async_log_success_event` → 打点 **total / generation / token**；
 - `async_log_failure_event` → 打点**错误**（按错误类型 + 状态类别）。
+- LiteLLM 原生 `/metrics` 在生产要求鉴权，故本栈不抓取该端点，也不把管理凭据写入 Prometheus；只抓取回调提供的 loopback `:48400/metrics`。
 
 推导口径（文档化、可回归验证）：
 - `generation = total − ttft`（流式与全响应一致口径）
@@ -59,7 +60,7 @@ LiteLLM 1.96.2 的 `/metrics` 原生给出**每模型**请求数/延迟/token �
 ### D6. 实例系统与存储指标
 
 - **node-exporter**（host）：CPU、RSS、磁盘、网络。
-- **cadvisor**（host）：各容器 CPU/RSS/重启计数/**OOM 计数**（`container_oom_events_total`；重启使 `container_start_time_seconds` 归零）。
+- **cadvisor**（host）：各容器 CPU/RSS/**OOM 计数**（`container_oom_events_total`）与启动时间（`container_start_time_seconds`，可用变化次数识别重启）。
 - **postgres-exporter**（shared 网络，只读）：连接数（`pg_stat_database_numbackends`）。
 - **prometheus/grafana 自身**。
 
@@ -67,7 +68,7 @@ LiteLLM 1.96.2 的 `/metrics` 原生给出**每模型**请求数/延迟/token �
 
 - 所有观测端点仅 **回环/内网** 可达（compose 只在 host 网络或 loopback 发布；grafana 绑 127.0.0.1）；**公网不可达**。
 - **不记录**：API Key、Authorization、prompt/response 正文、完整 IP、session ID、request_id、模型生成文本。
-- 标签**低基数**：protocol / stream / model group / deployment / site / status 类别。严禁把 request_id、调用方、时间戳大尾内容作标签。
+- 标签**低基数**：`proto` / stream / model / group / deployment / site / status 类别。严禁把 request_id、调用方、时间戳大尾内容作标签。cAdvisor 仅保留 compose 服务名 `container`，丢弃容器 ID、image、原始 `name` 与任意 compose label。
 
 ### D8. 性能与故障降级
 
@@ -81,7 +82,7 @@ LiteLLM 1.96.2 的 `/metrics` 原生给出**每模型**请求数/延迟/token �
 | prometheus | prom/prometheus:v2.53.0 | 9090 | 全部 |
 | grafana | grafana/grafana:11.0.0 | 3000 | Prometheus 数据源（预置仪表盘） |
 | node-exporter | prom/node-exporter:v1.8.0 | 9100 | 实例 OS |
-| cadvisor | gcr.io/cadvisor/cadvisor:v0.49.0 | 8080 | 容器 CPU/RSS/重启/OOM |
+| cadvisor | gcr.io/cadvisor/cadvisor:v0.49.0 | 8080 | 容器 CPU/RSS/OOM/启动时间 |
 | postgres-exporter | prometheuscommunity/postgres-exporter:v0.15.0 | 9187 | private-llm Postgres 连接数 |
 | blackbox-exporter | prom/blackbox-exporter:v0.25.0 | 9115 | WS 站点 health（60s） |
 | litellm 回调 | 无（挂进 litellm 容器） | 48400 | TTFT/生成/错误/token（自定义） |
@@ -95,8 +96,11 @@ vps/observability/
 ├── docker-compose.yml       # prometheus + grafana + exporters + blackbox
 ├── .env.example             # 观测栈环境变量
 ├── prometheus/
-│   ├── prometheus.yml       # 低基数 scrape 配置（含 blackbox/down 自检）
+│   ├── prometheus.yml.tmpl  # 低基数 scrape 配置模板（渲染后使用）
 │   └── rules.yml            # 记录规则 + 告警规则（error/TTFT/站点可达等）
+├── scripts/
+│   ├── render-prometheus-config.sh # 显式渲染实例名和 blackbox targets
+│   └── validate.sh          # renderer、Prometheus、Grafana JSON 和 compose 语义校验
 ├── grafana/
 │   ├── provisioning/datasources/datasource.yml
 │   ├── provisioning/dashboards/dashboard.yml
@@ -116,5 +120,6 @@ vps/observability/
 ```bash
 cd vps/observability
 cp .env.example .env && vi .env        # 填 NGINX_SHARED_NETWORK / POSTGRES_PASSWORD / GF_ADMIN_PASSWORD / 站点目标
-sudo docker compose up -d
+./scripts/render-prometheus-config.sh --env-file .env
+sudo docker compose --env-file .env up -d
 ```

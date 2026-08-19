@@ -228,3 +228,4 @@ cd ~/LLM-Portal/vps && ./deploy.sh    # 幂等升级（compose build + up + 收�
 - 架构决策与分段口径：`vps/observability/README.md`（D1~D8）。
 - 启用 litellm 回调：给 `vps/litellm/config.yaml` 的 `callbacks` 追加 `proxy.observability_callback.obs_hook`。
 - **监控故障不阻断模型请求**（pull 模型，观测代码不在请求路径）。
+- 本 PR 只交付可验证的配置与文档，**不部署 VPS/NAS，也不宣称已完成 24 小时基线或采集开销运行时验收**；部署窗口确定后，逐台按观测栈 RUNBOOK 渲染配置、启动并连续采集至少 24 小时。

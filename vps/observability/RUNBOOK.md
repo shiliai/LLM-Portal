@@ -23,6 +23,7 @@ cp .env.example .env && vi .env
 - `NGINX_SHARED_NETWORK`：与 `vps/.env` 同值（探测：`docker inspect nginx-sub2api | grep -i networks`）。
 - `POSTGRES_PASSWORD`：复用 private-llm 的 postgres 密码；**建议**建只读账号再填（见 §5.2）。
 - `GF_ADMIN_PASSWORD`：Grafana 初始管理员密码。
+- `OBSERVABILITY_INSTANCE`：本机稳定名称（`vps` 或 `nas`），作为 Prometheus 的 `portal_instance` 外部标签。
 - `SITE_TARGETS`：WS 站点 health 目标（逗号分隔），如 `http://10.77.0.11:8890/health,http://10.77.0.11:8004/health`。
 
 ### 1.2 启用 compat 指标（compat 镜像已含 /metrics）
@@ -45,7 +46,10 @@ docker compose build compat && docker compose up -d compat
 
 ```bash
 cd vps/observability
-sudo docker compose up -d
+# Prometheus 不展开环境变量；此步骤读取 .env 中的两个非敏感监控值，
+# 验证并排序去重后生成 prometheus/prometheus.yml。
+./scripts/render-prometheus-config.sh --env-file .env
+sudo docker compose --env-file .env up -d
 ```
 
 验证：
@@ -82,13 +86,13 @@ sudo docker compose logs -f prometheus
 |--------|--------|
 | TTFT P95（5m） | `histogram_quantile(0.95, sum(rate(litellm_ttft_seconds_bucket[5m])) by (le))` |
 | 各模型请求量 | `sum(rate(litellm_requests_total[5m])) by (model)` |
-| 错误率 | `sum(rate(litellm_errors_total[5m])) by (model,status_class)` |
+| 错误率 | `sum by (model) (rate(litellm_errors_total[5m])) / clamp_min(sum by (model) (rate(litellm_requests_total[5m])), 1e-9)` |
 | 活跃请求 | `sum(litellm_active_requests) by (model)` |
-| compat→LL 头耗时 P95 | `histogram_quantile(0.95, sum(rate(compat_upstream_header_seconds_bucket[5m])) by (le,protocol))` |
+| compat→LL 头耗时 P95 | `histogram_quantile(0.95, sum(rate(compat_upstream_header_seconds_bucket[5m])) by (le,proto))` |
 | 站点可达 | `probe_success{job="blackbox-sites"}` |
 | 站点 HTTP RTT | `probe_http_duration_seconds{job="blackbox-sites"}` |
 | PG 连接数 | `sum(pg_stat_database_numbackends{datname="litellm"})` |
-| 容器 OOM/重启 | `increase(container_oom_events_total[1h])` / `container_restart_count` |
+| 容器 OOM/重启 | `increase(container_oom_events_total[1h])` / `changes(container_start_time_seconds{container!=""}[1h])` |
 
 时间窗：Grafana 右上角可选 最近 5 分钟 / 1 小时 / 24 小时对比。
 
@@ -108,8 +112,8 @@ sudo docker compose logs -f prometheus
 
 ### 5.1 暴露面
 
-- 全部端点仅回环/内网可达（compose host 网络 + loopback 发布；grafana 绑 127.0.0.1）。**公网不可达**。
-- 审计：确认 `docker ps` 无 `0.0.0.0` 绑定到 9090/3000/48400/9187 等。
+- 全部端点仅回环/内网可达（host 网络的 Prometheus、Grafana、node-exporter、cAdvisor 和 blackbox 均显式绑定 `127.0.0.1`；postgres-exporter 以 loopback 发布）。**公网不可达**。
+- 审计：确认 `ss -ltnp` 不显示对 9090/3000/8080/9100/9115/48400/9187 的公网监听。
 
 ### 5.2 Postgres 只读账号（建议）
 
