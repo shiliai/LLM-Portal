@@ -42,10 +42,10 @@ jobs:
         run: |
           python -m pip install \
             -r requirements-dev.txt \
-            -r execution/proto-remote-access/console/requirements.txt \
-            -r execution/proto-remote-access/onboardd/requirements.txt \
-            -r execution/proto-remote-access/mcp-hub/requirements.txt \
-            -r execution/proto-remote-access/compat/requirements.txt
+            -r console/requirements.txt \
+            -r onboardd/requirements.txt \
+            -r mcp-hub/requirements.txt \
+            -r compat/requirements.txt
 
       - name: 运行测试（仓库根目录）
         run: python -m pytest
@@ -87,12 +87,12 @@ jobs:
       # --env-file .env.example：用占位环境变量渲染，不需要真实 .env
       # （本地已用 docker compose v5.0.2 验证两种模式均通过）
       - name: 校验 compose（默认模式）
-        working-directory: execution/proto-remote-access/vps
+        working-directory: vps
         run: docker compose --env-file .env.example config --quiet
 
       # edge profile：额外渲染 edge-nginx / edge-certbot（standalone 入口形态）
       - name: 校验 compose（COMPOSE_PROFILES=edge）
-        working-directory: execution/proto-remote-access/vps
+        working-directory: vps
         env:
           COMPOSE_PROFILES: edge
         run: docker compose --env-file .env.example config --quiet
@@ -137,16 +137,16 @@ jobs:
       # 经评估确认为误报/不可利用时，在对应 step 加 --ignore-vuln <ID> 并注明理由
       - name: 审计 console 依赖
         continue-on-error: false
-        run: pip-audit -r execution/proto-remote-access/console/requirements.txt
+        run: pip-audit -r console/requirements.txt
 
       - name: 审计 onboardd 依赖
         continue-on-error: false
-        run: pip-audit -r execution/proto-remote-access/onboardd/requirements.txt
+        run: pip-audit -r onboardd/requirements.txt
 
       - name: 审计 mcp-hub 依赖
         continue-on-error: false
-        run: pip-audit -r execution/proto-remote-access/mcp-hub/requirements.txt
+        run: pip-audit -r mcp-hub/requirements.txt
 
       - name: 审计 compat 依赖
         continue-on-error: false
-        run: pip-audit -r execution/proto-remote-access/compat/requirements.txt
+        run: pip-audit -r compat/requirements.txt

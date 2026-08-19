@@ -1,5 +1,6 @@
-# 原始资料（代码库、原始文档等），仅本地留存，不入库
-planning/01-raw/
+# 内部设计与研究材料仅本地留存，不进入公开源码树
+/planning/
+/docs/superpowers/
 
 # 常见临时/环境文件
 .DS_Store
@@ -7,6 +8,9 @@ planning/01-raw/
 .env
 .env.*
 !.env.example
+*.rendered.conf
+*.db
+uploads/
 node_modules/
 __pycache__/
 *.pyc
