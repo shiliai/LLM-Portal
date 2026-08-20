@@ -81,7 +81,7 @@ services:
       LITELLM_BASE: http://litellm:4000
       # offload 模式外部 URL 带高位端口（https://域名:8080），与 DOMAIN 裸域名不同，允许显式覆盖
       PUBLIC_BASE: ${PUBLIC_BASE:-https://${DOMAIN}}
-      MCP_VISION_MODEL: ${MCP_VISION_MODEL:-qwen3.6-35b-fp8}
+      MCP_VISION_MODEL: ${MCP_VISION_MODEL:-qwen3.8-27b}
     volumes:
       # 状态（usage.db + uploads）落宿主机，容器重建不丢
       - /var/lib/private-llm/mcp-hub:/var/lib/private-llm/mcp-hub
@@ -132,7 +132,7 @@ services:
       MCP_HUB_URL: http://private-llm-mcp-hub:8200
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
       ONBOARD_ADMIN_TOKEN: ${ONBOARD_ADMIN_TOKEN}
-      MCP_VISION_MODEL: ${MCP_VISION_MODEL:-qwen3.6-35b-fp8}
+      MCP_VISION_MODEL: ${MCP_VISION_MODEL:-qwen3.8-27b}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       ADMIN_TOTP_SECRET: ${ADMIN_TOTP_SECRET:-}

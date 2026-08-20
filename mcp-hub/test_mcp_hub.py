@@ -104,6 +104,16 @@ def test_upload_requires_bearer_key(hub):
     assert "multipart field" in ok.json()["error"]
 
 
+def test_fetch_uploaded_image_returns_mime_type(hub):
+    image = b"fake-png-content"
+    (hub.UPLOAD_DIR / "test-token.png").write_bytes(image)
+
+    data, mime = asyncio.run(hub.fetch_image_data("/mcp/files/test-token.png"))
+
+    assert data == image
+    assert mime == "image/png"
+
+
 # ---------------------------------------------------------------- MCP 传输层 TokenVerifier
 
 def test_token_verifier_accepts_valid_key(hub):

@@ -17,7 +17,6 @@ import hashlib
 import json
 import mimetypes
 import os
-import secrets
 import sqlite3
 import time
 from contextlib import asynccontextmanager
@@ -42,7 +41,7 @@ from fastmcp.utilities.authorization import AuthContext
 
 LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://127.0.0.1:4000")
 PUBLIC_BASE = os.environ.get("PUBLIC_BASE", "https://llm-portal.example.com")
-VISION_MODEL = os.environ.get("MCP_VISION_MODEL", "qwen3.6-35b-fp8")
+VISION_MODEL = os.environ.get("MCP_VISION_MODEL", "qwen3.8-27b")
 DATA_DIR = Path(os.environ.get("MCP_HUB_DATA", "/var/lib/private-llm/mcp-hub"))
 UPLOAD_DIR = DATA_DIR / "uploads"
 DB_PATH = DATA_DIR / "usage.db"
@@ -124,7 +123,7 @@ async def fetch_image_data(url: str) -> tuple[bytes, str]:
         for suffix in ALLOWED_TYPES.values():
             candidate = path.with_suffix(suffix)
             if candidate.exists():
-                return candidate.read_bytes(), candidate.stat().st_mtime
+                return candidate.read_bytes(), mimetypes.types_map[suffix]
         raise ToolError(f"image not found or expired: {url}")
     if not url.startswith(("http://", "https://")):
         raise ToolError(f"not a valid image url: {url!r}")
@@ -289,10 +288,10 @@ async def upload(request: Request) -> Response:
     data = await upload_file.read()
     if len(data) > MAX_UPLOAD:
         return JSONResponse({"error": "file too large (max 10MB)"}, status_code=413)
-    token = secrets.token_urlsafe(18)
-    (UPLOAD_DIR / (token + ALLOWED_TYPES[content_type])).write_bytes(data)
+    upload_id = base64.urlsafe_b64encode(os.urandom(18)).rstrip(b"=").decode()
+    (UPLOAD_DIR / (upload_id + ALLOWED_TYPES[content_type])).write_bytes(data)
     record_usage(key, "upload")
-    return JSONResponse({"url": f"{PUBLIC_BASE}/mcp/files/{token}{ALLOWED_TYPES[content_type]}", "expires_in": UPLOAD_TTL})
+    return JSONResponse({"url": f"{PUBLIC_BASE}/mcp/files/{upload_id}{ALLOWED_TYPES[content_type]}", "expires_in": UPLOAD_TTL})
 
 
 async def usage(request: Request) -> Response:
