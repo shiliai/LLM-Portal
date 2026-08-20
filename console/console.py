@@ -53,6 +53,7 @@ Key 的 sha256 哈希与尾 4 位——完整用户 Key 与 master key 均不落
 
 import asyncio
 import base64
+import functools
 import hashlib
 import hmac
 import json
@@ -61,6 +62,7 @@ import re
 import secrets
 import shlex
 import sqlite3
+import stat
 import struct
 import subprocess
 import sys
@@ -90,6 +92,11 @@ ADMIN_TOTP_SECRET = os.environ.get("ADMIN_TOTP_SECRET", "").strip()
 MCP_VISION_MODEL = os.environ.get("MCP_VISION_MODEL", "qwen3.6-35b-fp8")
 EXTERNAL_MCP_CONF = Path(os.environ.get("EXTERNAL_MCP_CONF", "/etc/private-llm/external-mcp.json"))
 MCP_USAGE_DB = Path(os.environ.get("MCP_USAGE_DB", "/var/lib/private-llm/mcp-hub/usage.db"))
+MCP_PREFLIGHT_TIMEOUT = 10
+MCP_MAX_DISCOVERED_TOOLS = 64
+MCP_MAX_SCHEMA_DEPTH = 12
+MCP_MAX_SCHEMA_BYTES = 16 * 1024
+MCP_MAX_METADATA_BYTES = 96 * 1024
 WG_IFACE = os.environ.get("WG_IFACE", "wg0")
 # 宿主机操作命令前缀（#7 容器化）：默认保留宿主机直跑语义；容器模式由 compose 注入
 # docker.sock 版本（挂载 /var/run/docker.sock 的容器 ≈ 宿主机 root，见 runbook §7 取舍）
@@ -111,6 +118,16 @@ HANDSHAKE_ONLINE = 180  # 最近握手 3 分钟内视为在线
 # （supported 列表不含、vLLM 上游实际支持）——retag/别名克隆重建 deployment 时
 # 必须带上，否则一次分组改写就把直通配置洗掉
 PASS_THROUGH_OPENAI_PARAMS = ["reasoning_effort"]
+MCP_CONFIG_LOCK = asyncio.Lock()
+
+
+def serialized_mcp_mutation(fn):
+    """Keep all registry reads through rollback in one ordered critical section."""
+    @functools.wraps(fn)
+    async def wrapped(*args, **kwargs):
+        async with MCP_CONFIG_LOCK:
+            return await fn(*args, **kwargs)
+    return wrapped
 
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 if SECRET_PATH.exists():
@@ -1269,6 +1286,7 @@ async def site_current_tags(wg_ip: str) -> set[str]:
     return tags
 
 
+@serialized_mcp_mutation
 async def api_groups_rename(request: Request) -> Response:
     sess = await require(request)
     if isinstance(sess, JSONResponse):
@@ -1323,8 +1341,9 @@ async def api_groups_rename(request: Request) -> Response:
             mcp_moved += 1
     restart = "not-needed"
     if mcp_moved:
-        write_mcp_conf(entries)
-        restart = restart_mcp_hub()
+        ok, restart = await apply_mcp_conf(entries)
+        if not ok:
+            return jerr(f"mcp-hub 更新失败，配置已恢复：{restart}", 502)
     return JSONResponse({"ok": True, "from": old, "to": new, "keys_rebound": moved,
                          "mcps_rebound": mcp_moved, "restart": restart})
 
@@ -1693,20 +1712,112 @@ def mcp_counts_by_group(entries: list[dict] | None = None) -> dict[str, int]:
     return counts
 
 
+class MCPRegistryError(RuntimeError):
+    pass
+
+
+class MCPMetadataError(RuntimeError):
+    pass
+
+
+def _fsync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _registry_snapshot(create: bool = False) -> dict:
+    """Read only a regular, non-symlink registry after forcing the required mode."""
+    if not os.path.lexists(EXTERNAL_MCP_CONF):
+        if not create:
+            return {"exists": False, "bytes": b"", "sha256": hashlib.sha256(b"").hexdigest(),
+                    "inode": None, "mode": 0o600, "uid": None, "gid": None}
+        EXTERNAL_MCP_CONF.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(EXTERNAL_MCP_CONF, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            os.write(fd, b"[]\n")
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        _fsync_directory(EXTERNAL_MCP_CONF.parent)
+    try:
+        lst = os.lstat(EXTERNAL_MCP_CONF)
+    except OSError as exc:
+        raise MCPRegistryError("registry unavailable") from exc
+    if stat.S_ISLNK(lst.st_mode) or not stat.S_ISREG(lst.st_mode):
+        raise MCPRegistryError("registry must be a regular file")
+    fd = os.open(EXTERNAL_MCP_CONF, os.O_RDWR | os.O_NOFOLLOW)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_ino != lst.st_ino:
+            raise MCPRegistryError("registry changed during validation")
+        os.fchmod(fd, 0o600)
+        os.lseek(fd, 0, os.SEEK_SET)
+        chunks = []
+        while True:
+            chunk = os.read(fd, 64 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        raw = b"".join(chunks)
+        return {"exists": True, "bytes": raw, "sha256": hashlib.sha256(raw).hexdigest(),
+                "inode": st.st_ino, "mode": 0o600, "uid": st.st_uid, "gid": st.st_gid}
+    finally:
+        os.close(fd)
+
+
+def _write_registry_bytes(snapshot: dict, data: bytes, restore: bool = False) -> dict:
+    """Overwrite the validated target inode, fsyncing bytes and directory metadata."""
+    if not snapshot["exists"]:
+        snapshot = _registry_snapshot(create=True)
+    fd = os.open(EXTERNAL_MCP_CONF, os.O_RDWR | os.O_NOFOLLOW)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_ino != snapshot["inode"]:
+            raise MCPRegistryError("registry changed before write")
+        if restore and snapshot["uid"] is not None and (st.st_uid != snapshot["uid"] or st.st_gid != snapshot["gid"]):
+            os.fchown(fd, snapshot["uid"], snapshot["gid"])
+        os.ftruncate(fd, 0)
+        offset = 0
+        while offset < len(data):
+            offset += os.write(fd, data[offset:])
+        os.fchmod(fd, 0o600)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    _fsync_directory(EXTERNAL_MCP_CONF.parent)
+    written = _registry_snapshot()
+    if (written["bytes"] != data or written["mode"] != 0o600
+            or (restore and (written["uid"] != snapshot["uid"] or written["gid"] != snapshot["gid"]))):
+        raise MCPRegistryError("registry write verification failed")
+    return written
+
+
 def read_mcp_conf() -> list[dict]:
     try:
-        data = json.loads(EXTERNAL_MCP_CONF.read_text())
+        snapshot = _registry_snapshot()
+        if not snapshot["exists"]:
+            return []
+        data = json.loads(snapshot["bytes"])
         return data if isinstance(data, list) else []
-    except (OSError, json.JSONDecodeError):
+    except (MCPRegistryError, OSError, json.JSONDecodeError):
         return []
 
 
-def write_mcp_conf(entries: list[dict]) -> None:
-    EXTERNAL_MCP_CONF.parent.mkdir(parents=True, exist_ok=True)
+def write_mcp_conf(entries: list[dict], expected: dict | None = None) -> dict:
+    current = _registry_snapshot()
+    if expected is not None:
+        if expected["exists"] and (not current["exists"] or current["inode"] != expected["inode"]
+                                    or not hmac.compare_digest(current["sha256"], expected["sha256"])):
+            raise MCPRegistryError("registry changed before commit")
+        if not expected["exists"] and current["exists"]:
+            raise MCPRegistryError("registry created before commit")
+    if not current["exists"]:
+        current = _registry_snapshot(create=True)
     data = (json.dumps(entries, ensure_ascii=False, indent=2) + "\n").encode()
-    with EXTERNAL_MCP_CONF.open("wb") as fh:
-        fh.write(data)
-    os.chmod(EXTERNAL_MCP_CONF, 0o600)
+    return _write_registry_bytes(current, data)
 
 
 def restart_mcp_hub() -> str:
@@ -1717,13 +1828,16 @@ def restart_mcp_hub() -> str:
     return "ok" if r.returncode == 0 else (r.stderr.strip()[:200] or f"exit {r.returncode}")
 
 
-async def mcp_hub_ready(expected_sha256: str) -> bool:
+async def mcp_hub_ready(expected_sha256: str, expected_owners: dict[str, str] | None = None) -> bool:
     for _ in range(10):
         try:
             async with httpx.AsyncClient(timeout=2) as client:
                 r = await client.get(f"{MCP_HUB_URL}/internal/config-state")
-            if r.status_code == 200 and hmac.compare_digest(
-                    str(r.json().get("sha256") or ""), expected_sha256):
+            state = r.json() if r.status_code == 200 else {}
+            owners = state.get("tools") if isinstance(state.get("tools"), dict) else {}
+            exact = expected_owners is None or owners == expected_owners
+            if r.status_code == 200 and state.get("ok") is True and exact and hmac.compare_digest(
+                    str(state.get("sha256") or ""), expected_sha256):
                 return True
         except (httpx.HTTPError, ValueError):
             pass
@@ -1731,31 +1845,146 @@ async def mcp_hub_ready(expected_sha256: str) -> bool:
     return False
 
 
-async def apply_mcp_conf(entries: list[dict]) -> tuple[bool, str]:
+async def apply_mcp_conf(entries: list[dict], expected_owners: dict[str, str] | None = None) -> tuple[bool, str]:
     """配置与运行态同步提交；任一步失败都恢复原字节并重启旧运行态。"""
-    existed = EXTERNAL_MCP_CONF.exists()
-    previous = EXTERNAL_MCP_CONF.read_bytes() if existed else b""
-    previous_sha256 = hashlib.sha256(previous).hexdigest()
-    previous_mode = EXTERNAL_MCP_CONF.stat().st_mode & 0o777 if existed else 0o600
-    write_mcp_conf(entries)
-    expected_sha256 = hashlib.sha256(EXTERNAL_MCP_CONF.read_bytes()).hexdigest()
+    try:
+        previous = _registry_snapshot()
+        candidate = write_mcp_conf(entries, expected=previous)
+    except MCPRegistryError:
+        return False, "registry validation failed"
+    expected_sha256 = candidate["sha256"]
     restart = restart_mcp_hub()
-    ready = restart == "ok" and await mcp_hub_ready(expected_sha256)
+    ready = restart == "ok" and await mcp_hub_ready(expected_sha256, expected_owners)
     if ready:
         return True, "ok"
-    if existed:
-        with EXTERNAL_MCP_CONF.open("wb") as fh:
-            fh.write(previous)
-        os.chmod(EXTERNAL_MCP_CONF, previous_mode)
-    else:
-        EXTERNAL_MCP_CONF.unlink(missing_ok=True)
+    try:
+        current = _registry_snapshot()
+        if current["inode"] != candidate["inode"] or not hmac.compare_digest(current["sha256"], candidate["sha256"]):
+            return False, "mcp-hub attestation failed; registry changed before rollback"
+        if previous["exists"]:
+            _write_registry_bytes(previous, previous["bytes"], restore=True)
+        else:
+            EXTERNAL_MCP_CONF.unlink(missing_ok=True)
+            _fsync_directory(EXTERNAL_MCP_CONF.parent)
+    except (MCPRegistryError, OSError):
+        return False, "mcp-hub attestation failed; registry restore failed"
     restore_restart = restart_mcp_hub()
     reason = restart if restart != "ok" else "mcp-hub readiness check failed"
     if restore_restart != "ok":
         reason += f"; prior runtime restart failed: {restore_restart}"
-    elif not await mcp_hub_ready(previous_sha256):
+    elif not await mcp_hub_ready(previous["sha256"]):
         reason += "; prior runtime readiness check failed"
     return False, reason
+
+
+def mcp_client(url: str, api_key: str, timeout: int):
+    """Create the FastMCP client lazily so the console still starts without its optional dependency."""
+    from fastmcp import Client
+    from fastmcp.client.auth import BearerAuth
+    return Client(url, auth=BearerAuth(api_key) if api_key else None, timeout=timeout)
+
+
+def _mcp_exception_chain(exc: BaseException) -> list[BaseException]:
+    pending, seen, chain = [exc], set(), []
+    while pending and len(chain) < 32:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        chain.append(current)
+        pending.extend(item for item in (current.__cause__, current.__context__) if item is not None)
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+    return chain
+
+
+def mcp_preflight_failure(exc: Exception) -> tuple[str, int, str]:
+    """Map upstream failures to safe administrator-facing categories without echoing credentials."""
+    chain = _mcp_exception_chain(exc)
+    details = " ".join(str(item).lower() for item in chain)
+    statuses = [getattr(item, "status_code", None) or getattr(getattr(item, "response", None), "status_code", None)
+                for item in chain]
+    if any(status in (401, 403) for status in statuses) or re.search(r"\b(401|403)\b", details) or any(
+            marker in details for marker in ("unauthorized", "forbidden", "authentication", "authorization")):
+        return "auth", 401, "MCP 预检鉴权失败，请检查 Bearer 凭据。"
+    if any(isinstance(item, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException)) for item in chain) or any(
+            marker in details for marker in ("timeout", "timed out")):
+        return "timeout", 504, "MCP 预检超时，请检查上游可达性后重试。"
+    if any(marker in details for marker in ("tls", "ssl", "certificate", "x509")):
+        return "tls", 502, "MCP 预检 TLS 校验失败，请检查上游证书。"
+    if any(marker in details for marker in (
+            "protocol", "json-rpc", "initialize", "invalid response", "parse error", "decode")):
+        return "protocol", 422, "MCP 预检协议不兼容，请确认上游支持 Streamable HTTP MCP。"
+    return "network", 502, "MCP 预检无法连接上游，请检查 URL、网络和服务状态。"
+
+
+def _schema_depth(value: object, depth: int = 0) -> int:
+    if not isinstance(value, (dict, list)):
+        return depth
+    children = value.values() if isinstance(value, dict) else value
+    return max([depth] + [_schema_depth(child, depth + 1) for child in children])
+
+
+def mcp_tool_metadata(tools: list) -> list[dict]:
+    """Normalize bounded, serializable discovery data before any registry mutation."""
+    if not tools or len(tools) > MCP_MAX_DISCOVERED_TOOLS:
+        raise MCPMetadataError("tool count")
+    metadata = []
+    for tool in tools:
+        name = str(getattr(tool, "name", "") or "")
+        if not name or len(name) > 96:
+            raise MCPMetadataError("tool name")
+        schema = getattr(tool, "inputSchema", None) or {"type": "object", "properties": {}}
+        try:
+            schema_bytes = json.dumps(schema, ensure_ascii=False, separators=(",", ":")).encode()
+            normalized_schema = json.loads(schema_bytes)
+        except (TypeError, ValueError) as exc:
+            raise MCPMetadataError("tool schema") from exc
+        if len(schema_bytes) > MCP_MAX_SCHEMA_BYTES or _schema_depth(normalized_schema) > MCP_MAX_SCHEMA_DEPTH:
+            raise MCPMetadataError("tool schema bounds")
+        metadata.append({"name": name, "description": str(getattr(tool, "description", "") or "")[:500],
+                         "input_schema": normalized_schema})
+    try:
+        if len(json.dumps(metadata, ensure_ascii=False, separators=(",", ":")).encode()) > MCP_MAX_METADATA_BYTES:
+            raise MCPMetadataError("metadata bounds")
+    except TypeError as exc:
+        raise MCPMetadataError("metadata serialization") from exc
+    return metadata
+
+
+async def preflight_external_mcp(url: str, api_key: str) -> tuple[list[dict] | None, tuple[str, int, str] | None]:
+    """Initialize an external MCP and verify that it exposes at least one tool before mutation."""
+    try:
+        async with asyncio.timeout(MCP_PREFLIGHT_TIMEOUT):
+            async with mcp_client(url, api_key, MCP_PREFLIGHT_TIMEOUT) as client:
+                tools = list(await client.list_tools())
+        if not tools:
+            return None, ("zero_tools", 422, "MCP 预检未发现可用工具，请检查上游 tools/list 响应。")
+        metadata = mcp_tool_metadata(tools)
+    except MCPMetadataError:
+        return None, ("metadata", 422, "MCP 工具元数据超过注册限制，请缩小上游 tools/list 响应。")
+    except Exception as exc:  # External MCP failures are expected; never return raw upstream details.
+        return None, mcp_preflight_failure(exc)
+    return metadata, None
+
+
+async def preflight_mcp_entries(entries: list[dict]) -> tuple[dict[str, list[dict]] | None, dict[str, str] | None,
+                                                                 tuple[str, int, str] | None]:
+    discovered: dict[str, list[dict]] = {}
+    owners = {"analyze_image": "builtin"}
+    for entry in entries:
+        name = str(entry.get("name") or "")
+        tools, failure = await preflight_external_mcp(str(entry.get("url") or ""), str(entry.get("api_key") or ""))
+        if failure is not None:
+            return None, None, failure
+        discovered[name] = tools or []
+        prefix = str(entry.get("prefix") or f"{name}_")
+        for tool in tools or []:
+            identity = prefix + tool["name"]
+            if identity in owners:
+                return None, None, ("collision", 422, "MCP 工具前缀与现有工具冲突，请调整前缀或上游工具。")
+            owners[identity] = name
+    return discovered, owners, None
 
 
 async def api_mcp(request: Request) -> Response:
@@ -1775,6 +2004,7 @@ async def api_mcp(request: Request) -> Response:
     })
 
 
+@serialized_mcp_mutation
 async def api_mcp_register(request: Request) -> Response:
     sess = await require(request)
     if isinstance(sess, JSONResponse):
@@ -1806,13 +2036,19 @@ async def api_mcp_register(request: Request) -> Response:
         return jerr(f"mcp {name} already registered", 409)
     entries.append({"name": name, "url": url, "api_key": api_key, "prefix": prefix,
                     "groups": groups})
-    ok, restart = await apply_mcp_conf(entries)
+    discovered, expected_owners, failure = await preflight_mcp_entries(entries)
+    if failure is not None:
+        category, status, message = failure
+        return JSONResponse({"error": message, "category": category}, status_code=status)
+    ok, restart = await apply_mcp_conf(entries, expected_owners)
     if not ok:
         return jerr(f"mcp-hub 更新失败，配置已恢复：{restart}", 502)
     return JSONResponse({"ok": True, "restart": restart,
-                         "note": "已重启 mcp-hub 生效；进行中的工具调用会被中断"})
+                         "note": "已重启 mcp-hub 生效；进行中的工具调用会被中断",
+                         "tools": (discovered or {}).get(name, [])})
 
 
+@serialized_mcp_mutation
 async def api_mcp_groups(request: Request) -> Response:
     sess = await require(request)
     if isinstance(sess, JSONResponse):
@@ -1843,6 +2079,7 @@ async def api_mcp_groups(request: Request) -> Response:
     return JSONResponse({"ok": True, "groups": groups, "restart": restart})
 
 
+@serialized_mcp_mutation
 async def api_mcp_remove(request: Request) -> Response:
     sess = await require(request)
     if isinstance(sess, JSONResponse):

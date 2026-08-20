@@ -110,6 +110,7 @@
       <button class="pf-x" data-close>×</button>
     </div>
     <div class="pf-modal-body">
+      <div class="pf-desc" id="mcp-register-error" role="alert" aria-live="assertive" style="margin-bottom:8px"></div>
       <div class="pf-form-row">
         <label class="req">名称</label>
         <div><input class="pf-input" id="mcp-name" placeholder="例：zhipu"></div>
@@ -152,12 +153,30 @@
       <button class="pf-x" data-close>×</button>
     </div>
     <div class="pf-modal-body">
+      <div class="pf-desc" id="mcp-groups-error" role="alert" aria-live="assertive" style="margin-bottom:8px"></div>
       <div id="edit-mcp-group-checks"></div>
       <div class="pf-desc" style="margin-top:8px">清空全部选项后，该 MCP 将对所有有效 Key 开放。</div>
     </div>
     <div class="pf-modal-foot">
       <button class="pf-btn" data-close>取消</button>
       <button class="pf-btn primary" id="btn-save-mcp-groups">保存并重载</button>
+    </div>
+  </div>
+
+  <div class="pf-modal" id="modal-mcp-confirm" role="dialog" aria-modal="true"
+       aria-labelledby="mcp-confirm-title" aria-describedby="mcp-confirm-message" style="width:460px">
+    <div class="pf-modal-head">
+      <div class="pf-modal-title" id="mcp-confirm-title">确认操作</div>
+      <button class="pf-x" id="btn-mcp-confirm-close" type="button" aria-label="取消">×</button>
+    </div>
+    <div class="pf-modal-body">
+      <div id="mcp-confirm-message"></div>
+      <div class="pf-desc" id="mcp-confirm-error" role="alert" aria-live="assertive" style="margin-top:8px"></div>
+      <div class="pf-banner" style="margin-top:12px">确认后将重启 mcp-hub 生效，进行中的工具调用会被中断。</div>
+    </div>
+    <div class="pf-modal-foot">
+      <button class="pf-btn" id="btn-mcp-confirm-cancel" type="button">取消</button>
+      <button class="pf-btn primary" id="btn-mcp-confirm-submit" type="button">确认并重载</button>
     </div>
   </div>
 
@@ -214,6 +233,9 @@
 (function () {
   'use strict';
   var revealGeneration = 0;
+  var pendingMcpAction = null;
+  var mcpConfirmReturnFocus = null;
+  var mcpConfirmSourceFocus = null;
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function fmtN(n) { return Number(n || 0).toLocaleString('zh-CN'); }
@@ -229,6 +251,79 @@
 
   function selectedGroups(cls) {
     return Array.from(document.querySelectorAll('.' + cls + ':checked')).map(function (cb) { return cb.value; });
+  }
+
+  function openMcpConfirm(action) {
+    pendingMcpAction = action;
+    mcpConfirmReturnFocus = document.activeElement;
+    mcpConfirmSourceFocus = document.activeElement;
+    document.getElementById('mcp-confirm-title').textContent = action.title;
+    document.getElementById('mcp-confirm-message').textContent = action.message;
+    document.getElementById('mcp-confirm-error').textContent = '';
+    if (action.sourceModal === 'modal-newmcp') document.getElementById('mcp-register-error').textContent = '';
+    if (action.sourceModal === 'modal-mcpgroups') document.getElementById('mcp-groups-error').textContent = '';
+    document.getElementById('btn-mcp-confirm-submit').textContent = action.confirmLabel || '确认并重载';
+    document.getElementById('btn-mcp-confirm-submit').disabled = false;
+    setMcpConfirmInert(true);
+    window.pfModal('modal-mcp-confirm');
+    setTimeout(function () { document.getElementById('btn-mcp-confirm-submit').focus({ preventScroll: true }); }, 50);
+  }
+
+  function setMcpConfirmInert(active) {
+    var content = document.querySelector('.pf-content');
+    if (!content) return;
+    Array.from(content.children).forEach(function (child) {
+      if (child.id === 'modal-mcp-confirm') return;
+      child.inert = active;
+      if (active) child.setAttribute('aria-hidden', 'true');
+      else child.removeAttribute('aria-hidden');
+    });
+  }
+
+  function restoreMcpFocus(target) {
+    setTimeout(function () {
+      if (target && target.isConnected && !target.disabled) target.focus();
+      else document.getElementById('btn-create-mcp').focus();
+    }, 50);
+  }
+
+  function cancelMcpConfirm() {
+    var action = pendingMcpAction;
+    pendingMcpAction = null;
+    setMcpConfirmInert(false);
+    if (action && action.sourceModal) {
+      window.pfModal(action.sourceModal);
+      restoreMcpFocus(mcpConfirmSourceFocus);
+    } else {
+      window.pfModalClose();
+      restoreMcpFocus(mcpConfirmReturnFocus);
+    }
+  }
+
+  function submitMcpConfirm() {
+    var action = pendingMcpAction;
+    if (!action) return;
+    var submit = document.getElementById('btn-mcp-confirm-submit');
+    submit.disabled = true;
+    window.pfApi('POST', action.path, action.body()).then(function (d) {
+      pendingMcpAction = null;
+      setMcpConfirmInert(false);
+      window.pfModalClose();
+      restoreMcpFocus(mcpConfirmReturnFocus);
+      action.success(d);
+    }).catch(function (e) {
+      document.getElementById('mcp-confirm-error').textContent = e.error || action.failure;
+      if (action.sourceModal) {
+        if (action.sourceModal === 'modal-newmcp') document.getElementById('mcp-register-error').textContent = e.error || action.failure;
+        if (action.sourceModal === 'modal-mcpgroups') document.getElementById('mcp-groups-error').textContent = e.error || action.failure;
+        setMcpConfirmInert(false);
+        window.pfModal(action.sourceModal);
+        restoreMcpFocus(mcpConfirmSourceFocus);
+      } else {
+        submit.disabled = false;
+      }
+      window.pfErr(e.error || action.failure);
+    });
   }
 
   function mcpKeyValue() {
@@ -336,11 +431,15 @@
     });
     document.querySelectorAll('.js-mcp-remove').forEach(function (btn) {
       btn.onclick = function () {
-        if (!confirm('移除外部 MCP「' + btn.dataset.name + '」？将重启 mcp-hub 生效，进行中的工具调用会被中断。')) return;
-        window.pfApi('POST', '/mcp/remove', { name: btn.dataset.name }).then(function () {
-          window.pfToast('已移除并重启 mcp-hub');
-          load();
-        }).catch(function (e) { window.pfErr(e.error || '移除失败'); });
+        var name = btn.dataset.name;
+        openMcpConfirm({
+          title: '确认移除外部 MCP',
+          message: '移除外部 MCP「' + name + '」？',
+          path: '/mcp/remove',
+          body: function () { return { name: name }; },
+          success: function () { window.pfToast('已移除并重启 mcp-hub'); load(); },
+          failure: '移除失败'
+        });
       };
     });
   }
@@ -412,6 +511,34 @@
         document.getElementById('tools-preview').textContent = JSON.stringify(d, null, 2);
       }).catch(function (e) { window.pfErr(e.error || '预览失败'); });
     });
+    document.getElementById('btn-mcp-confirm-cancel').addEventListener('click', cancelMcpConfirm);
+    document.getElementById('btn-mcp-confirm-close').addEventListener('click', cancelMcpConfirm);
+    document.getElementById('btn-mcp-confirm-submit').addEventListener('click', submitMcpConfirm);
+    document.addEventListener('keydown', function (e) {
+      var modal = document.getElementById('modal-mcp-confirm');
+      if (!pendingMcpAction || !modal.classList.contains('open')) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        cancelMcpConfirm();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      var focusable = Array.from(modal.querySelectorAll('button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled])'));
+      var first = focusable[0], last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault(); last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault(); first.focus();
+      }
+    }, true);
+    document.addEventListener('click', function (e) {
+      if (pendingMcpAction && e.target.classList && e.target.classList.contains('pf-mask')) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        cancelMcpConfirm();
+      }
+    }, true);
     document.getElementById('btn-create-mcp').addEventListener('click', function () {
       var body = {
         name: document.getElementById('mcp-name').value.trim(),
@@ -421,22 +548,32 @@
         groups: selectedGroups('new-mcp-group')
       };
       if (!body.name || !body.url || !body.prefix) { window.pfErr('名称、URL、前缀必填'); return; }
-      if (!confirm('保存将重启 mcp-hub 生效，进行中的工具调用会被中断。继续？')) return;
-      window.pfApi('POST', '/mcp/register', body).then(function (d) {
-        window.pfModalClose();
-        window.pfToast('已注册' + (d.restart === 'ok' ? '，mcp-hub 已重启生效' : '（重启失败，请检查服务）'));
-        load();
-      }).catch(function (e) { window.pfErr(e.error || '注册失败'); });
+      openMcpConfirm({
+        title: '确认注册外部 MCP',
+        message: '将注册外部 MCP「' + body.name + '」并验证其工具可用性。',
+        sourceModal: 'modal-newmcp',
+        path: '/mcp/register',
+        body: function () { return body; },
+        success: function (d) {
+          document.getElementById('tools-preview').textContent = JSON.stringify({ tools: d.tools || [] }, null, 2);
+          window.pfToast('已注册并验证 ' + (d.tools || []).length + ' 个工具，mcp-hub 已重启生效');
+          load();
+        },
+        failure: '注册失败'
+      });
     });
     document.getElementById('btn-save-mcp-groups').addEventListener('click', function () {
       var name = document.getElementById('edit-mcp-name').textContent;
-      if (!confirm('保存将重启 mcp-hub 生效，进行中的工具调用会被中断。继续？')) return;
-      window.pfApi('POST', '/mcp/groups', { name: name, groups: selectedGroups('edit-mcp-group') })
-        .then(function (d) {
-          window.pfModalClose();
-          window.pfToast('分组绑定已更新' + (d.restart === 'ok' ? '，mcp-hub 已重启生效' : '（重启失败，请检查服务）'));
-          load();
-        }).catch(function (e) { window.pfErr(e.error || '分组绑定更新失败'); });
+      var groups = selectedGroups('edit-mcp-group');
+      openMcpConfirm({
+        title: '确认保存 MCP 分组',
+        message: '保存外部 MCP「' + name + '」的分组绑定？',
+        sourceModal: 'modal-mcpgroups',
+        path: '/mcp/groups',
+        body: function () { return { name: name, groups: groups }; },
+        success: function () { window.pfToast('分组绑定已更新，mcp-hub 已重启生效'); load(); },
+        failure: '分组绑定更新失败'
+      });
     });
   });
 })();

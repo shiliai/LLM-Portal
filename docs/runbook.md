@@ -156,6 +156,32 @@ install.sh 在站点侧：装 wireguard-tools → `wg genkey`（私钥不出机�
 发现并通过 `tools/call` 使用。未绑定/`default` Key 只见全局工具；内建
 `analyze_image` 默认全局。客户端 URL、Bearer Key 与传输协议不变。
 
+注册外部 MCP 前，控制台会在 10 秒内完成上游 MCP 初始化和 `tools/list` 预检；至少
+发现一个工具后才会写入 `external-mcp.json` 并重启 mcp-hub。鉴权、网络、TLS、协议或
+零工具失败会保留表单与原配置，不会重启服务；错误只返回可操作的类别，不回显外部凭据。
+注册、分组保存和移除均先在控制台页面内确认重启影响，不会触发浏览器原生确认框。
+
+部署前和每次三项外部 MCP 注册批次前，先创建时间戳备份：备份必须是 `0600`、字节 SHA256
+读回一致，并记录目标文件的 owner、mode 和 inode；备份文件及其目录都必须 `fsync` 成功，任一
+检查失败即停止，禁止开始注册。运行时失败会原 inode 恢复原字节、mode/owner，重启 mcp-hub 并
+确认旧 SHA 和工具归属证明。操作 receipt 仅记录路径、SHA、mode 和 attestation，绝不包含 JSON
+内容或外部凭据。
+
+### BigModel MCP 批次
+
+以下三项均为全局工具，不绑定任何 groups；每次只注册一项，确认预检、重启和 tools/list 后再继续。
+不要把 Bearer 凭据写入 shell history、配置仓库、截图或运维 receipt。
+
+| 名称 | URL | 前缀 | 预期工具 |
+|---|---|---|---|
+| `zai-search` | `https://open.bigmodel.cn/api/mcp/web_search_prime/mcp` | `zai_search_` | `webSearchPrime` |
+| `zai-reader` | `https://open.bigmodel.cn/api/mcp/web_reader/mcp` | `zai_reader_` | `webReader` |
+| `zai-zread` | `https://open.bigmodel.cn/api/mcp/zread/mcp` | `zai_zread_` | `search_doc`, `get_repo_structure`, `read_file` |
+
+安全验收调用应只使用无敏感内容的公开查询：Search 查询公开项目名称，Reader 读取公开 HTTPS
+页面，Zread 仅查询公开仓库结构或读取公开文件。任何预检、工具归属或调用失败时，立即停止后续
+两项注册；通过「移除」撤销刚注册的项，等待 mcp-hub 重启并确认旧 SHA/工具证明恢复后再排障。
+
 ## 5. 验收记录（T1~T15，2026-08-14 首站 site-a 实测）
 
 | # | 故事 | 验证步骤与通过标准 | 结果 |

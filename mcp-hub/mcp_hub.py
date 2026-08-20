@@ -201,32 +201,69 @@ async def analyze_image(image_url: str, question: str, ctx: Context) -> str:
 
 external_clients: dict[str, Client] = {}
 loaded_config_sha256 = ""
+loaded_tool_owners: dict[str, str] = {}
+loaded_entry_state: dict[str, dict] = {}
+loaded_config_ok = True
 
 
 async def register_external_tools() -> None:
-    """按配置文件把外部 MCP 工具以 <前缀><名> 透出（前缀限 [a-z0-9_] 防冲突）。"""
+    """Load every configured external MCP and attest its exposed FastMCP surface."""
+    global loaded_config_ok
+    loaded_tool_owners.clear()
+    loaded_entry_state.clear()
+    loaded_tool_owners["analyze_image"] = "builtin"
+    loaded_config_ok = True
     if not EXTERNAL_MCP_CONF.exists():
         return
     try:
         entries = json.loads(EXTERNAL_MCP_CONF.read_text())
     except (json.JSONDecodeError, OSError) as exc:
-        print(f"[mcp-hub] external mcp config error: {exc}")
+        loaded_config_ok = False
+        loaded_entry_state["registry"] = {"ok": False, "reason": "invalid_registry", "tools": []}
+        print("[mcp-hub] external mcp config error")
         return
+    if not isinstance(entries, list):
+        loaded_config_ok = False
+        loaded_entry_state["registry"] = {"ok": False, "reason": "invalid_registry", "tools": []}
+        return
+    names = set()
     for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str) or not entry["name"]:
+            loaded_config_ok = False
+            loaded_entry_state[f"invalid-{len(loaded_entry_state)}"] = {
+                "ok": False, "reason": "invalid_entry", "tools": []}
+            continue
         name, prefix = entry["name"], entry.get("prefix", f"{entry['name']}_")
+        if name in names or not isinstance(prefix, str) or not prefix:
+            loaded_config_ok = False
+            loaded_entry_state[name] = {"ok": False, "reason": "invalid_entry", "tools": []}
+            continue
+        names.add(name)
         raw_groups = entry.get("groups", [])
         if not isinstance(raw_groups, list) or any(not isinstance(group, str) or not group
                                                    for group in raw_groups):
+            loaded_config_ok = False
+            loaded_entry_state[name] = {"ok": False, "reason": "invalid_groups", "tools": []}
             print(f"[mcp-hub] external mcp '{name}': skipped (invalid groups list)")
             continue
         groups = set(raw_groups)
         if "REPLACE" in str(entry.get("api_key", "")) or "REPLACE" in entry.get("url", ""):
+            loaded_config_ok = False
+            loaded_entry_state[name] = {"ok": False, "reason": "placeholder", "tools": []}
             print(f"[mcp-hub] external mcp '{name}': skipped (placeholder credentials)")
             continue
         try:
             client = Client(entry["url"], auth=BearerAuth(entry["api_key"]) if entry.get("api_key") else None)
             await client.__aenter__()
-            tools = await client.list_tools()
+            tools = list(await client.list_tools())
+            exposed = [f"{prefix}{tool.name}" for tool in tools]
+            if not tools or len(set(exposed)) != len(exposed) or any(tool_name in loaded_tool_owners
+                                                                       for tool_name in exposed):
+                await client.__aexit__(None, None, None)
+                loaded_config_ok = False
+                loaded_entry_state[name] = {"ok": False, "reason": "tool_collision", "tools": []}
+                print(f"[mcp-hub] external mcp '{name}': skipped (tool collision)")
+                continue
             external_clients[name] = client
             for tool in tools:
 
@@ -243,15 +280,31 @@ async def register_external_tools() -> None:
                     tags=groups,
                     run_in_thread=False,
                 ))
+            actual = []
+            for tool_name in exposed:
+                exposed_tool = await mcp.get_tool(tool_name)
+                if exposed_tool is None or exposed_tool.name != tool_name:
+                    loaded_config_ok = False
+                    loaded_entry_state[name] = {"ok": False, "reason": "surface_mismatch", "tools": []}
+                    break
+                actual.append(tool_name)
+            else:
+                for tool_name in actual:
+                    loaded_tool_owners[tool_name] = name
+                loaded_entry_state[name] = {"ok": True, "reason": "", "tools": actual}
             scope = ",".join(sorted(groups)) if groups else "global"
-            print(f"[mcp-hub] external mcp '{name}': {len(tools)} tools proxied "
-                  f"(prefix '{prefix}', groups '{scope}')")
+            if loaded_entry_state[name]["ok"]:
+                print(f"[mcp-hub] external mcp '{name}': {len(tools)} tools proxied "
+                      f"(prefix '{prefix}', groups '{scope}')")
         except Exception as exc:  # 外部服务不可达不阻断启动
-            print(f"[mcp-hub] external mcp '{name}' unavailable: {exc}")
+            loaded_config_ok = False
+            loaded_entry_state[name] = {"ok": False, "reason": "unavailable", "tools": []}
+            print(f"[mcp-hub] external mcp '{name}' unavailable")
 
 
 async def config_state(request: Request) -> Response:
-    return JSONResponse({"sha256": loaded_config_sha256})
+    return JSONResponse({"sha256": loaded_config_sha256, "ok": loaded_config_ok,
+                         "tools": loaded_tool_owners, "entries": loaded_entry_state})
 
 
 # ---------------------------------------------------------------- 临时文件清理

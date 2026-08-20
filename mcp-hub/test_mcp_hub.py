@@ -171,7 +171,8 @@ def test_internal_config_state_binds_loaded_registry(hub):
     with TestClient(hub.app) as client:
         resp = client.get("/internal/config-state")
     assert resp.status_code == 200
-    assert resp.json() == {"sha256": expected}
+    assert resp.json() == {"sha256": expected, "ok": True,
+                           "tools": {"analyze_image": "builtin"}, "entries": {}}
 
 
 def test_external_tools_inherit_configured_groups(hub, monkeypatch):
@@ -198,6 +199,88 @@ def test_external_tools_inherit_configured_groups(hub, monkeypatch):
     tool = asyncio.run(hub.mcp.get_tool("svc_ping"))
     assert tool is not None
     assert tool.tags == {"home", "lab"}
+
+
+def test_config_state_attests_actual_restarted_surface_and_owner(hub, monkeypatch):
+    hub.EXTERNAL_MCP_CONF.write_text(json.dumps([{
+        "name": "svc", "url": "https://mcp.invalid/mcp", "api_key": "",
+        "prefix": "svc_", "groups": [],
+    }]))
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            return False
+        async def list_tools(self):
+            return [SimpleNamespace(name="ping", description="Ping", inputSchema={})]
+
+    monkeypatch.setattr(hub, "Client", FakeClient)
+    with TestClient(hub.app) as client:
+        state = client.get("/internal/config-state").json()
+        tool = asyncio.run(hub.mcp.get_tool("svc_ping"))
+    assert state["ok"] is True
+    assert state["tools"] == {"analyze_image": "builtin", "svc_ping": "svc"}
+    assert state["entries"]["svc"] == {"ok": True, "reason": "", "tools": ["svc_ping"]}
+    assert tool is not None and tool.name == "svc_ping"
+
+
+def test_config_state_rejects_builtin_and_inter_entry_collisions(hub, monkeypatch):
+    hub.EXTERNAL_MCP_CONF.write_text(json.dumps([
+        {"name": "builtin", "url": "https://a.invalid/mcp", "api_key": "", "prefix": "analyze_", "groups": []},
+        {"name": "first", "url": "https://b.invalid/mcp", "api_key": "", "prefix": "svc_", "groups": []},
+        {"name": "second", "url": "https://c.invalid/mcp", "api_key": "", "prefix": "svc_", "groups": []},
+    ]))
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            self.url = args[0]
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            return False
+        async def list_tools(self):
+            return [SimpleNamespace(name="image" if self.url.endswith("a.invalid/mcp") else "ping",
+                                    description="", inputSchema={})]
+
+    monkeypatch.setattr(hub, "Client", FakeClient)
+    with TestClient(hub.app) as client:
+        state = client.get("/internal/config-state").json()
+    assert state["ok"] is False
+    assert state["entries"]["builtin"]["reason"] == "tool_collision"
+    assert state["entries"]["second"]["reason"] == "tool_collision"
+    assert state["tools"] == {"analyze_image": "builtin", "svc_ping": "first"}
+
+
+def test_config_state_marks_partial_surface_ownership_mismatch(hub, monkeypatch):
+    hub.EXTERNAL_MCP_CONF.write_text(json.dumps([{
+        "name": "svc", "url": "https://mcp.invalid/mcp", "api_key": "", "prefix": "svc_", "groups": [],
+    }]))
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            return False
+        async def list_tools(self):
+            return [SimpleNamespace(name="ping", description="", inputSchema={})]
+
+    original_get_tool = hub.mcp.get_tool
+    async def missing_one(name):
+        if name == "svc_ping":
+            return None
+        return await original_get_tool(name)
+
+    monkeypatch.setattr(hub, "Client", FakeClient)
+    monkeypatch.setattr(hub.mcp, "get_tool", missing_one)
+    with TestClient(hub.app) as client:
+        state = client.get("/internal/config-state").json()
+    assert state["ok"] is False
+    assert state["entries"]["svc"] == {"ok": False, "reason": "surface_mismatch", "tools": []}
 
 
 def test_external_tool_with_malformed_groups_is_not_registered(hub, monkeypatch):
