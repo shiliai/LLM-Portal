@@ -27,9 +27,11 @@ metering, and a web administration console.
   effort, and request-level details.
 - **Web console:** administrator login with email, password, and optional TOTP; graphical management
   for sites, groups, models, keys, usage, and external MCP servers; user self-service usage view.
-- **MCP gateway:** built-in image analysis plus registered external MCP servers. Upstream MCP
-  credentials remain on the gateway. External tools can be assigned to groups, and a virtual key's
-  `metadata.group` restricts both `tools/list` and `tools/call`.
+- **MCP gateway:** built-in image analysis uses an administrator-selected registered model
+  (models.dev capability metadata with a live-probe fallback for private models), plus registered
+  external MCP servers. Upstream MCP credentials remain on the gateway. External tools can be
+  assigned to groups, and a virtual key's `metadata.group` restricts both `tools/list` and
+  `tools/call`.
 - **Public-surface allowlist:** nginx exposes only the required application routes. LiteLLM's UI and
   management APIs return 404 through the public gateway.
 

@@ -99,6 +99,8 @@ def _load(tmp_path: Path, extra_env: dict | None = None):
         "LITELLM_MASTER_KEY": MASTER_KEY,
         "ONBOARD_ADMIN_TOKEN": "tok-onboard-unit",
         "LITELLM_BASE": "http://litellm-stub.invalid",   # 桩接管 httpx，地址仅占位
+        "MCP_VISION_CONF": str(tmp_path / "vision-mcp.json"),
+        "MCP_VISION_MODEL": "",
     }
     env.update(extra_env or {})
     return load_service(CONSOLE_DIR / "console.py", env)
@@ -363,6 +365,117 @@ def _mcp_only_handler(method, path, bearer, json_body):
     if path == "/key/list":
         return 200, {"keys": []}
     return _mcp_handler(method, path, bearer, json_body)
+
+
+VISION_DEPLOYMENTS = [{
+    "model_name": "qwen3.8-27b",
+    "litellm_params": {"model": "openai/qwen3.8-27b-mtp2"},
+    "model_info": {"id": "vision-dep"},
+}, {
+    "model_name": "deepseek-v4-flash",
+    "litellm_params": {"model": "openai/deepseek-v4-flash-0731"},
+    "model_info": {"id": "text-dep"},
+}, {
+    "model_name": "private-vlm",
+    "litellm_params": {"model": "openai/private-vlm-build7"},
+    "model_info": {"id": "private-dep"},
+}]
+
+MODELS_DEV_FIXTURE = {
+    "alibaba/qwen3.8-27b": {
+        "id": "alibaba/qwen3.8-27b", "name": "Qwen3.8 27B",
+        "modalities": {"input": ["text", "image", "video"], "output": ["text"]},
+    },
+    "deepseek/deepseek-v4-flash": {
+        "id": "deepseek/deepseek-v4-flash", "name": "DeepSeek V4 Flash",
+        "modalities": {"input": ["text"], "output": ["text"]},
+    },
+}
+
+
+def _vision_handler(method, path, bearer, json_body):
+    if path == "/global/spend" and bearer == MASTER_KEY:
+        return 200, {}
+    if path == "/model/info":
+        return 200, {"data": VISION_DEPLOYMENTS}
+    if path == "/models.json":
+        return 200, MODELS_DEV_FIXTURE
+    if path == "/v1/chat/completions" and json_body and json_body.get("model") == "private-vlm":
+        return 200, {"choices": [{"message": {"content": "red"}}]}
+    return 404, {"error": f"unexpected stub path {path}"}
+
+
+def test_mcp_vision_lists_registered_models_with_catalog_capabilities(mcp_console, monkeypatch):
+    install_litellm_stub(monkeypatch, _vision_handler)
+    client, hdr = _admin_client(mcp_console)
+    response = client.get("/console/api/mcp/vision", headers=hdr)
+    assert response.status_code == 200
+    candidates = {item["model"]: item for item in response.json()["candidates"]}
+    assert candidates["qwen3.8-27b"]["capability"] == "image"
+    assert candidates["qwen3.8-27b"]["catalog_matches"][0]["id"] == "alibaba/qwen3.8-27b"
+    assert candidates["deepseek-v4-flash"]["capability"] == "text_only"
+    assert candidates["private-vlm"]["capability"] == "unknown"
+
+
+def test_mcp_vision_saves_models_dev_verified_selection(mcp_console, monkeypatch):
+    install_litellm_stub(monkeypatch, _vision_handler)
+    client, hdr = _admin_client(mcp_console)
+    response = client.post("/console/api/mcp/vision", headers=hdr, json={
+        "model": "qwen3.8-27b", "catalog_id": "alibaba/qwen3.8-27b"})
+    assert response.status_code == 200
+    stored = json.loads(mcp_console.MCP_VISION_CONF.read_text())
+    assert stored["model"] == "qwen3.8-27b"
+    assert stored["catalog_id"] == "alibaba/qwen3.8-27b"
+    assert stored["source"] == "models.dev"
+
+
+def test_mcp_vision_rejects_unrelated_catalog_override(mcp_console, monkeypatch):
+    install_litellm_stub(monkeypatch, _vision_handler)
+    client, hdr = _admin_client(mcp_console)
+    response = client.post("/console/api/mcp/vision", headers=hdr, json={
+        "model": "deepseek-v4-flash", "catalog_id": "alibaba/qwen3.8-27b"})
+    assert response.status_code == 400
+    assert "does not match" in response.json()["error"]
+
+
+def test_mcp_vision_rejects_cataloged_text_only_model(mcp_console, monkeypatch):
+    install_litellm_stub(monkeypatch, _vision_handler)
+    client, hdr = _admin_client(mcp_console)
+    response = client.post("/console/api/mcp/vision", headers=hdr,
+                           json={"model": "deepseek-v4-flash"})
+    assert response.status_code == 400
+    assert "without image input" in response.json()["error"]
+    assert not mcp_console.MCP_VISION_CONF.exists()
+
+
+def test_mcp_vision_probes_unknown_private_model_before_saving(mcp_console, monkeypatch):
+    calls = install_litellm_stub(monkeypatch, _vision_handler)
+    client, hdr = _admin_client(mcp_console)
+    response = client.post("/console/api/mcp/vision", headers=hdr,
+                           json={"model": "private-vlm"})
+    assert response.status_code == 200
+    assert response.json()["selected"]["source"] == "live_probe"
+    probe = next(call for call in calls if call["path"] == "/v1/chat/completions")
+    content = probe["json"]["messages"][0]["content"]
+    assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_mcp_vision_uses_stale_catalog_when_refresh_fails(mcp_console, monkeypatch):
+    install_litellm_stub(monkeypatch, _vision_handler)
+    client, hdr = _admin_client(mcp_console)
+    assert client.get("/console/api/mcp/vision", headers=hdr).status_code == 200
+
+    def unavailable_catalog(method, path, bearer, json_body):
+        if path == "/models.json":
+            return 503, {"error": "offline"}
+        return _vision_handler(method, path, bearer, json_body)
+
+    install_litellm_stub(monkeypatch, unavailable_catalog)
+    response = client.get("/console/api/mcp/vision?refresh=1", headers=hdr)
+    assert response.status_code == 200
+    assert response.json()["catalog"]["status"] == "stale"
+    candidates = {item["model"]: item for item in response.json()["candidates"]}
+    assert candidates["qwen3.8-27b"]["capability"] == "image"
 
 
 def test_mcp_register_and_update_groups(mcp_console, monkeypatch):
@@ -738,6 +851,9 @@ def test_mcp_use_config_never_contains_placeholder_and_binds_reveal_generation()
     assert "sk-（请选择用户 Key）" not in source
     assert "generation !== revealGeneration" in source
     assert "'/keys/import'" in source
+    assert "id=\"vision-model\"" in source
+    assert "'/mcp/vision'" in source
+    assert "catalog_id: catalog.value" in source
 
 
 def test_mcp_registration_uses_accessible_page_confirmation_without_native_dialogs():

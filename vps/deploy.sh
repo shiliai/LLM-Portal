@@ -99,6 +99,12 @@ MCP_REGISTRY_RECEIPT=$(docker run --rm -v "$ETC_DIR":/e alpine sh -ec '
   printf "backup path=%s sha256=%s mode=%s owner=%s inode=%s attestation=backup_verified\n" "$backup" "$(sha256sum "$backup" | awk "{print \$1}")" "$(stat -c %a "$registry")" "$(stat -c %u:%g "$registry")" "$(stat -c %i "$registry")"
 ') || { echo "!! external MCP registry backup verification failed; aborting before deployment"; exit 1; }
 echo "   $MCP_REGISTRY_RECEIPT"
+docker run --rm -v "$ETC_DIR":/e alpine sh -ec '
+  umask 077
+  mkdir -p /e/vision
+  [ -f /e/vision/config.json ] || printf "{}\n" > /e/vision/config.json
+  chmod 600 /e/vision/config.json
+'
 [ "$(cat /proc/sys/net/ipv4/tcp_congestion_control)" = bbr ] \
   || echo "   note: 宿主机未启 BBR（一次性 sudo，见 runbook §2 前置）——跨境吞吐会显著劣化"
 

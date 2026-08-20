@@ -81,12 +81,16 @@ services:
       LITELLM_BASE: http://litellm:4000
       # offload 模式外部 URL 带高位端口（https://域名:8080），与 DOMAIN 裸域名不同，允许显式覆盖
       PUBLIC_BASE: ${PUBLIC_BASE:-https://${DOMAIN}}
-      MCP_VISION_MODEL: ${MCP_VISION_MODEL:-qwen3.6-35b-fp8}
+      # 仅作升级兼容；管理员保存后以 /etc/private-llm/vision/config.json 为准
+      MCP_VISION_MODEL: ${MCP_VISION_MODEL:-}
+      MCP_VISION_CONF: /etc/private-llm/vision/config.json
     volumes:
       # 状态（usage.db + uploads）落宿主机，容器重建不丢
       - /var/lib/private-llm/mcp-hub:/var/lib/private-llm/mcp-hub
       # consoled 写、mcp-hub 读（单文件 bind：write_text 截断写不换 inode，重启不失效）
       - /etc/private-llm/external-mcp.json:/etc/private-llm/external-mcp.json
+      # 目录 bind 允许 consoled 原子替换 config.json 后运行态立即读取新 inode
+      - /etc/private-llm/vision:/etc/private-llm/vision:ro
     ports:
       - "127.0.0.1:8200:8200"
     networks:
@@ -132,7 +136,8 @@ services:
       MCP_HUB_URL: http://private-llm-mcp-hub:8200
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
       ONBOARD_ADMIN_TOKEN: ${ONBOARD_ADMIN_TOKEN}
-      MCP_VISION_MODEL: ${MCP_VISION_MODEL:-qwen3.6-35b-fp8}
+      MCP_VISION_MODEL: ${MCP_VISION_MODEL:-}
+      MCP_VISION_CONF: /etc/private-llm/vision/config.json
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       ADMIN_TOTP_SECRET: ${ADMIN_TOTP_SECRET:-}

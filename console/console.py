@@ -37,6 +37,8 @@
   GET  /console/api/usage/logs?days=N  逐请求明细（时间/Key/模型/token/延迟/状态/request_id）
   GET  /console/api/my                 用户自查（/key/info + /mcp/usage 代查）
   GET  /console/api/mcp                外部 MCP 注册清单（脱敏）
+  GET  /console/api/mcp/vision         已注册模型的视觉能力与当前 Vision MCP 选择
+  POST /console/api/mcp/vision         保存 Vision MCP 模型（models.dev 校验；未知模型实测）
   POST /console/api/mcp/register       注册外部 MCP（写配置 + 重启 mcp-hub）
   POST /console/api/mcp/groups         更新外部 MCP 的分组绑定
   POST /console/api/mcp/remove         移除（写配置 + 重启 mcp-hub）
@@ -67,6 +69,7 @@ import struct
 import subprocess
 import sys
 import time
+import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -89,9 +92,11 @@ ONBOARD_ADMIN_TOKEN = os.environ["ONBOARD_ADMIN_TOKEN"]
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").strip().lower()
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 ADMIN_TOTP_SECRET = os.environ.get("ADMIN_TOTP_SECRET", "").strip()
-MCP_VISION_MODEL = os.environ.get("MCP_VISION_MODEL", "qwen3.6-35b-fp8")
+MCP_VISION_MODEL = os.environ.get("MCP_VISION_MODEL", "").strip()
 EXTERNAL_MCP_CONF = Path(os.environ.get("EXTERNAL_MCP_CONF", "/etc/private-llm/external-mcp.json"))
+MCP_VISION_CONF = Path(os.environ.get("MCP_VISION_CONF", "/etc/private-llm/vision/config.json"))
 MCP_USAGE_DB = Path(os.environ.get("MCP_USAGE_DB", "/var/lib/private-llm/mcp-hub/usage.db"))
+MODELS_DEV_URL = os.environ.get("MODELS_DEV_URL", "https://models.dev/models.json")
 MCP_PREFLIGHT_TIMEOUT = 10
 MCP_MAX_DISCOVERED_TOOLS = 64
 MCP_MAX_SCHEMA_DEPTH = 12
@@ -111,6 +116,8 @@ TOTP_STATE_PATH = STATE_DIR / "totp.json"
 # 安全边界变化见 runbook §7——网关成为密钥保管者，VPS 失陷即密钥失陷；轮换 = 删库重签
 VAULT_DB = STATE_DIR / "keyvault.db"
 VAULT_KEY_PATH = STATE_DIR / "keyvault.key"
+MODELS_DEV_CACHE = STATE_DIR / "models-dev-cache.json"
+MODELS_DEV_CACHE_TTL = 24 * 3600
 SESSION_TTL = 8 * 3600
 LOGIN_FAIL_LIMIT, LOGIN_WINDOW = 5, 60
 HANDSHAKE_ONLINE = 180  # 最近握手 3 分钟内视为在线
@@ -417,15 +424,15 @@ async def api_2fa_setup(request: Request) -> Response:
     sess = await require(request)
     if isinstance(sess, JSONResponse):
         return sess
-    secret = base64.b32encode(secrets.token_bytes(20)).decode()
+    totp_seed = base64.b32encode(os.urandom(20)).decode()
     st = _totp_state()
-    st["pending"] = secret
+    st["pending"] = totp_seed
     _write_totp_state(st)
     label = quote(f"private-llm:{ADMIN_EMAIL or 'admin'}")
-    uri = (f"otpauth://totp/{label}?secret={secret}&issuer=private-llm"
+    uri = (f"otpauth://totp/{label}?secret={totp_seed}&issuer=private-llm"
            "&algorithm=SHA1&digits=6&period=30")
     qr = segno.make(uri, error="m").svg_data_uri(scale=4)
-    return JSONResponse({"secret": secret, "otpauth": uri, "qr": qr})
+    return JSONResponse({"secret": totp_seed, "otpauth": uri, "qr": qr})
 
 
 async def api_2fa_confirm(request: Request) -> Response:
@@ -1689,6 +1696,190 @@ async def api_my(request: Request) -> Response:
 
 # ---------------------------------------------------------------- MCP 管理面
 
+def read_vision_conf() -> dict:
+    try:
+        config = json.loads(MCP_VISION_CONF.read_text())
+    except (OSError, json.JSONDecodeError):
+        config = {}
+    if isinstance(config, dict) and isinstance(config.get("model"), str) and config["model"].strip():
+        return config
+    return {"model": MCP_VISION_MODEL, "source": "environment"} if MCP_VISION_MODEL else {}
+
+
+def write_vision_conf(config: dict) -> None:
+    MCP_VISION_CONF.parent.mkdir(parents=True, exist_ok=True)
+    temp = MCP_VISION_CONF.with_name(
+        f".{MCP_VISION_CONF.name}.tmp-{os.getpid()}-{time.time_ns()}")
+    temp.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n")
+    os.chmod(temp, 0o600)
+    os.replace(temp, MCP_VISION_CONF)
+
+
+def _read_models_dev_cache() -> tuple[dict, int]:
+    try:
+        cached = json.loads(MODELS_DEV_CACHE.read_text())
+        models = cached.get("models")
+        fetched_at = int(cached.get("fetched_at") or 0)
+        return (models, fetched_at) if isinstance(models, dict) else ({}, 0)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return {}, 0
+
+
+def _write_models_dev_cache(models: dict, fetched_at: int) -> None:
+    temp = MODELS_DEV_CACHE.with_name(
+        f".{MODELS_DEV_CACHE.name}.tmp-{os.getpid()}-{time.time_ns()}")
+    temp.write_text(json.dumps({"fetched_at": fetched_at, "models": models}, ensure_ascii=False))
+    os.chmod(temp, 0o600)
+    os.replace(temp, MODELS_DEV_CACHE)
+
+
+async def models_dev_catalog(force: bool = False) -> tuple[dict, dict]:
+    """Fetch model-only metadata, falling back to the last successful local snapshot."""
+    cached, fetched_at = _read_models_dev_cache()
+    now = int(time.time())
+    if cached and not force and now - fetched_at < MODELS_DEV_CACHE_TTL:
+        return cached, {"status": "fresh", "fetched_at": fetched_at}
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            response = await client.get(MODELS_DEV_URL)
+        if response.status_code != 200 or len(response.text.encode()) > 20 * 1024 * 1024:
+            raise ValueError(f"models.dev returned {response.status_code}")
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("models.dev payload is not an object")
+        models = {str(model_id): model for model_id, model in payload.items()
+                  if isinstance(model, dict)}
+        if not models:
+            raise ValueError("models.dev catalog is empty")
+        _write_models_dev_cache(models, now)
+        return models, {"status": "fresh", "fetched_at": now}
+    except (httpx.HTTPError, ValueError, OSError) as exc:
+        if cached:
+            return cached, {"status": "stale", "fetched_at": fetched_at,
+                            "detail": str(exc)[:160]}
+        return {}, {"status": "unavailable", "fetched_at": 0, "detail": str(exc)[:160]}
+
+
+def _catalog_input_modalities(entry: dict) -> list[str]:
+    modalities = entry.get("modalities") or {}
+    inputs = modalities.get("input") if isinstance(modalities, dict) else []
+    return [str(item) for item in inputs] if isinstance(inputs, list) else []
+
+
+def _vision_candidates(deployments: list[dict], catalog: dict) -> list[dict]:
+    registered: dict[str, set[str]] = {}
+    for deployment in deployments:
+        name = str(deployment.get("model_name") or "").strip()
+        if not name:
+            continue
+        upstream = str((deployment.get("litellm_params") or {}).get("model") or "")
+        registered.setdefault(name, set()).add(upstream.removeprefix("openai/"))
+
+    by_basename: dict[str, list[tuple[str, dict]]] = {}
+    for model_id, entry in catalog.items():
+        by_basename.setdefault(model_id.rsplit("/", 1)[-1].lower(), []).append((model_id, entry))
+
+    candidates = []
+    for name, upstreams in sorted(registered.items()):
+        keys = {name.lower(), *(item.lower() for item in upstreams if item)}
+        matched: dict[str, dict] = {}
+        for key in keys:
+            if key in catalog:
+                matched[key] = catalog[key]
+            for model_id, entry in by_basename.get(key.rsplit("/", 1)[-1], []):
+                matched[model_id] = entry
+        catalog_matches = [{
+            "id": model_id,
+            "name": entry.get("name") or model_id,
+            "input_modalities": _catalog_input_modalities(entry),
+        } for model_id, entry in sorted(matched.items())]
+        image_matches = [item for item in catalog_matches if "image" in item["input_modalities"]]
+        capability = "image" if image_matches else ("text_only" if catalog_matches else "unknown")
+        candidates.append({"model": name, "upstreams": sorted(item for item in upstreams if item),
+                           "capability": capability, "catalog_matches": catalog_matches})
+    return candidates
+
+
+def _probe_png_data_url() -> str:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        checksum = zlib.crc32(kind + data) & 0xffffffff
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", checksum)
+
+    width = height = 32
+    raw = b"".join(b"\x00" + b"\xff\x00\x00" * width for _ in range(height))
+    png = (b"\x89PNG\r\n\x1a\n"
+           + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+           + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+    return "data:image/png;base64," + base64.b64encode(png).decode()
+
+
+async def probe_vision_model(model: str) -> tuple[bool, str]:
+    code, body = await ll_json("POST", "/v1/chat/completions", json={
+        "model": model,
+        "messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": _probe_png_data_url()}},
+            {"type": "text", "text": "Reply with the dominant color in one word."},
+        ]}],
+        "max_tokens": 16,
+    })
+    if code == 200 and isinstance(body, dict) and body.get("choices"):
+        return True, "ok"
+    detail = body.get("error") if isinstance(body, dict) else body
+    return False, str(detail)[:240]
+
+
+async def api_mcp_vision(request: Request) -> Response:
+    sess = await require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    catalog, catalog_state = await models_dev_catalog(
+        force=request.method == "GET" and request.query_params.get("refresh") == "1")
+    candidates = _vision_candidates(await litellm_deployments(), catalog)
+    selected = read_vision_conf()
+    registered = {candidate["model"] for candidate in candidates}
+    selected = {**selected, "valid": bool(selected.get("model") in registered)} if selected else {}
+    if request.method == "GET":
+        return JSONResponse({"selected": selected, "candidates": candidates,
+                             "catalog": catalog_state})
+
+    try:
+        body = await request.json()
+        model = str(body["model"]).strip()
+        catalog_id = str(body.get("catalog_id") or "").strip()
+    except (ValueError, KeyError, TypeError):
+        return jerr("bad request: expect {model, catalog_id?}", 400)
+    candidate = next((item for item in candidates if item["model"] == model), None)
+    if candidate is None:
+        return jerr(f"model {model} is not registered", 404)
+
+    matches = candidate["catalog_matches"]
+    image_matches = [item for item in matches if "image" in item["input_modalities"]]
+    if catalog_id:
+        entry = catalog.get(catalog_id)
+        matched_ids = {item["id"] for item in image_matches}
+        if catalog_id not in matched_ids or not isinstance(entry, dict):
+            return jerr(f"models.dev model {catalog_id} does not match registered model {model}", 400)
+        if "image" not in _catalog_input_modalities(entry):
+            return jerr(f"models.dev model {catalog_id} does not support image input", 400)
+        source = "models.dev"
+    elif image_matches:
+        if len(image_matches) > 1:
+            return jerr("multiple image-capable catalog matches; catalog_id is required", 409)
+        catalog_id, source = image_matches[0]["id"], "models.dev"
+    elif matches:
+        return jerr(f"model {model} is cataloged without image input", 400)
+    else:
+        ok, detail = await probe_vision_model(model)
+        if not ok:
+            return jerr(f"vision probe failed for {model}: {detail}", 422)
+        source = "live_probe"
+
+    config = {"model": model, "source": source, "updated_at": int(time.time())}
+    if catalog_id:
+        config["catalog_id"] = catalog_id
+    write_vision_conf(config)
+    return JSONResponse({"ok": True, "selected": {**config, "valid": True}})
+
 def valid_mcp_groups(entry: dict) -> list[str]:
     groups = entry.get("groups", [])
     if not isinstance(groups, list):
@@ -1993,8 +2184,10 @@ async def api_mcp(request: Request) -> Response:
         return sess
     snap = await group_snapshot()
     group_names = sorted(snap["groups"])
+    vision = read_vision_conf()
     return JSONResponse({
-        "builtin": {"tool": "analyze_image(image_url, question)", "model": MCP_VISION_MODEL,
+        "builtin": {"tool": "analyze_image(image_url, question)",
+                    "model": vision.get("model") or "未配置",
                     "endpoint": "/mcp（Streamable HTTP + Bearer）",
                     "boundary": "以调用者 Key 回调回环模型通道，凭据不出网关（C5）"},
         "external": [mask_entry(e) for e in read_mcp_conf()],
@@ -2102,8 +2295,9 @@ async def api_mcp_tools(request: Request) -> Response:
     sess = await require(request)
     if isinstance(sess, JSONResponse):
         return sess
+    vision_model = read_vision_conf().get("model") or "未配置"
     tools = [{"name": "analyze_image", "source": "内建",
-              "description": f"视觉识别（{MCP_VISION_MODEL}）"}]
+              "description": f"视觉识别（{vision_model}）"}]
     for e in read_mcp_conf():
         prefix = e.get("prefix", f"{e['name']}_")
         try:
@@ -2224,6 +2418,7 @@ api_routes = [
     Route("/console/api/keys/delete", api_keys_delete, methods=["POST"]),
     Route("/console/api/my", api_my, methods=["GET"]),
     Route("/console/api/mcp", api_mcp, methods=["GET"]),
+    Route("/console/api/mcp/vision", api_mcp_vision, methods=["GET", "POST"]),
     Route("/console/api/mcp/register", api_mcp_register, methods=["POST"]),
     Route("/console/api/mcp/groups", api_mcp_groups, methods=["POST"]),
     Route("/console/api/mcp/remove", api_mcp_remove, methods=["POST"]),

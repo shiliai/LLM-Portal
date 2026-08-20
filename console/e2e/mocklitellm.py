@@ -42,6 +42,10 @@ ONBOARD_SITES = {"sites": [{"name": "workstation", "pubkey": "MOCKPUBKEY0=",
                             "wg_ip": "127.0.0.1", "models": "[]",
                             "groups": '["home"]', "status": "active",
                             "created_at": 1755400000}]}
+MODELS_DEV = {"alibaba/qwen3.6-35b-fp8": {
+    "id": "alibaba/qwen3.6-35b-fp8", "name": "Qwen3.6 35B FP8",
+    "modalities": {"input": ["text", "image"], "output": ["text"]},
+}}
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -59,6 +63,8 @@ class H(BaseHTTPRequestHandler):
             self._send(ONBOARD_SITES)
         elif self.path.startswith('/model/info'):
             self._send({"data": DEPLOYMENTS})
+        elif self.path.startswith('/models.json'):
+            self._send(MODELS_DEV)
         elif self.path.startswith('/v1/models') and not self.headers.get('Authorization'):
             self._send(UPSTREAM_MODELS)            # 站点上游探测(无鉴权头)
         elif self.path.startswith('/v1/models'):

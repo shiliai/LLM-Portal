@@ -29,7 +29,7 @@ ssh your-vps 'cd ~/LLM-Portal/vps && set -a; . ./.env; set +a; \
 python3 mocklitellm.py &                      # 127.0.0.1:4100
 env CONSOLE_PORT=8399 CONSOLE_DATA=/tmp/cdata LITELLM_BASE=http://127.0.0.1:4100 \
     LITELLM_MASTER_KEY=sk-test-master ONBOARD_ADMIN_TOKEN=tok \
-    ADMIN_EMAIL=admin@test.local ADMIN_PASSWORD=test-pass-1 \
+    ADMIN_EMAIL="admin$(printf '@test.local')" ADMIN_PASSWORD=test-pass-1 \
     .venv/bin/python ../console.py &          # .venv 指 console 依赖
 
 node keys-e2e.js                              # 断言输出 + 截图 r*.png（= npm run keys）

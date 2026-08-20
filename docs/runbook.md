@@ -17,7 +17,8 @@
 
 关键实现与运维说明：
 1. **三种 Edge 模式**：standalone 由本栈 `edge-nginx` + `edge-certbot` 发布 80/443；external 向既有 nginx/certbot 注入配置；offload 由受信 LAN 上游终结 TLS，本栈仅发布 HTTP 80。三者共用同一 allowlist 与严格冒烟检查。
-2. **qwen 实际模型名 `qwen3.6-35b-fp8`**（llama.cpp 实报）；基线口径名 `qwen3.6-35b-a3` 作别名并存。
+2. **Vision MCP 不绑定固定模型名**：管理员在「MCP 管理」从已注册模型中选择；models.dev
+   的 `modalities.input` 判定图片能力，未收录的私有模型须通过真实图片探测。
 3. **US-P13 分组 tag 语义按 LiteLLM 1.96.2 实测校准**：① `enable_tag_filtering` 路由器级配置实测未生效，钩子改为每请求强制注入 `enable_tag_filtering=True`；② 带 `default` tag 的 deployment 会被实现当作「tag 无匹配时的兜底池」，与基线「组内无部署→报错」冲突——deployment 一律**不打 default tag**（default 组 = 隐式全量池），绑组 Key 由钩子注入组 tag、未绑组 Key 由钩子清空 tags（顺带清除客户端伪造的 `x-litellm-tags`）。Key 的分组仍存 `metadata.group`（default 视同未绑）。
 4. **wstunnel 过渡通道已移除**：部署当日因云安全组未放行 51820/udp 临时用 wstunnel（UDP-over-WS 走 443）打通，后被腾讯云主机安全标记为 Risktool（Linux.Risktool.Wstunell.Agow），按安全策略双端移除（服务/二进制/nginx 路径/uffw 规则全部清除），恢复设计原方案的直连 WG UDP。
 5. **隧道传输调优（2026-08-14 晚，TFT 优化，issue #6）**：跨境 wg 隧道晚高峰实测 10~43% 丢包，内层 CUBIC 把随机丢包当拥塞，40KB 请求要 8-12s、400KB 要 80-97s（等效 ~4KB/s）。修复 = **四端 BBR**（VPS 宿主、site-a 宿主、litellm 容器 netns 经 compose `sysctls`、客户端工作站）+ **wg MTU 1280**（两端 wg0.conf 持久化；大 UDP 包丢弃率高，吞吐 3-6 倍于默认 1420）+ TCP 缓冲调大（容器 `tcp_rmem/wmem` 16MB，宿主 `rmem/wmem_max` 7.5MB）。已落入 deploy.sh / install.sh 模板 / wg0.conf 模板。
@@ -119,7 +120,8 @@ curl -s http://127.0.0.1:4000/key/generate -H "Authorization: Bearer $LITELLM_MA
 
 ```bash
 # VPS 上签发（例：site-a，注册两个模型端口）
-site-add site-a --model deepseek-v4-flash-0731:8890 --model qwen3.6-35b-fp8:8004 --group default
+site-add site-a --model deepseek-v4-flash-0731:8890 \
+  --model qwen3.8-27b:8004:qwen3.8-27b-mtp2 --group default
 # 输出：curl -fsSL "https://llm-portal.example.com/onboard/install?token=..." | sudo bash
 
 # 站点机器（如 ssh site-a）执行上面一行；自检全绿即自动注册进路由池
@@ -143,13 +145,19 @@ install.sh 在站点侧：装 wireguard-tools → `wg genkey`（私钥不出机�
 
 | 客户端 | 配置 |
 |---|---|
-| OpenAI SDK | `base_url=https://llm-portal.example.com/v1`，model 直选 `deepseek-v4-flash-0731` / `qwen3.6-35b-fp8`（或别名 `claude-opus-5`、`qwen3.6-35b-a3`） |
+| OpenAI SDK | `base_url=https://llm-portal.example.com/v1`，model 使用 `/v1/models` 返回的当前注册名（如 `deepseek-v4-flash` / `qwen3.8-27b`） |
 | Claude Code | `ANTHROPIC_BASE_URL=https://llm-portal.example.com`，`ANTHROPIC_AUTH_TOKEN=sk-…`，默认模型名 `claude-opus-5`（别名已配） |
 | Pi（badlogic/pi-mono） | 控制台 Key「使用」→ Pi 可复制完整 `models.json` + `settings.json`；私有 DeepSeek 显式配置 1M 上下文、默认 `high`，仅开放 `high/max` effort；MCP 需先 `pi install npm:pi-mcp-adapter` |
 | DeepSeek Harness（dsh） | 控制台 Key「使用」→ DeepSeek Harness 可复制 `~/.dsh/.credentials.yaml` + `~/.dsh/settings.yaml`；通过内置 `dsh-llm-pi-ai` 的 `llm-pi-ai` settings 分节注册 Portal 自定义路由，显式配置 1M 上下文、默认 `high`，仅开放 `high/max` effort |
 | MCP 客户端（Streamable HTTP + Bearer） | URL `https://llm-portal.example.com/mcp`，头 `Authorization: Bearer sk-…`；工具名 `[a-z0-9_]`（`analyze_image`、外部 MCP 前缀如 `zhipu_*`） |
 
 本地图片两步式：`POST /mcp/upload`（multipart `file=`，同一 Key）→ 得临时 URL（30min）→ `analyze_image(url, 问题)`。
+
+Vision 后端在控制台「MCP 管理」选择。控制台缓存 `https://models.dev/models.json` 24 小时；
+刷新失败时沿用最后一次成功缓存。目录明确不含 `image` 输入的模型不可选；目录未知的私有
+模型在保存前经回环 LiteLLM 发送最小图片探测。选择持久化于
+`/etc/private-llm/vision/config.json`，mcp-hub 每次调用动态读取；删除已选模型后页面显示
+配置失效，调用返回明确模型错误，不静默回退。旧 `MCP_VISION_MODEL` 仅用于升级迁移。
 
 外部 MCP 由管理员在「MCP 管理」绑定零个或多个分组：不绑定（`groups: []` 或旧条目无
 `groups`）表示全局可用；绑定后，仅 `metadata.group` 命中的 Key 能在 `tools/list`

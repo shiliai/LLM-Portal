@@ -43,6 +43,8 @@ def hub(monkeypatch, tmp_path):
     return load_service(MCP_HUB_DIR / "mcp_hub.py", {
         "MCP_HUB_DATA": str(tmp_path / "mdata"),
         "LITELLM_BASE": "http://litellm-stub.invalid",
+        "MCP_VISION_CONF": str(tmp_path / "vision-mcp.json"),
+        "MCP_VISION_MODEL": "fallback-vision-model",
         "EXTERNAL_MCP_CONF": str(tmp_path / "external-mcp.json"),   # 不存在 → 不挂外部工具
     })
 
@@ -102,6 +104,33 @@ def test_upload_requires_bearer_key(hub):
     assert bad.status_code == 401
     assert ok.status_code == 400
     assert "multipart field" in ok.json()["error"]
+
+
+def test_fetch_uploaded_image_returns_mime_type(hub):
+    image = b"fake-png-content"
+    (hub.UPLOAD_DIR / "test-token.png").write_bytes(image)
+
+    data, mime = asyncio.run(hub.fetch_image_data("/mcp/files/test-token.png"))
+
+    assert data == image
+    assert mime == "image/png"
+
+
+def test_vision_model_prefers_persisted_selection(hub):
+    hub.VISION_CONF.write_text(json.dumps({"model": "selected-vision-model"}))
+    assert hub.vision_model() == "selected-vision-model"
+
+
+def test_vision_model_uses_environment_migration_fallback(hub):
+    assert hub.vision_model() == "fallback-vision-model"
+    hub.VISION_CONF.write_text("not-json")
+    assert hub.vision_model() == "fallback-vision-model"
+
+
+def test_vision_model_requires_configuration(hub):
+    hub.VISION_MODEL_FALLBACK = ""
+    with pytest.raises(hub.ToolError, match="not configured"):
+        hub.vision_model()
 
 
 # ---------------------------------------------------------------- MCP 传输层 TokenVerifier
