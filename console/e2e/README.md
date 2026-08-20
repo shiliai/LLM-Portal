@@ -37,6 +37,12 @@ node keys-e2e.js                              # 断言输出 + 截图 r*.png（=
 
 其余脚本同理：`npm run keys-memory` / `keys-vault` / `usage-redesign` / `usage-reqlog`。
 
+## MCP 管理 e2e（`npm run mcp`）
+
+使用同一套 mock LiteLLM 和 consoled 启动命令。脚本拦截 MCP 管理 API，因此无需真实
+外部 MCP：它验证注册、分组保存和移除都使用页面 `pf-modal` 而不是浏览器确认框，并确认
+注册预检失败后表单和值仍保留。
+
 ## 站点模型管理 e2e（`npm run sites-models`）
 
 比其余脚本多两个前提：

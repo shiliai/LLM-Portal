@@ -14,6 +14,7 @@ import re
 import sqlite3
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from starlette.testclient import TestClient
@@ -26,6 +27,40 @@ USER_KEY = "sk-user-abcdef-1234"          # 桩 LiteLLM 认可的用户虚拟 Ke
 ADMIN_EMAIL = "admin" + "@test.local"
 ADMIN_PASSWORD = "test-pass-1"
 XRW = {"X-Requested-With": "XMLHttpRequest"}
+MCP_TEST_CREDENTIAL = "Bearer-" + "unit-token-1234"
+
+
+class _FakeMcpClient:
+    def __init__(self, tools=None, error: Exception | None = None):
+        self.tools = tools if tools is not None else []
+        self.error = error
+
+    async def __aenter__(self):
+        if self.error is not None:
+            raise self.error
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def list_tools(self):
+        if self.error is not None:
+            raise self.error
+        return self.tools
+
+
+class _PreflightError(Exception):
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _mcp_client_factory(tools=None, error: Exception | None = None, calls=None):
+    def factory(url, api_key, timeout):
+        if calls is not None:
+            calls.append((url, api_key, timeout))
+        return _FakeMcpClient(tools=tools, error=error)
+    return factory
 
 
 def _handler(method, path, bearer, json_body):
@@ -81,7 +116,7 @@ def console_admin(tmp_path):
 
 
 @pytest.fixture
-def mcp_console(tmp_path):
+def mcp_console(monkeypatch, tmp_path):
     mod = _load(tmp_path, {
         "EXTERNAL_MCP_CONF": str(tmp_path / "external-mcp.json"),
         "MCP_RESTART_CMD": "true",
@@ -91,6 +126,9 @@ def mcp_console(tmp_path):
         return True
 
     mod.mcp_hub_ready = ready
+    monkeypatch.setattr(mod, "mcp_client", _mcp_client_factory([
+        SimpleNamespace(name="ping", description="Health check", inputSchema={"type": "object"}),
+    ]))
     return mod
 
 
@@ -326,6 +364,9 @@ def test_mcp_register_and_update_groups(mcp_console, monkeypatch):
         "prefix": "svc_", "groups": ["home"],
     })
     assert created.status_code == 200
+    assert created.json()["tools"] == [{
+        "name": "ping", "description": "Health check", "input_schema": {"type": "object"},
+    }]
     assert json.loads(mcp_console.EXTERNAL_MCP_CONF.read_text())[0]["groups"] == ["home"]
 
     listed = client.get("/console/api/mcp", headers=hdr)
@@ -337,6 +378,71 @@ def test_mcp_register_and_update_groups(mcp_console, monkeypatch):
                           json={"name": "svc", "groups": []})
     assert updated.status_code == 200
     assert json.loads(mcp_console.EXTERNAL_MCP_CONF.read_text())[0]["groups"] == []
+
+
+def test_mcp_register_preflight_uses_bearer_client_and_returns_tools(mcp_console, monkeypatch):
+    install_litellm_stub(monkeypatch, _mcp_handler)
+    calls = []
+    monkeypatch.setattr(mcp_console, "mcp_client", _mcp_client_factory([
+        SimpleNamespace(name="lookup", description="Find a record", inputSchema={"type": "object", "properties": {}}),
+    ], calls=calls))
+    client, hdr = _admin_client(mcp_console)
+    response = client.post("/console/api/mcp/register", headers=hdr, json={
+        "name": "svc", "url": "https://mcp.invalid/mcp", "api_key": MCP_TEST_CREDENTIAL,
+        "prefix": "svc_", "groups": [],
+    })
+    assert response.status_code == 200
+    assert calls == [("https://mcp.invalid/mcp", MCP_TEST_CREDENTIAL, mcp_console.MCP_PREFLIGHT_TIMEOUT)]
+    assert response.json()["tools"][0]["name"] == "lookup"
+    assert MCP_TEST_CREDENTIAL not in response.text
+
+
+@pytest.mark.parametrize(("error", "category", "status"), [
+    (_PreflightError("upstream returned 401 " + MCP_TEST_CREDENTIAL, 401), "auth", 401),
+    (_PreflightError("connection timeout " + MCP_TEST_CREDENTIAL), "timeout", 504),
+    (_PreflightError("TLS certificate failed " + MCP_TEST_CREDENTIAL), "tls", 502),
+    (_PreflightError("invalid JSON-RPC protocol " + MCP_TEST_CREDENTIAL), "protocol", 422),
+    (_PreflightError("connection refused " + MCP_TEST_CREDENTIAL), "network", 502),
+])
+def test_mcp_register_preflight_failure_preserves_registry_and_never_restarts(
+        mcp_console, monkeypatch, error, category, status):
+    install_litellm_stub(monkeypatch, _mcp_handler)
+    original = b'[{"name":"old","url":"https://old.invalid","groups":[]}]\n'
+    mcp_console.EXTERNAL_MCP_CONF.write_bytes(original)
+    mcp_console.EXTERNAL_MCP_CONF.chmod(0o640)
+    restarts = []
+    monkeypatch.setattr(mcp_console, "mcp_client", _mcp_client_factory(error=error))
+    monkeypatch.setattr(mcp_console, "restart_mcp_hub", lambda: restarts.append(1) or "ok")
+    client, hdr = _admin_client(mcp_console)
+    response = client.post("/console/api/mcp/register", headers=hdr, json={
+        "name": "svc", "url": "https://mcp.invalid/mcp", "api_key": MCP_TEST_CREDENTIAL,
+        "prefix": "svc_", "groups": [],
+    })
+    assert response.status_code == status
+    assert response.json()["category"] == category
+    assert MCP_TEST_CREDENTIAL not in response.text
+    assert mcp_console.EXTERNAL_MCP_CONF.read_bytes() == original
+    assert mcp_console.EXTERNAL_MCP_CONF.stat().st_mode & 0o777 == 0o640
+    assert restarts == []
+
+
+def test_mcp_register_zero_tools_preserves_registry_and_never_restarts(mcp_console, monkeypatch):
+    install_litellm_stub(monkeypatch, _mcp_handler)
+    original = b'[{"name":"old","url":"https://old.invalid","groups":[]}]\n'
+    mcp_console.EXTERNAL_MCP_CONF.write_bytes(original)
+    mcp_console.EXTERNAL_MCP_CONF.chmod(0o640)
+    restarts = []
+    monkeypatch.setattr(mcp_console, "mcp_client", _mcp_client_factory([]))
+    monkeypatch.setattr(mcp_console, "restart_mcp_hub", lambda: restarts.append(1) or "ok")
+    client, hdr = _admin_client(mcp_console)
+    response = client.post("/console/api/mcp/register", headers=hdr, json={
+        "name": "svc", "url": "https://mcp.invalid/mcp", "prefix": "svc_", "groups": [],
+    })
+    assert response.status_code == 422
+    assert response.json()["category"] == "zero_tools"
+    assert mcp_console.EXTERNAL_MCP_CONF.read_bytes() == original
+    assert mcp_console.EXTERNAL_MCP_CONF.stat().st_mode & 0o777 == 0o640
+    assert restarts == []
 
 
 def test_mcp_register_rejects_unknown_group(mcp_console, monkeypatch):
@@ -488,6 +594,18 @@ def test_mcp_use_config_never_contains_placeholder_and_binds_reveal_generation()
     assert "sk-（请选择用户 Key）" not in source
     assert "generation !== revealGeneration" in source
     assert "'/keys/import'" in source
+
+
+def test_mcp_registration_uses_accessible_page_confirmation_without_native_dialogs():
+    source = (CONSOLE_DIR / "static" / "mcp.html").read_text()
+    assert "confirm(" not in source
+    assert 'id="modal-mcp-confirm"' in source
+    assert 'role="dialog"' in source
+    assert 'aria-modal="true"' in source
+    assert "openMcpConfirm" in source
+    assert "submitMcpConfirm" in source
+    assert "sourceModal: 'modal-newmcp'" in source
+    assert "sourceModal: 'modal-mcpgroups'" in source
 
 
 def test_pi_and_dsh_use_config_contracts():

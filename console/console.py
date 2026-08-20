@@ -90,6 +90,7 @@ ADMIN_TOTP_SECRET = os.environ.get("ADMIN_TOTP_SECRET", "").strip()
 MCP_VISION_MODEL = os.environ.get("MCP_VISION_MODEL", "qwen3.6-35b-fp8")
 EXTERNAL_MCP_CONF = Path(os.environ.get("EXTERNAL_MCP_CONF", "/etc/private-llm/external-mcp.json"))
 MCP_USAGE_DB = Path(os.environ.get("MCP_USAGE_DB", "/var/lib/private-llm/mcp-hub/usage.db"))
+MCP_PREFLIGHT_TIMEOUT = 10
 WG_IFACE = os.environ.get("WG_IFACE", "wg0")
 # 宿主机操作命令前缀（#7 容器化）：默认保留宿主机直跑语义；容器模式由 compose 注入
 # docker.sock 版本（挂载 /var/run/docker.sock 的容器 ≈ 宿主机 root，见 runbook §7 取舍）
@@ -1758,6 +1759,53 @@ async def apply_mcp_conf(entries: list[dict]) -> tuple[bool, str]:
     return False, reason
 
 
+def mcp_client(url: str, api_key: str, timeout: int):
+    """Create the FastMCP client lazily so the console still starts without its optional dependency."""
+    from fastmcp import Client
+    from fastmcp.client.auth import BearerAuth
+    return Client(url, auth=BearerAuth(api_key) if api_key else None, timeout=timeout)
+
+
+def mcp_preflight_failure(exc: Exception) -> tuple[str, int, str]:
+    """Map upstream failures to safe administrator-facing categories without echoing credentials."""
+    response = getattr(exc, "response", None)
+    status_code = getattr(exc, "status_code", None) or getattr(response, "status_code", None)
+    detail = str(exc).lower()
+    if status_code in (401, 403) or re.search(r"\b(401|403)\b", detail) or any(
+            marker in detail for marker in ("unauthorized", "forbidden", "authentication", "authorization")):
+        return "auth", 401, "MCP 预检鉴权失败，请检查 Bearer 凭据。"
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException)) or "timeout" in detail:
+        return "timeout", 504, "MCP 预检超时，请检查上游可达性后重试。"
+    if any(marker in detail for marker in ("tls", "ssl", "certificate", "x509")):
+        return "tls", 502, "MCP 预检 TLS 校验失败，请检查上游证书。"
+    if any(marker in detail for marker in (
+            "protocol", "json-rpc", "initialize", "invalid response", "parse error")):
+        return "protocol", 422, "MCP 预检协议不兼容，请确认上游支持 Streamable HTTP MCP。"
+    return "network", 502, "MCP 预检无法连接上游，请检查 URL、网络和服务状态。"
+
+
+def mcp_tool_metadata(tools: list) -> list[dict]:
+    """Return bounded, serializable discovery data after a successful preflight."""
+    return [{
+        "name": str(tool.name),
+        "description": str(getattr(tool, "description", "") or "")[:500],
+        "input_schema": getattr(tool, "inputSchema", None) or {"type": "object", "properties": {}},
+    } for tool in tools]
+
+
+async def preflight_external_mcp(url: str, api_key: str) -> tuple[list[dict] | None, tuple[str, int, str] | None]:
+    """Initialize an external MCP and verify that it exposes at least one tool before mutation."""
+    try:
+        async with asyncio.timeout(MCP_PREFLIGHT_TIMEOUT):
+            async with mcp_client(url, api_key, MCP_PREFLIGHT_TIMEOUT) as client:
+                tools = list(await client.list_tools())
+    except Exception as exc:  # External MCP failures are expected; never return raw upstream details.
+        return None, mcp_preflight_failure(exc)
+    if not tools:
+        return None, ("zero_tools", 422, "MCP 预检未发现可用工具，请检查上游 tools/list 响应。")
+    return mcp_tool_metadata(tools), None
+
+
 async def api_mcp(request: Request) -> Response:
     sess = await require(request)
     if isinstance(sess, JSONResponse):
@@ -1804,13 +1852,18 @@ async def api_mcp_register(request: Request) -> Response:
     entries = read_mcp_conf()
     if any(e["name"] == name for e in entries):
         return jerr(f"mcp {name} already registered", 409)
+    tools, failure = await preflight_external_mcp(url, api_key)
+    if failure is not None:
+        category, status, message = failure
+        return JSONResponse({"error": message, "category": category}, status_code=status)
     entries.append({"name": name, "url": url, "api_key": api_key, "prefix": prefix,
                     "groups": groups})
     ok, restart = await apply_mcp_conf(entries)
     if not ok:
         return jerr(f"mcp-hub 更新失败，配置已恢复：{restart}", 502)
     return JSONResponse({"ok": True, "restart": restart,
-                         "note": "已重启 mcp-hub 生效；进行中的工具调用会被中断"})
+                         "note": "已重启 mcp-hub 生效；进行中的工具调用会被中断",
+                         "tools": tools})
 
 
 async def api_mcp_groups(request: Request) -> Response:

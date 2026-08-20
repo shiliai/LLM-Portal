@@ -156,6 +156,11 @@ install.sh 在站点侧：装 wireguard-tools → `wg genkey`（私钥不出机�
 发现并通过 `tools/call` 使用。未绑定/`default` Key 只见全局工具；内建
 `analyze_image` 默认全局。客户端 URL、Bearer Key 与传输协议不变。
 
+注册外部 MCP 前，控制台会在 10 秒内完成上游 MCP 初始化和 `tools/list` 预检；至少
+发现一个工具后才会写入 `external-mcp.json` 并重启 mcp-hub。鉴权、网络、TLS、协议或
+零工具失败会保留表单与原配置，不会重启服务；错误只返回可操作的类别，不回显外部凭据。
+注册、分组保存和移除均先在控制台页面内确认重启影响，不会触发浏览器原生确认框。
+
 ## 5. 验收记录（T1~T15，2026-08-14 首站 site-a 实测）
 
 | # | 故事 | 验证步骤与通过标准 | 结果 |
