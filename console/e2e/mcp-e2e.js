@@ -42,15 +42,39 @@ const fail = message => { console.error('FAIL:', message); process.exit(1); };
   await page.fill('#mcp-prefix', 'newsvc_');
   await page.click('#btn-create-mcp');
   await page.waitForSelector('#modal-mcp-confirm.open');
-  await page.click('#btn-mcp-confirm-cancel');
+  await page.waitForTimeout(250);
+  const initialFocus = await page.evaluate(() => document.activeElement.id || document.activeElement.tagName);
+  if (initialFocus !== 'btn-mcp-confirm-submit') {
+    fail('确认弹窗未将初始焦点置于确认按钮: ' + initialFocus);
+  }
+  await page.keyboard.press('Tab');
+  if (await page.evaluate(() => document.activeElement.id) !== 'btn-mcp-confirm-close') {
+    fail('确认弹窗焦点未在末尾回绕');
+  }
+  await page.keyboard.press('Shift+Tab');
+  if (await page.evaluate(() => document.activeElement.id) !== 'btn-mcp-confirm-submit') {
+    fail('确认弹窗 Shift+Tab 焦点未回绕');
+  }
+  await page.keyboard.press('Escape');
   await page.waitForSelector('#modal-newmcp.open');
+  await page.waitForFunction(() => document.activeElement.id === 'btn-create-mcp');
   if (!(await page.locator('#modal-newmcp').isVisible())) fail('取消注册确认后表单未恢复');
   if ((await page.inputValue('#mcp-name')) !== 'newsvc') fail('取消注册确认后表单内容丢失');
+  if (await page.evaluate(() => document.activeElement.id) !== 'btn-create-mcp') fail('Escape 后焦点未恢复');
+
+  await page.click('#btn-create-mcp');
+  await page.waitForSelector('#modal-mcp-confirm.open');
+  await page.locator('.pf-mask').click({ position: { x: 2, y: 2 } });
+  await page.waitForSelector('#modal-newmcp.open');
 
   await page.click('#btn-create-mcp');
   await page.click('#btn-mcp-confirm-submit');
   await page.waitForSelector('#modal-newmcp.open');
   if ((await page.inputValue('#mcp-url')) !== 'https://new.invalid/mcp') fail('预检失败后注册表单未保留');
+  if (!(await page.locator('#mcp-register-error').textContent()).includes('预检未发现可用工具')) {
+    fail('预检错误未保留在注册表单的实时提示区');
+  }
+  if (await page.locator('.pf-toast', { hasText: '已注册并验证' }).count()) fail('预检失败后出现注册成功提示');
 
   await page.click('#modal-newmcp [data-close]');
   await page.click('.js-mcp-groups');

@@ -76,8 +76,29 @@ CONF
   echo "   已生成 /etc/wireguard/wg0.conf"
 fi
 BOOTSTRAP
-docker run --rm -v "$ETC_DIR":/e private-llm-wireguard \
-  sh -c '[ -f /e/external-mcp.json ] || echo "[]" > /e/external-mcp.json'
+echo "-- external MCP registry backup gate"
+MCP_REGISTRY_RECEIPT=$(docker run --rm -v "$ETC_DIR":/e alpine sh -ec '
+  umask 077
+  registry=/e/external-mcp.json
+  mkdir -p /e/mcp-registry-backups
+  if [ ! -e "$registry" ]; then
+    printf "[]\n" > "$registry"
+    chmod 600 "$registry"
+    sync -f "$registry"; sync -f /e
+    printf "created path=%s sha256=%s mode=%s inode=%s attestation=backup_verified\n" "$registry" "$(sha256sum "$registry" | awk "{print \$1}")" "$(stat -c %a "$registry")" "$(stat -c %i "$registry")"
+    exit 0
+  fi
+  [ -f "$registry" ] && [ ! -L "$registry" ] || { echo "registry must be a regular non-symlink file" >&2; exit 1; }
+  chmod 600 "$registry"
+  stamp=$(date +%Y%m%d-%H%M%S)
+  backup=/e/mcp-registry-backups/external-mcp.json.$stamp.bak
+  cat "$registry" > "$backup"
+  chmod 600 "$backup"
+  [ "$(sha256sum "$registry" | awk "{print \$1}")" = "$(sha256sum "$backup" | awk "{print \$1}")" ] || { echo "backup SHA mismatch" >&2; exit 1; }
+  sync -f "$backup"; sync -f "$registry"; sync -f /e
+  printf "backup path=%s sha256=%s mode=%s owner=%s inode=%s attestation=backup_verified\n" "$backup" "$(sha256sum "$backup" | awk "{print \$1}")" "$(stat -c %a "$registry")" "$(stat -c %u:%g "$registry")" "$(stat -c %i "$registry")"
+') || { echo "!! external MCP registry backup verification failed; aborting before deployment"; exit 1; }
+echo "   $MCP_REGISTRY_RECEIPT"
 [ "$(cat /proc/sys/net/ipv4/tcp_congestion_control)" = bbr ] \
   || echo "   note: 宿主机未启 BBR（一次性 sudo，见 runbook §2 前置）——跨境吞吐会显著劣化"
 
