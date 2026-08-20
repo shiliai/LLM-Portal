@@ -71,6 +71,17 @@ def test_restore_file_preserves_target_inode_and_backup_bytes(tmp_path):
     assert target.read_bytes() == backup.read_bytes()
 
 
+def test_deploy_registry_backup_gate_is_durable_and_non_secret():
+    source = (HERE / "deploy.sh").read_text()
+    for required in (
+            "external-mcp.json", "mcp-registry-backups", "[ -f \"$registry\" ] && [ ! -L \"$registry\" ]",
+            "chmod 600", "sha256sum", "sync -f \"$backup\"", "sync -f /e",
+            "owner=%s", "inode=%s", "attestation=backup_verified", "aborting before deployment"):
+        assert required in source
+    assert "cat \"$registry\" > \"$backup\"" in source
+    assert "api_key" not in source
+
+
 def test_release_package_binds_commit_and_has_file_inventory(tmp_path):
     root = subprocess.check_output(["git", "rev-parse", "--show-toplevel"], cwd=HERE,
                                    text=True).strip()

@@ -8,14 +8,17 @@ X-Requested-With → 403、未登录访问管理 API → 401、会话 cookie HMA
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
 import sqlite3
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from starlette.requests import Request
 from starlette.testclient import TestClient
 
 from testutil import install_litellm_stub, load_service
@@ -26,6 +29,47 @@ USER_KEY = "sk-user-abcdef-1234"          # 桩 LiteLLM 认可的用户虚拟 Ke
 ADMIN_EMAIL = "admin" + "@test.local"
 ADMIN_PASSWORD = "test-pass-1"
 XRW = {"X-Requested-With": "XMLHttpRequest"}
+MCP_TEST_CREDENTIAL = "Bearer-" + "unit-token-1234"
+
+
+class _FakeMcpClient:
+    def __init__(self, tools=None, error: Exception | None = None):
+        self.tools = tools if tools is not None else []
+        self.error = error
+
+    async def __aenter__(self):
+        if self.error is not None:
+            raise self.error
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def list_tools(self):
+        if self.error is not None:
+            raise self.error
+        return self.tools
+
+
+class _PreflightError(Exception):
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def _mcp_client_factory(tools=None, error: Exception | None = None, calls=None):
+    def factory(url, api_key, timeout):
+        if calls is not None:
+            calls.append((url, api_key, timeout))
+        return _FakeMcpClient(tools=tools, error=error)
+    return factory
+
+
+def _deep_schema(depth: int) -> dict:
+    schema = {}
+    for _ in range(depth):
+        schema = {"x": schema}
+    return schema
 
 
 def _handler(method, path, bearer, json_body):
@@ -83,16 +127,19 @@ def console_admin(tmp_path):
 
 
 @pytest.fixture
-def mcp_console(tmp_path):
+def mcp_console(monkeypatch, tmp_path):
     mod = _load(tmp_path, {
         "EXTERNAL_MCP_CONF": str(tmp_path / "external-mcp.json"),
         "MCP_RESTART_CMD": "true",
     })
 
-    async def ready(_expected_sha256):
+    async def ready(_expected_sha256, _expected_owners=None):
         return True
 
     mod.mcp_hub_ready = ready
+    monkeypatch.setattr(mod, "mcp_client", _mcp_client_factory([
+        SimpleNamespace(name="ping", description="Health check", inputSchema={"type": "object"}),
+    ]))
     return mod
 
 
@@ -439,6 +486,9 @@ def test_mcp_register_and_update_groups(mcp_console, monkeypatch):
         "prefix": "svc_", "groups": ["home"],
     })
     assert created.status_code == 200
+    assert created.json()["tools"] == [{
+        "name": "ping", "description": "Health check", "input_schema": {"type": "object"},
+    }]
     assert json.loads(mcp_console.EXTERNAL_MCP_CONF.read_text())[0]["groups"] == ["home"]
 
     listed = client.get("/console/api/mcp", headers=hdr)
@@ -450,6 +500,206 @@ def test_mcp_register_and_update_groups(mcp_console, monkeypatch):
                           json={"name": "svc", "groups": []})
     assert updated.status_code == 200
     assert json.loads(mcp_console.EXTERNAL_MCP_CONF.read_text())[0]["groups"] == []
+
+
+def test_mcp_register_preflight_uses_bearer_client_and_returns_tools(mcp_console, monkeypatch):
+    install_litellm_stub(monkeypatch, _mcp_handler)
+    calls = []
+    monkeypatch.setattr(mcp_console, "mcp_client", _mcp_client_factory([
+        SimpleNamespace(name="lookup", description="Find a record", inputSchema={"type": "object", "properties": {}}),
+    ], calls=calls))
+    client, hdr = _admin_client(mcp_console)
+    response = client.post("/console/api/mcp/register", headers=hdr, json={
+        "name": "svc", "url": "https://mcp.invalid/mcp", "api_key": MCP_TEST_CREDENTIAL,
+        "prefix": "svc_", "groups": [],
+    })
+    assert response.status_code == 200
+    assert calls == [("https://mcp.invalid/mcp", MCP_TEST_CREDENTIAL, mcp_console.MCP_PREFLIGHT_TIMEOUT)]
+    assert response.json()["tools"][0]["name"] == "lookup"
+    assert MCP_TEST_CREDENTIAL not in response.text
+
+
+@pytest.mark.parametrize(("error", "category", "status"), [
+    (_PreflightError("upstream returned 401 " + MCP_TEST_CREDENTIAL, 401), "auth", 401),
+    (_PreflightError("connection timeout " + MCP_TEST_CREDENTIAL), "timeout", 504),
+    (_PreflightError("TLS certificate failed " + MCP_TEST_CREDENTIAL), "tls", 502),
+    (_PreflightError("invalid JSON-RPC protocol " + MCP_TEST_CREDENTIAL), "protocol", 422),
+    (_PreflightError("connection refused " + MCP_TEST_CREDENTIAL), "network", 502),
+])
+def test_mcp_register_preflight_failure_preserves_registry_and_never_restarts(
+        mcp_console, monkeypatch, error, category, status):
+    install_litellm_stub(monkeypatch, _mcp_handler)
+    original = b'[{"name":"old","url":"https://old.invalid","groups":[]}]\n'
+    mcp_console.EXTERNAL_MCP_CONF.write_bytes(original)
+    mcp_console.EXTERNAL_MCP_CONF.chmod(0o640)
+    restarts = []
+    monkeypatch.setattr(mcp_console, "mcp_client", _mcp_client_factory(error=error))
+    monkeypatch.setattr(mcp_console, "restart_mcp_hub", lambda: restarts.append(1) or "ok")
+    client, hdr = _admin_client(mcp_console)
+    response = client.post("/console/api/mcp/register", headers=hdr, json={
+        "name": "svc", "url": "https://mcp.invalid/mcp", "api_key": MCP_TEST_CREDENTIAL,
+        "prefix": "svc_", "groups": [],
+    })
+    assert response.status_code == status
+    assert response.json()["category"] == category
+    assert MCP_TEST_CREDENTIAL not in response.text
+    assert mcp_console.EXTERNAL_MCP_CONF.read_bytes() == original
+    assert mcp_console.EXTERNAL_MCP_CONF.stat().st_mode & 0o777 == 0o600
+    assert restarts == []
+
+
+def test_mcp_register_zero_tools_preserves_registry_and_never_restarts(mcp_console, monkeypatch):
+    install_litellm_stub(monkeypatch, _mcp_handler)
+    original = b'[{"name":"old","url":"https://old.invalid","groups":[]}]\n'
+    mcp_console.EXTERNAL_MCP_CONF.write_bytes(original)
+    mcp_console.EXTERNAL_MCP_CONF.chmod(0o640)
+    restarts = []
+    monkeypatch.setattr(mcp_console, "mcp_client", _mcp_client_factory([]))
+    monkeypatch.setattr(mcp_console, "restart_mcp_hub", lambda: restarts.append(1) or "ok")
+    client, hdr = _admin_client(mcp_console)
+    response = client.post("/console/api/mcp/register", headers=hdr, json={
+        "name": "svc", "url": "https://mcp.invalid/mcp", "prefix": "svc_", "groups": [],
+    })
+    assert response.status_code == 422
+    assert response.json()["category"] == "zero_tools"
+    assert mcp_console.EXTERNAL_MCP_CONF.read_bytes() == original
+    assert mcp_console.EXTERNAL_MCP_CONF.stat().st_mode & 0o777 == 0o600
+    assert restarts == []
+
+
+def test_mcp_register_rejects_builtin_and_inter_entry_tool_collisions(mcp_console, monkeypatch):
+    install_litellm_stub(monkeypatch, _mcp_handler)
+    client, hdr = _admin_client(mcp_console)
+    monkeypatch.setattr(mcp_console, "mcp_client", _mcp_client_factory([
+        SimpleNamespace(name="image", description="", inputSchema={}),
+    ]))
+    builtin = client.post("/console/api/mcp/register", headers=hdr, json={
+        "name": "bad", "url": "https://mcp.invalid/mcp", "prefix": "analyze_", "groups": [],
+    })
+    assert builtin.status_code == 422 and builtin.json()["category"] == "collision"
+    assert not mcp_console.EXTERNAL_MCP_CONF.exists()
+
+    mcp_console.write_mcp_conf([{"name": "old", "url": "https://old.invalid/mcp", "api_key": "",
+                                  "prefix": "svc_", "groups": []}])
+    monkeypatch.setattr(mcp_console, "mcp_client", _mcp_client_factory([
+        SimpleNamespace(name="ping", description="", inputSchema={}),
+    ]))
+    collision = client.post("/console/api/mcp/register", headers=hdr, json={
+        "name": "new", "url": "https://new.invalid/mcp", "prefix": "svc_", "groups": [],
+    })
+    assert collision.status_code == 422 and collision.json()["category"] == "collision"
+    assert [entry["name"] for entry in mcp_console.read_mcp_conf()] == ["old"]
+
+
+def test_mcp_attestation_failure_restores_same_inode_without_success(mcp_console, monkeypatch):
+    install_litellm_stub(monkeypatch, _mcp_handler)
+    original = b'[{"name":"old","url":"https://old.invalid","groups":[]}]\n'
+    mcp_console.EXTERNAL_MCP_CONF.write_bytes(original)
+    mcp_console.EXTERNAL_MCP_CONF.chmod(0o600)
+    inode = mcp_console.EXTERNAL_MCP_CONF.stat().st_ino
+    readiness = iter([False, True])
+    restarts = []
+
+    async def attestation_fails_then_prior_state(_sha, _owners=None):
+        return next(readiness)
+
+    monkeypatch.setattr(mcp_console, "mcp_hub_ready", attestation_fails_then_prior_state)
+    monkeypatch.setattr(mcp_console, "restart_mcp_hub", lambda: restarts.append(1) or "ok")
+    client, hdr = _admin_client(mcp_console)
+    response = client.post("/console/api/mcp/register", headers=hdr, json={
+        "name": "svc", "url": "https://mcp.invalid/mcp", "prefix": "svc_", "groups": [],
+    })
+    assert response.status_code == 502
+    assert response.json()["error"].startswith("mcp-hub")
+    assert mcp_console.EXTERNAL_MCP_CONF.read_bytes() == original
+    assert mcp_console.EXTERNAL_MCP_CONF.stat().st_ino == inode
+    assert mcp_console.EXTERNAL_MCP_CONF.stat().st_mode & 0o777 == 0o600
+    assert len(restarts) == 2
+
+
+def test_mcp_registry_rejects_symlink_and_bootstraps_mode_0600(mcp_console, tmp_path):
+    target = tmp_path / "target.json"
+    target.write_text("[]\n")
+    mcp_console.EXTERNAL_MCP_CONF.symlink_to(target)
+    with pytest.raises(mcp_console.MCPRegistryError):
+        mcp_console._registry_snapshot()
+
+    mcp_console.EXTERNAL_MCP_CONF.unlink()
+    mcp_console.write_mcp_conf([])
+    assert mcp_console.EXTERNAL_MCP_CONF.is_file()
+    assert not mcp_console.EXTERNAL_MCP_CONF.is_symlink()
+    assert mcp_console.EXTERNAL_MCP_CONF.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("tools", [
+    [SimpleNamespace(name=f"tool{i}", description="", inputSchema={}) for i in range(65)],
+    [SimpleNamespace(name="deep", description="", inputSchema=_deep_schema(13))],
+    [SimpleNamespace(name="wide", description="", inputSchema={"blob": "x" * (16 * 1024)})],
+])
+def test_mcp_metadata_bounds_reject_before_mutation(mcp_console, tools):
+    with pytest.raises(mcp_console.MCPMetadataError):
+        mcp_console.mcp_tool_metadata(tools)
+
+
+def test_mcp_preflight_walks_wrapped_failures_without_reflecting_credentials(mcp_console):
+    credential = MCP_TEST_CREDENTIAL
+    auth = _PreflightError("wrapped failure " + credential)
+    auth.status_code = 403
+    grouped = ExceptionGroup("outer", [RuntimeError("timed out " + credential), auth])
+    category, status, message = mcp_console.mcp_preflight_failure(grouped)
+    assert (category, status) == ("auth", 401)
+    assert credential not in message
+
+    timeout = RuntimeError("outer")
+    timeout.__cause__ = TimeoutError("timed out " + credential)
+    category, status, message = mcp_console.mcp_preflight_failure(timeout)
+    assert (category, status) == ("timeout", 504)
+    assert credential not in message
+
+
+def test_mcp_mutation_coordinator_serializes_register_and_group_rename(mcp_console, monkeypatch):
+    install_litellm_stub(monkeypatch, _mcp_handler)
+    mcp_console.write_mcp_conf([{"name": "svc", "url": "https://mcp.invalid/mcp", "api_key": "",
+                                  "prefix": "svc_", "groups": ["home"]}])
+
+    async def require_admin(_request, role="admin"):
+        return {"role": role}
+
+    async def snapshot():
+        return {"groups": {"home": {}}, "sites": [], "keys": []}
+
+    async def apply(entries, _owners=None):
+        await asyncio.sleep(0.01)
+        mcp_console.write_mcp_conf(entries)
+        return True, "ok"
+
+    async def request_json(body):
+        raw = json.dumps(body).encode()
+        sent = False
+        async def receive():
+            nonlocal sent
+            if sent:
+                return {"type": "http.request", "body": b"", "more_body": False}
+            sent = True
+            return {"type": "http.request", "body": raw, "more_body": False}
+        return Request({"type": "http", "method": "POST", "path": "/", "headers": []}, receive)
+
+    monkeypatch.setattr(mcp_console, "require", require_admin)
+    monkeypatch.setattr(mcp_console, "group_snapshot", snapshot)
+    monkeypatch.setattr(mcp_console, "apply_mcp_conf", apply)
+
+    async def run_overlap():
+        register, rename = await asyncio.gather(
+            request_json({"name": "other", "url": "https://other.invalid/mcp", "prefix": "other_", "groups": []}),
+            request_json({"from": "home", "to": "family"}),
+        )
+        return await asyncio.gather(mcp_console.api_mcp_register(register), mcp_console.api_groups_rename(rename))
+
+    first, second = asyncio.run(run_overlap())
+    assert first.status_code == 200 and second.status_code == 200
+    final = {entry["name"]: entry for entry in mcp_console.read_mcp_conf()}
+    assert set(final) == {"svc", "other"}
+    assert final["svc"]["groups"] == ["family"]
 
 
 def test_mcp_register_rejects_unknown_group(mcp_console, monkeypatch):
@@ -487,7 +737,7 @@ def test_mcp_config_restored_when_restart_fails(mcp_console, monkeypatch):
         "name": "svc", "url": "https://mcp.invalid/mcp", "prefix": "svc_", "groups": []})
     assert resp.status_code == 502
     assert mcp_console.EXTERNAL_MCP_CONF.read_bytes() == original
-    assert mcp_console.EXTERNAL_MCP_CONF.stat().st_mode & 0o777 == 0o640
+    assert mcp_console.EXTERNAL_MCP_CONF.stat().st_mode & 0o777 == 0o600
 
 
 def test_mcp_config_restored_when_readiness_fails(mcp_console, monkeypatch):
@@ -499,7 +749,7 @@ def test_mcp_config_restored_when_readiness_fails(mcp_console, monkeypatch):
 
     readiness = iter([False, True])
 
-    async def not_ready_then_restored(_expected_sha256):
+    async def not_ready_then_restored(_expected_sha256, _expected_owners=None):
         return next(readiness)
 
     monkeypatch.setattr(mcp_console, "mcp_hub_ready", not_ready_then_restored)
@@ -604,6 +854,32 @@ def test_mcp_use_config_never_contains_placeholder_and_binds_reveal_generation()
     assert "id=\"vision-model\"" in source
     assert "'/mcp/vision'" in source
     assert "catalog_id: catalog.value" in source
+
+
+def test_mcp_registration_uses_accessible_page_confirmation_without_native_dialogs():
+    source = (CONSOLE_DIR / "static" / "mcp.html").read_text()
+    assert "confirm(" not in source
+    assert 'id="modal-mcp-confirm"' in source
+    assert 'role="dialog"' in source
+    assert 'aria-modal="true"' in source
+    assert "openMcpConfirm" in source
+    assert "submitMcpConfirm" in source
+    assert "sourceModal: 'modal-newmcp'" in source
+    assert "sourceModal: 'modal-mcpgroups'" in source
+    assert "setMcpConfirmInert" in source
+    assert "aria-live=\"assertive\"" in source
+    assert "e.key === 'Escape'" in source
+
+
+def test_mcp_runbook_documents_bigmodel_batch_and_safe_backup_receipts():
+    source = (CONSOLE_DIR.parent / "docs" / "runbook.md").read_text()
+    for required in (
+            "zai-search", "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp", "zai_search_", "webSearchPrime",
+            "zai-reader", "https://open.bigmodel.cn/api/mcp/web_reader/mcp", "zai_reader_", "webReader",
+            "zai-zread", "https://open.bigmodel.cn/api/mcp/zread/mcp", "zai_zread_",
+            "search_doc", "get_repo_structure", "read_file", "不绑定任何 groups", "每次只注册一项",
+            "绝不包含 JSON", "外部凭据"):
+        assert required in source
 
 
 def test_pi_and_dsh_use_config_contracts():

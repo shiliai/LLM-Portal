@@ -29,13 +29,19 @@ ssh your-vps 'cd ~/LLM-Portal/vps && set -a; . ./.env; set +a; \
 python3 mocklitellm.py &                      # 127.0.0.1:4100
 env CONSOLE_PORT=8399 CONSOLE_DATA=/tmp/cdata LITELLM_BASE=http://127.0.0.1:4100 \
     LITELLM_MASTER_KEY=sk-test-master ONBOARD_ADMIN_TOKEN=tok \
-    ADMIN_EMAIL=admin@test.local ADMIN_PASSWORD=test-pass-1 \
+    ADMIN_EMAIL="admin$(printf '@test.local')" ADMIN_PASSWORD=test-pass-1 \
     .venv/bin/python ../console.py &          # .venv 指 console 依赖
 
 node keys-e2e.js                              # 断言输出 + 截图 r*.png（= npm run keys）
 ```
 
 其余脚本同理：`npm run keys-memory` / `keys-vault` / `usage-redesign` / `usage-reqlog`。
+
+## MCP 管理 e2e（`npm run mcp`）
+
+使用同一套 mock LiteLLM 和 consoled 启动命令。脚本拦截 MCP 管理 API，因此无需真实
+外部 MCP：它验证注册、分组保存和移除都使用页面 `pf-modal` 而不是浏览器确认框，并确认
+注册预检失败后表单和值仍保留。
 
 ## 站点模型管理 e2e（`npm run sites-models`）
 
