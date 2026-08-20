@@ -41,10 +41,11 @@ from fastmcp.utilities.authorization import AuthContext
 
 LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://127.0.0.1:4000")
 PUBLIC_BASE = os.environ.get("PUBLIC_BASE", "https://llm-portal.example.com")
-VISION_MODEL = os.environ.get("MCP_VISION_MODEL", "qwen3.8-27b")
+VISION_MODEL_FALLBACK = os.environ.get("MCP_VISION_MODEL", "").strip()
 DATA_DIR = Path(os.environ.get("MCP_HUB_DATA", "/var/lib/private-llm/mcp-hub"))
 UPLOAD_DIR = DATA_DIR / "uploads"
 DB_PATH = DATA_DIR / "usage.db"
+VISION_CONF = Path(os.environ.get("MCP_VISION_CONF", "/etc/private-llm/vision/config.json"))
 EXTERNAL_MCP_CONF = Path(os.environ.get("EXTERNAL_MCP_CONF", "/etc/private-llm/external-mcp.json"))
 UPLOAD_TTL = int(os.environ.get("UPLOAD_TTL", "1800"))  # 30 分钟
 MAX_UPLOAD = 10 * 1024 * 1024
@@ -115,6 +116,19 @@ def current_key(ctx) -> str:
 
 # ---------------------------------------------------------------- 内建视觉工具（US-P4）
 
+def vision_model() -> str:
+    """Return the admin-selected model, with the environment value as a migration fallback."""
+    try:
+        config = json.loads(VISION_CONF.read_text())
+        selected = config.get("model") if isinstance(config, dict) else None
+        if isinstance(selected, str) and selected.strip():
+            return selected.strip()
+    except (OSError, json.JSONDecodeError):
+        pass
+    if VISION_MODEL_FALLBACK:
+        return VISION_MODEL_FALLBACK
+    raise ToolError("vision model is not configured; select one in MCP management")
+
 async def fetch_image_data(url: str) -> tuple[bytes, str]:
     """取图：支持公网 URL 与本网关临时文件路径（/mcp/files/<token>）。"""
     if url.startswith("/mcp/files/"):
@@ -173,7 +187,7 @@ async def analyze_image(image_url: str, question: str, ctx: Context) -> str:
     data, mime = await fetch_image_data(image_url)
     b64 = base64.b64encode(data).decode()
     body = {
-        "model": VISION_MODEL,
+        "model": vision_model(),
         "messages": [{
             "role": "user",
             "content": [

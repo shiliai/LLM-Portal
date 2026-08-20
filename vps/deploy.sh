@@ -77,7 +77,8 @@ CONF
 fi
 BOOTSTRAP
 docker run --rm -v "$ETC_DIR":/e private-llm-wireguard \
-  sh -c '[ -f /e/external-mcp.json ] || echo "[]" > /e/external-mcp.json'
+  sh -c '[ -f /e/external-mcp.json ] || echo "[]" > /e/external-mcp.json; \
+         mkdir -p /e/vision; [ -f /e/vision/config.json ] || echo "{}" > /e/vision/config.json'
 [ "$(cat /proc/sys/net/ipv4/tcp_congestion_control)" = bbr ] \
   || echo "   note: 宿主机未启 BBR（一次性 sudo，见 runbook §2 前置）——跨境吞吐会显著劣化"
 

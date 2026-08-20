@@ -23,8 +23,9 @@
 - **用量计量**：按 Key / 模型 / 时间的 token、缓存命中、首 token 延迟、逐请求明细。
 - **管理控制台**：管理员邮箱+密码+TOTP 两步验证登录；站点/分组/模型/Key/用量/外部 MCP
   全图形化管理；用户凭虚拟 Key 查自己的用量。
-- **MCP 工具面**：内建图像理解工具 + 外部 MCP 代理注册（凭据不出网关）；外部工具可绑定
-  一个或多个分组，由用户 Key 的 `metadata.group` 同时约束 `tools/list` 与 `tools/call`。
+- **MCP 工具面**：内建图像理解工具可从已注册模型中选择后端（models.dev 能力目录，私有
+  模型实测兜底）+ 外部 MCP 代理注册（凭据不出网关）；外部工具可绑定一个或多个分组，
+  由用户 Key 的 `metadata.group` 同时约束 `tools/list` 与 `tools/call`。
 - **公网收敛**：nginx allowlist——LiteLLM 管理面 `/ui`、管理 API 一律 404，仅暴露业务路径。
 
 ## 架构

@@ -17,6 +17,8 @@
   .mcp-use-key-masked { -webkit-text-security: disc; }
   .mcp-use-blk { margin-top: 12px; }
   .mcp-use-blk-label { font-size: 12px; color: #595959; margin-bottom: 2px; }
+  .vision-controls { display:grid; grid-template-columns:minmax(180px,1fr) minmax(220px,1.25fr) auto; gap:8px; }
+  @media (max-width: 760px) { .vision-controls { grid-template-columns:1fr; } }
 </style>
 </head>
 <body data-page="mcp">
@@ -41,7 +43,18 @@
         <strong class="mono" id="builtin-sig">analyze_image(image_url, question)</strong>
         <span class="pf-chip gray" id="builtin-model">—</span>
       </div>
-      <span class="pf-chip ok"><span class="pf-dot ok"></span>可用</span>
+      <span class="pf-chip gray" id="builtin-status"><span class="pf-dot"></span>加载中</span>
+    </div>
+    <div class="pf-form-row" style="margin:4px 0 14px">
+      <label for="vision-model">Vision 模型</label>
+      <div>
+        <div class="vision-controls">
+          <select class="pf-input" id="vision-model"></select>
+          <select class="pf-input" id="vision-catalog"></select>
+          <button class="pf-btn primary" id="btn-save-vision" type="button">保存选择</button>
+        </div>
+        <div class="pf-desc" id="vision-note" style="margin-top:6px"></div>
+      </div>
     </div>
     <div class="pf-kv" style="margin-top:10px">
       <div class="pf-kv-k">凭据边界</div><div class="pf-kv-v">网关以调用者自己的 Key 回调回环 <span class="mono">/v1/chat/completions</span>；私有上游无鉴权，出站不带任何 Key（C5）。</div>
@@ -214,6 +227,7 @@
 (function () {
   'use strict';
   var revealGeneration = 0;
+  var visionCandidates = [];
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function fmtN(n) { return Number(n || 0).toLocaleString('zh-CN'); }
@@ -313,7 +327,7 @@
     availableGroups = d.groups || [];
     groupChecks('mcp-group-checks', [], 'new-mcp-group');
     document.getElementById('builtin-sig').textContent = d.builtin.tool;
-    document.getElementById('builtin-model').textContent = 'standing on ' + d.builtin.model;
+    document.getElementById('builtin-model').textContent = d.builtin.model;
     document.getElementById('mcp-extra').textContent = '共 ' + d.external.length + ' 个';
     document.getElementById('mcp-rows').innerHTML = d.external.map(function (e) {
       return '<tr>' +
@@ -345,6 +359,54 @@
     });
   }
 
+  function updateVisionCatalogOptions() {
+    var model = document.getElementById('vision-model').value;
+    var catalog = document.getElementById('vision-catalog');
+    var candidate = visionCandidates.find(function (item) { return item.model === model; });
+    var matches = candidate ? (candidate.catalog_matches || []).filter(function (item) {
+      return (item.input_modalities || []).indexOf('image') !== -1;
+    }) : [];
+    if (matches.length) {
+      catalog.disabled = false;
+      catalog.innerHTML = matches.map(function (item) {
+        return '<option value="' + esc(item.id) + '">' + esc(item.name) + ' · ' + esc(item.id) + '</option>';
+      }).join('');
+      document.getElementById('vision-note').textContent = '能力来源：models.dev · image input';
+    } else {
+      catalog.disabled = true;
+      catalog.innerHTML = '<option value="">models.dev 未收录 · 保存时真实图片探测</option>';
+      document.getElementById('vision-note').textContent = '私有或自定义模型将在保存前执行一次真实图片探测。';
+    }
+  }
+
+  function renderVision(d) {
+    visionCandidates = (d.candidates || []).filter(function (item) { return item.capability !== 'text_only'; });
+    var selected = d.selected || {};
+    var model = document.getElementById('vision-model');
+    model.innerHTML = visionCandidates.map(function (item) {
+      var suffix = item.capability === 'image' ? ' · 图片输入' : ' · 待实测';
+      return '<option value="' + esc(item.model) + '">' + esc(item.model + suffix) + '</option>';
+    }).join('') || '<option value="">没有可配置的模型</option>';
+    if (selected.model && visionCandidates.some(function (item) { return item.model === selected.model; })) {
+      model.value = selected.model;
+    }
+    updateVisionCatalogOptions();
+    if (selected.catalog_id) document.getElementById('vision-catalog').value = selected.catalog_id;
+
+    var status = document.getElementById('builtin-status');
+    var configured = Boolean(selected.model);
+    var valid = configured && selected.valid;
+    status.className = 'pf-chip ' + (valid ? 'ok' : (configured ? 'warn' : 'gray'));
+    status.innerHTML = '<span class="pf-dot ' + (valid ? 'ok' : (configured ? 'warn' : '')) + '"></span>' +
+      (valid ? '可用' : (configured ? '配置失效' : '未配置'));
+    document.getElementById('builtin-model').textContent = selected.model || '未配置';
+    var catalogState = d.catalog || {};
+    var note = document.getElementById('vision-note');
+    if (catalogState.status === 'stale') note.textContent += ' · 当前使用本地缓存目录';
+    if (catalogState.status === 'unavailable') note.textContent += ' · models.dev 暂不可用';
+    document.getElementById('btn-save-vision').disabled = !model.value;
+  }
+
   function renderUsage(d) {
     document.getElementById('mcp-usage-rows').innerHTML = d.keys.map(function (k) {
       var tools = Object.keys(k.tools || {}).map(function (t) {
@@ -360,6 +422,7 @@
 
   function load() {
     window.pfApi('GET', '/mcp').then(renderMcp).catch(function (e) { window.pfErr(e.error || 'MCP 注册加载失败'); });
+    window.pfApi('GET', '/mcp/vision').then(renderVision).catch(function (e) { window.pfErr(e.error || 'Vision 模型加载失败'); });
     window.pfApi('GET', '/mcp/usage?days=1').then(renderUsage).catch(function () { /* 计数为空不报错 */ });
   }
 
@@ -385,12 +448,12 @@
       document.getElementById('btn-mcp-use-import').disabled = !selected || !this.value.trim();
     });
     document.getElementById('btn-mcp-use-import').addEventListener('click', function () {
-      var token = document.getElementById('mcp-use-key-select').value;
+      var selectedToken = document.getElementById('mcp-use-key-select').value;
       var key = document.getElementById('mcp-use-key');
       var generation = revealGeneration;
       this.disabled = true;
-      window.pfApi('POST', '/keys/import', { key: token, plaintext: key.value.trim() }).then(function (d) {
-        if (generation !== revealGeneration || document.getElementById('mcp-use-key-select').value !== token) return;
+      window.pfApi('POST', '/keys/import', { key: selectedToken, plaintext: key.value.trim() }).then(function (d) {
+        if (generation !== revealGeneration || document.getElementById('mcp-use-key-select').value !== selectedToken) return;
         key.value = d.key;
         key.readOnly = true;
         document.getElementById('btn-mcp-use-import').hidden = true;
@@ -412,11 +475,28 @@
         document.getElementById('tools-preview').textContent = JSON.stringify(d, null, 2);
       }).catch(function (e) { window.pfErr(e.error || '预览失败'); });
     });
+    document.getElementById('vision-model').addEventListener('change', updateVisionCatalogOptions);
+    document.getElementById('btn-save-vision').addEventListener('click', function () {
+      var button = this;
+      var model = document.getElementById('vision-model').value;
+      var catalog = document.getElementById('vision-catalog');
+      if (!model) return;
+      button.disabled = true;
+      button.textContent = catalog.value ? '保存中…' : '验证中…';
+      window.pfApi('POST', '/mcp/vision', { model: model, catalog_id: catalog.value }).then(function (d) {
+        window.pfToast(d.selected.source === 'live_probe' ? '图片探测通过，Vision 模型已更新' : 'Vision 模型已更新');
+        load();
+      }).catch(function (e) {
+        button.disabled = false;
+        window.pfErr(e.error || 'Vision 模型更新失败');
+      }).finally(function () { button.textContent = '保存选择'; });
+    });
     document.getElementById('btn-create-mcp').addEventListener('click', function () {
+      var credential = document.getElementById('mcp-apikey').value.trim();
       var body = {
         name: document.getElementById('mcp-name').value.trim(),
         url: document.getElementById('mcp-url').value.trim(),
-        api_key: document.getElementById('mcp-apikey').value.trim(),
+        api_key: credential,
         prefix: document.getElementById('mcp-prefix').value.trim(),
         groups: selectedGroups('new-mcp-group')
       };

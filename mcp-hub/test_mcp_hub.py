@@ -43,6 +43,8 @@ def hub(monkeypatch, tmp_path):
     return load_service(MCP_HUB_DIR / "mcp_hub.py", {
         "MCP_HUB_DATA": str(tmp_path / "mdata"),
         "LITELLM_BASE": "http://litellm-stub.invalid",
+        "MCP_VISION_CONF": str(tmp_path / "vision-mcp.json"),
+        "MCP_VISION_MODEL": "fallback-vision-model",
         "EXTERNAL_MCP_CONF": str(tmp_path / "external-mcp.json"),   # 不存在 → 不挂外部工具
     })
 
@@ -112,6 +114,23 @@ def test_fetch_uploaded_image_returns_mime_type(hub):
 
     assert data == image
     assert mime == "image/png"
+
+
+def test_vision_model_prefers_persisted_selection(hub):
+    hub.VISION_CONF.write_text(json.dumps({"model": "selected-vision-model"}))
+    assert hub.vision_model() == "selected-vision-model"
+
+
+def test_vision_model_uses_environment_migration_fallback(hub):
+    assert hub.vision_model() == "fallback-vision-model"
+    hub.VISION_CONF.write_text("not-json")
+    assert hub.vision_model() == "fallback-vision-model"
+
+
+def test_vision_model_requires_configuration(hub):
+    hub.VISION_MODEL_FALLBACK = ""
+    with pytest.raises(hub.ToolError, match="not configured"):
+        hub.vision_model()
 
 
 # ---------------------------------------------------------------- MCP 传输层 TokenVerifier
