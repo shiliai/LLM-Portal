@@ -57,6 +57,7 @@ import functools
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import secrets
@@ -104,7 +105,7 @@ def positive_seconds_env(name: str, default: float, minimum: float) -> float:
         value = float(os.environ.get(name, default))
     except (TypeError, ValueError):
         return default
-    return value if value >= minimum else default
+    return value if math.isfinite(value) and value >= minimum else default
 
 
 MCP_HUB_READY_TIMEOUT = positive_seconds_env("MCP_HUB_READY_TIMEOUT", 45.0, 1.0)

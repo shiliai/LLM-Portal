@@ -697,6 +697,14 @@ def test_mcp_hub_ready_waits_for_delayed_candidate_and_rollback_attestation(tmp_
     assert all(timeout <= 2.0 for timeout in timeouts)
 
 
+@pytest.mark.parametrize(("raw", "expected"), [
+    ("inf", 45.0), ("-inf", 45.0), ("nan", 45.0), ("invalid", 45.0), ("60", 60.0),
+])
+def test_mcp_readiness_timeout_requires_finite_seconds(tmp_path, raw, expected):
+    mod = _load(tmp_path, {"MCP_HUB_READY_TIMEOUT": raw})
+    assert mod.MCP_HUB_READY_TIMEOUT == expected
+
+
 def test_restart_timeout_is_reported(mcp_console, monkeypatch):
     def timeout(*args, **kwargs):
         raise mcp_console.subprocess.TimeoutExpired(args[0], 60)
