@@ -97,6 +97,18 @@ MCP_MAX_DISCOVERED_TOOLS = 64
 MCP_MAX_SCHEMA_DEPTH = 12
 MCP_MAX_SCHEMA_BYTES = 16 * 1024
 MCP_MAX_METADATA_BYTES = 96 * 1024
+
+
+def positive_seconds_env(name: str, default: float, minimum: float) -> float:
+    try:
+        value = float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value >= minimum else default
+
+
+MCP_HUB_READY_TIMEOUT = positive_seconds_env("MCP_HUB_READY_TIMEOUT", 45.0, 1.0)
+MCP_HUB_READY_POLL_INTERVAL = positive_seconds_env("MCP_HUB_READY_POLL_INTERVAL", 0.5, 0.05)
 WG_IFACE = os.environ.get("WG_IFACE", "wg0")
 # 宿主机操作命令前缀（#7 容器化）：默认保留宿主机直跑语义；容器模式由 compose 注入
 # docker.sock 版本（挂载 /var/run/docker.sock 的容器 ≈ 宿主机 root，见 runbook §7 取舍）
@@ -1829,9 +1841,13 @@ def restart_mcp_hub() -> str:
 
 
 async def mcp_hub_ready(expected_sha256: str, expected_owners: dict[str, str] | None = None) -> bool:
-    for _ in range(10):
+    deadline = time.monotonic() + MCP_HUB_READY_TIMEOUT
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
         try:
-            async with httpx.AsyncClient(timeout=2) as client:
+            async with httpx.AsyncClient(timeout=min(2.0, remaining)) as client:
                 r = await client.get(f"{MCP_HUB_URL}/internal/config-state")
             state = r.json() if r.status_code == 200 else {}
             owners = state.get("tools") if isinstance(state.get("tools"), dict) else {}
@@ -1841,8 +1857,7 @@ async def mcp_hub_ready(expected_sha256: str, expected_owners: dict[str, str] | 
                 return True
         except (httpx.HTTPError, ValueError):
             pass
-        await asyncio.sleep(0.2)
-    return False
+        await asyncio.sleep(min(MCP_HUB_READY_POLL_INTERVAL, max(0, deadline - time.monotonic())))
 
 
 async def apply_mcp_conf(entries: list[dict], expected_owners: dict[str, str] | None = None) -> tuple[bool, str]:

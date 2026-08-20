@@ -161,6 +161,11 @@ install.sh 在站点侧：装 wireguard-tools → `wg genkey`（私钥不出机�
 零工具失败会保留表单与原配置，不会重启服务；错误只返回可操作的类别，不回显外部凭据。
 注册、分组保存和移除均先在控制台页面内确认重启影响，不会触发浏览器原生确认框。
 
+注册后的 mcp-hub 精确 SHA/工具归属 attestation 使用单调时钟 deadline，而不是固定轮数：
+默认 `MCP_HUB_READY_TIMEOUT=45`、`MCP_HUB_READY_POLL_INTERVAL=0.5`。外部 MCP 初始化或
+`tools/list` 较慢时，仅提高 timeout；候选配置和回滚后的旧配置都使用同一 deadline/polling
+策略，绝不能改为只检查进程存活或放宽 SHA/owner 匹配。
+
 部署前和每次三项外部 MCP 注册批次前，先创建时间戳备份：备份必须是 `0600`、字节 SHA256
 读回一致，并记录目标文件的 owner、mode 和 inode；备份文件及其目录都必须 `fsync` 成功，任一
 检查失败即停止，禁止开始注册。运行时失败会原 inode 恢复原字节、mode/owner，重启 mcp-hub 并

@@ -648,6 +648,55 @@ def test_mcp_config_restored_when_readiness_fails(mcp_console, monkeypatch):
     assert len(calls) == 2
 
 
+def test_mcp_hub_ready_waits_for_delayed_candidate_and_rollback_attestation(tmp_path, monkeypatch):
+    mod = _load(tmp_path)
+    clock = [0.0]
+    attempts = [0]
+    state = {}
+    ready_state = {}
+    timeouts = []
+
+    class Response:
+        status_code = 200
+        def json(self):
+            return state
+
+    class DelayedClient:
+        def __init__(self, timeout):
+            timeouts.append(timeout)
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            return False
+        async def get(self, _url):
+            attempts[0] += 1
+            if attempts[0] < 4:
+                state.update({"sha256": "not-ready", "ok": False, "tools": {}})
+            else:
+                state.update(ready_state)
+            return Response()
+
+    async def advance(seconds):
+        clock[0] += seconds
+
+    monkeypatch.setattr(mod.httpx, "AsyncClient", DelayedClient)
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(mod.asyncio, "sleep", advance)
+    mod.MCP_HUB_READY_TIMEOUT = 2.0
+    mod.MCP_HUB_READY_POLL_INTERVAL = 0.25
+
+    candidate_owners = {"analyze_image": "builtin", "zai_search_webSearchPrime": "zai-search"}
+    ready_state.update({"sha256": "candidate", "ok": True, "tools": candidate_owners})
+    assert asyncio.run(mod.mcp_hub_ready("candidate", candidate_owners)) is True
+    assert attempts[0] == 4
+
+    attempts[0] = 0
+    ready_state.update({"sha256": "previous", "ok": True, "tools": {"analyze_image": "builtin"}})
+    assert asyncio.run(mod.mcp_hub_ready("previous")) is True
+    assert attempts[0] == 4
+    assert all(timeout <= 2.0 for timeout in timeouts)
+
+
 def test_restart_timeout_is_reported(mcp_console, monkeypatch):
     def timeout(*args, **kwargs):
         raise mcp_console.subprocess.TimeoutExpired(args[0], 60)
