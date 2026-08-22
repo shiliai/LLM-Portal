@@ -149,9 +149,12 @@ install.sh 在站点侧：装 wireguard-tools → `wg genkey`（私钥不出机�
 | Claude Code | `ANTHROPIC_BASE_URL=https://llm-portal.example.com`，`ANTHROPIC_AUTH_TOKEN=sk-…`，默认模型名 `claude-opus-5`（别名已配） |
 | Pi（badlogic/pi-mono） | 控制台 Key「使用」→ Pi 可复制完整 `models.json` + `settings.json`；私有 DeepSeek 显式配置 1M 上下文、默认 `high`，仅开放 `high/max` effort；MCP 需先 `pi install npm:pi-mcp-adapter` |
 | DeepSeek Harness（dsh） | 控制台 Key「使用」→ DeepSeek Harness 可复制 `~/.dsh/.credentials.yaml` + `~/.dsh/settings.yaml`；通过内置 `dsh-llm-pi-ai` 的 `llm-pi-ai` settings 分节注册 Portal 自定义路由，显式配置 1M 上下文、默认 `high`，仅开放 `high/max` effort |
-| MCP 客户端（Streamable HTTP + Bearer） | URL `https://llm-portal.example.com/mcp`，头 `Authorization: Bearer sk-…`；工具名 `[a-z0-9_]`（`analyze_image`、外部 MCP 前缀如 `zhipu_*`） |
+| MCP 客户端（Streamable HTTP + Bearer） | URL `https://llm-portal.example.com/mcp`，头 `Authorization: Bearer sk-…`；工具名 `[a-z0-9_]`（`analyze_image`、`upload_image`、外部 MCP 前缀如 `zhipu_*`） |
 
-本地图片两步式：`POST /mcp/upload`（multipart `file=`，同一 Key）→ 得临时 URL（30min）→ `analyze_image(url, 问题)`。
+本地图片（issue #71）三种方式，同一套校验（类型白名单 jpg/png/webp/gif、声明 MIME 须与字节签名一致、≤10MB）与临时文件存储（随机 token、30min TTL）：
+- **MCP 内嵌一步式**：`analyze_image(question, image_base64, mime_type?)`——本地图片 Base64 直接识别，`mime_type` 缺省按签名识别，无需先上传；
+- **MCP 上传工具**：`upload_image(image_base64, mime_type?)` → 返回临时 URL（30min）→ 可反复传给 `analyze_image(question, image_url)`；
+- **HTTP 两步式（保留兼容）**：`POST /mcp/upload`（multipart `file=`，同一 Key）→ 得临时 URL → `analyze_image(question, image_url)`。
 
 Vision 后端在控制台「MCP 管理」选择。控制台缓存 `https://models.dev/models.json` 24 小时；
 刷新失败时沿用最后一次成功缓存。目录明确不含 `image` 输入的模型不可选；目录未知的私有

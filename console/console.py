@@ -2178,7 +2178,7 @@ async def preflight_external_mcp(url: str, api_key: str) -> tuple[list[dict] | N
 async def preflight_mcp_entries(entries: list[dict]) -> tuple[dict[str, list[dict]] | None, dict[str, str] | None,
                                                                  tuple[str, int, str] | None]:
     discovered: dict[str, list[dict]] = {}
-    owners = {"analyze_image": "builtin"}
+    owners = {"analyze_image": "builtin", "upload_image": "builtin"}
     for entry in entries:
         name = str(entry.get("name") or "")
         tools, failure = await preflight_external_mcp(str(entry.get("url") or ""), str(entry.get("api_key") or ""))
@@ -2202,14 +2202,14 @@ async def api_mcp(request: Request) -> Response:
     group_names = sorted(snap["groups"])
     vision = read_vision_conf()
     return JSONResponse({
-        "builtin": {"tool": "analyze_image(image_url, question)",
+        "builtin": {"tool": "analyze_image(question, image_url | image_base64[, mime_type])",
                     "model": vision.get("model") or "未配置",
                     "endpoint": "/mcp（Streamable HTTP + Bearer）",
                     "boundary": "以调用者 Key 回调回环模型通道，凭据不出网关（C5）"},
         "external": [mask_entry(e) for e in read_mcp_conf()],
         "groups": group_names,
         "upload": {"endpoint": "POST /mcp/upload（multipart file=，同一 Key）",
-                   "ttl": "30 分钟", "limit": "≤10MB，jpg/png/webp/gif"},
+                   "ttl": "30 分钟", "limit": "≤10MB，jpg/png/webp/gif（内嵌 Base64 同限）"},
     })
 
 
@@ -2313,7 +2313,9 @@ async def api_mcp_tools(request: Request) -> Response:
         return sess
     vision_model = read_vision_conf().get("model") or "未配置"
     tools = [{"name": "analyze_image", "source": "内建",
-              "description": f"视觉识别（{vision_model}）"}]
+              "description": f"视觉识别（{vision_model}）：image_url 或 image_base64"},
+             {"name": "upload_image", "source": "内建",
+              "description": "本地图 Base64 → 30 分钟临时 URL（issue #71）"}]
     for e in read_mcp_conf():
         prefix = e.get("prefix", f"{e['name']}_")
         try:

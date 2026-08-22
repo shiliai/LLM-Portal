@@ -1,7 +1,8 @@
-"""mcp-hub：网关托管视觉 MCP + 外部 MCP 代理（设计 §3.3，US-P4/P12）。
+"""mcp-hub：网关托管视觉 MCP + 外部 MCP 代理（设计 §3.3，US-P4/P12，issue #71）。
 
 入口（经 nginx，同一把用户虚拟 Key 鉴权）：
-  /mcp                Streamable HTTP（MCP 协议）：analyze_image + 外部 MCP 前缀工具
+  /mcp                Streamable HTTP（MCP 协议）：analyze_image（image_url 或 image_base64）
+                      + upload_image（Base64 → 临时 URL）+ 外部 MCP 前缀工具
   /mcp/upload         POST multipart：本地图 → 限时临时 URL（30min TTL，白名单 jpg/png/webp/gif，≤10MB）
   /mcp/files/<token>  临时文件读取（随机不可猜 token，无鉴权、到期即清理）
   /mcp/usage          GET：本 Key 的 MCP 工具调用计数
@@ -13,10 +14,12 @@ analyze_image 以调用者自己的 Key 回调回环 LiteLLM（token 记调用�
 
 import asyncio
 import base64
+import binascii
 import hashlib
 import json
 import mimetypes
 import os
+import secrets
 import sqlite3
 import time
 from contextlib import asynccontextmanager
@@ -153,6 +156,62 @@ async def fetch_image_data(url: str) -> tuple[bytes, str]:
     return r.content, mime
 
 
+# ------------------------------------------------ 内嵌图片共用链路（issue #71）
+
+
+def sniff_image_type(data: bytes) -> str | None:
+    """按字节签名识别图片类型（仅白名单内），识别不了返回 None。"""
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def validate_image_bytes(data: bytes, declared_mime: str | None) -> str:
+    """校验图片字节：非空、≤10MB、签名在白名单内；声明了 MIME 时还须与签名一致。
+    返回实际 MIME。错误信息只含类型名，不回显图片内容。"""
+    if not data:
+        raise ToolError("empty image data")
+    if len(data) > MAX_UPLOAD:
+        raise ToolError("image too large (max 10MB)")
+    actual = sniff_image_type(data)
+    if actual is None:
+        raise ToolError(f"unsupported image format; allowed: {sorted(ALLOWED_TYPES)}")
+    if declared_mime is not None:
+        if declared_mime not in ALLOWED_TYPES:
+            raise ToolError(f"unsupported mime type {declared_mime!r}; allowed: {sorted(ALLOWED_TYPES)}")
+        if declared_mime != actual:
+            raise ToolError(f"declared mime {declared_mime!r} does not match image signature {actual!r}")
+    return actual
+
+
+def decode_inline_image(image_base64: str | None, mime_type: str | None) -> tuple[bytes, str]:
+    """解码内嵌 Base64 图片（analyze_image / upload_image 共用）：严格 Base64（容忍空白与换行）、
+    非空、≤10MB、MIME 白名单且与实际签名一致。返回 (原始字节, MIME)。"""
+    if not isinstance(image_base64, str) or not image_base64.strip():
+        raise ToolError("image_base64 must be a non-empty base64 string")
+    compact = "".join(image_base64.split())  # 容忍 base64(1) 输出被折行复制
+    if len(compact) > MAX_UPLOAD * 2:  # base64 至多膨胀 4/3；解码前先拒超长输入
+        raise ToolError("image too large (max 10MB)")
+    try:
+        data = base64.b64decode(compact, validate=True)
+    except (binascii.Error, ValueError):
+        raise ToolError("image_base64 is not valid base64")
+    return data, validate_image_bytes(data, mime_type)
+
+
+def store_image(data: bytes, mime: str) -> str:
+    """图片落盘为临时文件（随机 token + 白名单后缀；TTL 由 ttl_loop 清理），返回临时 URL。"""
+    file_token = secrets.token_urlsafe(18)
+    (UPLOAD_DIR / (file_token + ALLOWED_TYPES[mime])).write_bytes(data)
+    return f"{PUBLIC_BASE}/mcp/files/{file_token}{ALLOWED_TYPES[mime]}"
+
+
 @asynccontextmanager
 async def lifespan(app):
     global loaded_config_sha256
@@ -180,11 +239,22 @@ mcp = FastMCP(
 
 
 @mcp.tool
-async def analyze_image(image_url: str, question: str, ctx: Context) -> str:
-    """用视觉模型识别图片。image_url 支持公网图片 URL 或 /mcp/upload 返回的临时 URL；
-    question 为针对图片的问题。"""
+async def analyze_image(question: str, image_url: str | None = None,
+                        image_base64: str | None = None, mime_type: str | None = None,
+                        ctx: Context = None) -> str:
+    """用视觉模型识别图片。图片二选一：image_url（公网图片 URL，或 upload_image /
+    POST /mcp/upload 返回的临时 URL）；image_base64（本地图片的 Base64，可配 mime_type，
+    缺省按字节签名识别，单次调用直接分析、无需先上传）。question 为针对图片的问题。"""
     key = current_key(ctx)
-    data, mime = await fetch_image_data(image_url)
+    if image_url and image_base64:
+        raise ToolError("provide either image_url or image_base64, not both")
+    if image_base64:
+        data, mime = decode_inline_image(image_base64, mime_type)
+        store_image(data, mime)  # 与 upload_image 同一存储路径：随机 token + 30min TTL
+    elif image_url:
+        data, mime = await fetch_image_data(image_url)
+    else:
+        raise ToolError("image_url or image_base64 is required")
     b64 = base64.b64encode(data).decode()
     body = {
         "model": vision_model(),
@@ -210,6 +280,18 @@ async def analyze_image(image_url: str, question: str, ctx: Context) -> str:
     return (choices[0].get("message") or {}).get("content") or "(empty response)"
 
 
+@mcp.tool
+async def upload_image(image_base64: str, mime_type: str | None = None, ctx: Context = None) -> str:
+    """上传本地图片（Base64 编码字节，可配 mime_type，缺省按字节签名识别），返回 JSON 字符串
+    {"url": …, "expires_in": 1800}：临时 URL 30 分钟有效，可反复传给 analyze_image 的
+    image_url。一次性识别不必先上传，直接用 analyze_image 的 image_base64。"""
+    key = current_key(ctx)
+    data, mime = decode_inline_image(image_base64, mime_type)
+    url = store_image(data, mime)
+    record_usage(key, "upload_image")
+    return json.dumps({"url": url, "expires_in": UPLOAD_TTL})
+
+
 # ---------------------------------------------------------------- 外部 MCP 代理（US-P12）
 
 external_clients: dict[str, Client] = {}
@@ -225,6 +307,7 @@ async def register_external_tools() -> None:
     loaded_tool_owners.clear()
     loaded_entry_state.clear()
     loaded_tool_owners["analyze_image"] = "builtin"
+    loaded_tool_owners["upload_image"] = "builtin"
     loaded_config_ok = True
     if not EXTERNAL_MCP_CONF.exists():
         return
@@ -349,16 +432,17 @@ async def upload(request: Request) -> Response:
     upload_file = form.get("file")
     if upload_file is None or isinstance(upload_file, str):
         return JSONResponse({"error": "multipart field 'file' required"}, status_code=400)
-    content_type = (upload_file.content_type or "").split(";")[0].strip()
-    if content_type not in ALLOWED_TYPES:
-        return JSONResponse({"error": f"unsupported type {content_type!r}; allowed: {sorted(ALLOWED_TYPES)}"}, status_code=400)
+    content_type = (upload_file.content_type or "").split(";")[0].strip() or None
     data = await upload_file.read()
     if len(data) > MAX_UPLOAD:
         return JSONResponse({"error": "file too large (max 10MB)"}, status_code=413)
-    upload_id = base64.urlsafe_b64encode(os.urandom(18)).rstrip(b"=").decode()
-    (UPLOAD_DIR / (upload_id + ALLOWED_TYPES[content_type])).write_bytes(data)
+    try:  # 与内嵌 Base64 路径共用校验：签名须与声明 MIME 一致（issue #71）
+        mime = validate_image_bytes(data, content_type)
+    except ToolError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    url = store_image(data, mime)
     record_usage(key, "upload")
-    return JSONResponse({"url": f"{PUBLIC_BASE}/mcp/files/{upload_id}{ALLOWED_TYPES[content_type]}", "expires_in": UPLOAD_TTL})
+    return JSONResponse({"url": url, "expires_in": UPLOAD_TTL})
 
 
 async def usage(request: Request) -> Response:
