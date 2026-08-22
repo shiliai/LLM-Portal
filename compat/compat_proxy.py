@@ -21,11 +21,14 @@ SSE 逐行流式转发、绝不缓冲完整响应；指标脱敏——只记规�
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import hashlib
 import json
 import os
 import re
+import time as _time
+import uuid as _uuid
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
@@ -37,6 +40,7 @@ from starlette.datastructures import Headers
 from starlette.requests import Request
 from starlette.responses import Response, StreamingResponse
 from starlette.routing import Route
+from compat_metrics import metrics, metrics_response, status_class as _status_class
 
 LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://litellm:4000").rstrip("/")
 COMPAT_PORT = int(os.environ.get("COMPAT_PORT", "8400"))
@@ -342,27 +346,57 @@ async def _openai_sse_rewritten(chunks: AsyncIterator[bytes], endpoint: str) -> 
         yield fixer.process_line(tail, endpoint)
 
 
-def error_response(reject: CompatReject, proto: str) -> Response:
+def error_response(reject: CompatReject, proto: str, rid: str = "") -> Response:
     """按协议族返回稳定错误体：OpenAI error.code / Anthropic error.type 可判读。"""
     err_type = "invalid_request_error" if reject.status == 400 else "api_error"
     if proto == "anthropic":
         payload: dict[str, Any] = {"type": "error", "error": {"type": err_type, "message": reject.message}}
     else:
         payload = {"error": {"message": reject.message, "type": err_type, "code": reject.code}}
+    headers = {"x-compat-rule": US13_VERSION}
+    if rid:
+        headers["x-request-id"] = rid
     return Response(
         json.dumps(payload, ensure_ascii=False),
         status_code=reject.status,
         media_type="application/json",
-        headers={"x-compat-rule": US13_VERSION},
+        headers=headers,
     )
 
 
+async def metrics_route(request: Request) -> Response:
+    return metrics_response()
+
+
 async def compat_proxy(request: Request) -> Response:
+    t0 = _time.perf_counter()
     path = request.url.path
     query = request.url.query
     proto = "anthropic" if path.startswith("/v1/messages") else "openai"
     url = LITELLM_BASE + path + (f"?{query}" if query else "")
     raw = await request.body()
+
+    # request_id 贯穿（issue #62 / README D4）：优先沿用入口（nginx $request_id / 客户端）
+    # X-Request-Id，否则自生成；透传给 LiteLLM 并对客户端回传 x-request-id。
+    # 仅用于跨层对账（结构化日志），**决不作为 Prometheus 标签**（高基数）。
+    rid = request.headers.get("x-request-id") or _uuid.uuid4().hex
+    metrics["active"].labels(proto=proto).inc()
+
+    stream_flag = ""
+    finalized = False
+
+    def finalize(resp_status: str, cause: str = "") -> None:
+        """Record exactly one terminal lifecycle outcome for this request."""
+        nonlocal finalized
+        if finalized:
+            return
+        finalized = True
+        metrics["active"].labels(proto=proto).dec()
+        metrics["total"].labels(proto=proto, status_class=resp_status).observe(_time.perf_counter() - t0)
+        metrics["requests"].labels(
+            endpoint=path, proto=proto, stream=stream_flag, status_class=resp_status).inc()
+        if cause:
+            metrics["errors"].labels(cause=cause).inc()
 
     out_body = raw
     try:
@@ -370,52 +404,96 @@ async def compat_proxy(request: Request) -> Response:
     except ValueError:
         parsed = None
     if isinstance(parsed, dict):
+        if isinstance(parsed.get("stream"), bool):
+            stream_flag = str(parsed["stream"]).lower()
         try:
             tc_info = rewrite_forced_tool_choice(parsed, proto)
         except CompatReject as exc:
-            metric("compat.reject", endpoint=path, reason=exc.code, tools=len(parsed.get("tools") or []))
-            return error_response(exc, proto)
+            metric("compat.reject", request_id=rid, endpoint=path, reason=exc.code, tools=len(parsed.get("tools") or []))
+            finalize(_status_class(exc.status), cause="reject_" + exc.code)
+            return error_response(exc, proto, rid=rid)
         sys_info = normalize_anthropic_messages(parsed) if proto == "anthropic" else None
         dsml_info = normalize_dsml_history(parsed) if proto == "openai" else None
         if tc_info or sys_info or dsml_info:
             out_body = json.dumps(parsed, separators=(",", ":"), ensure_ascii=False).encode()
             if tc_info:
-                metric("compat.tool_choice_rewrite", endpoint=path, **tc_info)
+                metric("compat.tool_choice_rewrite", request_id=rid, endpoint=path, **tc_info)
             if sys_info:
-                metric("compat.transform", rule=US13_VERSION, endpoint=path, **sys_info)
+                metric("compat.transform", rule=US13_VERSION, request_id=rid, endpoint=path, **sys_info)
             if dsml_info:
-                metric("compat.dsml_args_normalized", endpoint=path, side="request", **dsml_info)
+                metric("compat.dsml_args_normalized", request_id=rid, endpoint=path, side="request", **dsml_info)
+    t_parsed = _time.perf_counter()
+    metrics["parse"].labels(proto=proto).observe(t_parsed - t0)
 
-    fwd = [(k, v) for k, v in request.headers.items() if k.lower() not in REQ_DROP]
+    fwd = [(k, v) for k, v in request.headers.items() if k.lower() not in REQ_DROP and k.lower() != "x-request-id"]
     fwd.append(("accept-encoding", "identity"))  # 响应不压缩：字节透传 + SSE 行改写的前提
+    fwd.append(("x-request-id", rid))            # 贯穿 request_id → LiteLLM（不引入缓冲）
     upstream_request = client.build_request(request.method, url, headers=fwd, content=out_body)
     try:
         upstream = await client.send(upstream_request, stream=True)
+    except asyncio.CancelledError:
+        finalize("client_disconnect")
+        raise
     except httpx.HTTPError as exc:
-        metric("compat.upstream_error", endpoint=path, error=type(exc).__name__)
-        return error_response(CompatReject(502, "upstream_unavailable", UPSTREAM_MESSAGE), proto)
+        metric("compat.upstream_error", request_id=rid, endpoint=path, error=type(exc).__name__)
+        finalize("5xx", cause="upstream_" + type(exc).__name__)
+        return error_response(CompatReject(502, "upstream_unavailable", UPSTREAM_MESSAGE), proto, rid=rid)
+    metrics["upstream_header"].labels(endpoint=path, proto=proto).observe(_time.perf_counter() - t_parsed)
 
-    headers = Headers(raw=[(k.encode("latin-1"), v.encode("latin-1")) for k, v in upstream.headers.items() if k.lower() not in RESP_DROP])
+    _up_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in RESP_DROP}
+    _up_headers["x-request-id"] = rid  # 回传客户端（不含内部敏感信息）
+    headers = Headers(_up_headers)
+    status_class = _status_class(upstream.status_code)
     content_type = upstream.headers.get("content-type", "").split(";")[0].strip()
+    if not stream_flag:
+        stream_flag = "true" if content_type == "text/event-stream" else "false"
+
     # OpenAI 非流式响应：forced 路径下 vLLM 会回 DSML 标记文本作 arguments——读转 JSON 再回客户端。
     # 非流式响应本就要完整到达，读改写不引入缓冲延迟；流式仍走逐行转发不受影响。
     if path == "/v1/chat/completions" and upstream.status_code == 200 and content_type == "application/json":
-        raw_response = await upstream.aread()
-        await upstream.aclose()
+        try:
+            raw_response = await upstream.aread()
+        except asyncio.CancelledError:
+            finalize("client_disconnect")
+            raise
+        except httpx.HTTPError as exc:
+            metric("compat.upstream_error", request_id=rid, endpoint=path, error=type(exc).__name__)
+            finalize("5xx", cause="upstream_" + type(exc).__name__)
+            return error_response(CompatReject(502, "upstream_unavailable", UPSTREAM_MESSAGE), proto, rid=rid)
+        finally:
+            await upstream.aclose()
         try:
             value = json.loads(raw_response)
         except ValueError:
             value = None
         if isinstance(value, dict) and normalize_dsml_response(value):
-            metric("compat.dsml_args_normalized", endpoint=path, side="response", calls=1)
+            metric("compat.dsml_args_normalized", request_id=rid, endpoint=path, side="response", calls=1)
             raw_response = json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
+        finalize(status_class)
         return Response(raw_response, status_code=upstream.status_code, headers=headers)
     if content_type == "text/event-stream" and path == "/v1/chat/completions":
         body_stream = _openai_sse_rewritten(upstream.aiter_raw(), path)
     else:
         body_stream = _passthrough(upstream.aiter_raw())
+
+    # 流式 total 观测在流真正结束时结算。客户端取消会向生成器注入
+    # CancelledError（显式关闭时为 GeneratorExit，落入 finally），两者都只结算一次。
+    async def _timed() -> AsyncIterator[bytes]:
+        completed = False
+        try:
+            async for chunk in body_stream:
+                yield chunk
+            completed = True
+        except asyncio.CancelledError:
+            finalize("client_disconnect")
+            raise
+        except Exception:
+            finalize("error", cause="upstream_stream")
+            raise
+        finally:
+            finalize(status_class if completed else "client_disconnect")
     return StreamingResponse(
-        body_stream,
+        _timed(),
         status_code=upstream.status_code,
         headers=headers,
         background=BackgroundTask(upstream.aclose),
@@ -431,7 +509,7 @@ client = httpx.AsyncClient(
 ROUTES = [
     Route(p, compat_proxy, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
     for p in PROXY_PATHS
-]
+] + [Route("/metrics", metrics_route, methods=["GET"])]
 
 
 @asynccontextmanager

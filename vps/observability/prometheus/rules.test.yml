@@ -1,0 +1,55 @@
+rule_files:
+  - rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: status error ratio returns a numeric per-status series
+    interval: 1m
+    input_series:
+      - series: 'litellm_requests_total{model="m",group="g",deployment="d",site="s",stream="false"}'
+        values: '0+60x10'
+      - series: 'litellm_errors_total{model="m",group="g",deployment="d",site="s",stream="false",status_class="5xx"}'
+        values: '0+6x10'
+    promql_expr_test:
+      - expr: ll:error_ratio_by_status
+        eval_time: 10m
+        exp_samples:
+          - labels: '{__name__="ll:error_ratio_by_status",status_class="5xx"}'
+            value: 0.1
+
+  - name: blackbox scrape failure alerts independently
+    interval: 1m
+    input_series:
+      - series: 'up{job="blackbox-sites",instance="site-a"}'
+        values: '0+0x5'
+      - series: 'probe_success{job="blackbox-sites",instance="site-a"}'
+        values: '1+0x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: BlackboxScrapeDown
+        exp_alerts:
+          - exp_labels:
+              instance: site-a
+              job: blackbox-sites
+              severity: critical
+            exp_annotations:
+              summary: blackbox exporter 或探针抓取失败，站点可达性数据不可用
+
+  - name: target failure retains the site alert
+    interval: 1m
+    input_series:
+      - series: 'up{job="blackbox-sites",instance="site-a"}'
+        values: '1+0x15'
+      - series: 'probe_success{job="blackbox-sites",instance="site-a"}'
+        values: '0+0x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: SiteUnreachable
+        exp_alerts:
+          - exp_labels:
+              instance: site-a
+              job: blackbox-sites
+              severity: warning
+            exp_annotations:
+              summary: WG 站点 site-a health 连续 10m 不可达

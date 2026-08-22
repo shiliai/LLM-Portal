@@ -1,0 +1,322 @@
+{
+  "__inputs": [],
+  "title": "Portal 全链路分段指标",
+  "uid": "portal-overview",
+  "version": 1,
+  "tags": [
+    "private-llm",
+    "observability"
+  ],
+  "schemaVersion": 39,
+  "timezone": "browser",
+  "editable": true,
+  "refresh": "15s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "model",
+        "label": "Model",
+        "type": "query",
+        "query": "label_values(litellm_requests_total, model)",
+        "definition": "label_values(litellm_requests_total, model)",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "site",
+        "label": "Site",
+        "type": "query",
+        "query": "label_values(litellm_requests_total, site)",
+        "definition": "label_values(litellm_requests_total, site)",
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1,
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "请求量（req/s）",
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(litellm_requests_total{model=~\"$model\",site=~\"$site\"}[$__rate_interval])) by (model,site)",
+          "legendFormat": "{{model}} @ {{site}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "活跃请求",
+      "gridPos": {
+        "h": 7,
+        "w": 4,
+        "x": 8,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(litellm_active_requests{model=~\"$model\",site=~\"$site\"}) by (model,site)",
+          "legendFormat": "{{model}} @ {{site}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "外部网关成功率（1h）",
+      "gridPos": {
+        "h": 7,
+        "w": 4,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(compat_requests_total{status_class=\"2xx\"}[1h])) / clamp_min(sum(increase(compat_requests_total[1h])), 1)",
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "TTFT P50/P95/P99（s）",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "ll:ttft_p50{model=~\"$model\",site=~\"$site\"}",
+          "legendFormat": "{{model}} @ {{site}} P50"
+        },
+        {
+          "refId": "B",
+          "expr": "ll:ttft_p95{model=~\"$model\",site=~\"$site\"}",
+          "legendFormat": "{{model}} @ {{site}} P95"
+        },
+        {
+          "refId": "C",
+          "expr": "ll:ttft_p99{model=~\"$model\",site=~\"$site\"}",
+          "legendFormat": "{{model}} @ {{site}} P99"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "总耗时 P50/P95/P99 + compat P95（s）",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "ll:total_p50{model=~\"$model\",site=~\"$site\"}",
+          "legendFormat": "{{model}} @ {{site}} total P50"
+        },
+        {
+          "refId": "B",
+          "expr": "ll:total_p95{model=~\"$model\",site=~\"$site\"}",
+          "legendFormat": "{{model}} @ {{site}} total P95"
+        },
+        {
+          "refId": "C",
+          "expr": "ll:total_p99{model=~\"$model\",site=~\"$site\"}",
+          "legendFormat": "{{model}} @ {{site}} total P99"
+        },
+        {
+          "refId": "D",
+          "expr": "histogram_quantile(0.95, sum(rate(compat_upstream_header_seconds_bucket[5m])) by (le,proto))",
+          "legendFormat": "compat->LL头 {{proto}} P95"
+        },
+        {
+          "refId": "E",
+          "expr": "histogram_quantile(0.95, sum(rate(compat_parse_seconds_bucket[5m])) by (le,proto))",
+          "legendFormat": "compat parse {{proto}} P95"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "生成阶段 P95（s；推导 total-ttft）",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "ll:generation_p95{model=~\"$model\",site=~\"$site\"}",
+          "legendFormat": "{{model}} @ {{site}} generation P95"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "错误率（按状态类别）",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 15
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "ll:error_ratio_by_status",
+          "legendFormat": "{{status_class}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Postgres 连接数",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 15
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (datname) (pg_stat_database_numbackends{datname=\"litellm\"})",
+          "legendFormat": "{{datname}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "容器 CPU（核）",
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 0,
+        "y": 22
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(container_cpu_usage_seconds_total{container!=\"\"}[$__rate_interval])) by (container)",
+          "legendFormat": "{{container}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "容器 RSS（GiB）",
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 6,
+        "y": 22
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (container) (container_memory_rss{container!=\"\"}) / 1073741824",
+          "legendFormat": "{{container}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "站点可达性（probe_success）",
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 22
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "probe_success{job=\"blackbox-sites\",site=~\"$site\"}",
+          "legendFormat": "{{site}}"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "站点 HTTP RTT（s）",
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 22
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "probe_http_duration_seconds{job=\"blackbox-sites\",site=~\"$site\"}",
+          "legendFormat": "{{site}} {{phase}}"
+        }
+      ]
+    }
+  ]
+}
