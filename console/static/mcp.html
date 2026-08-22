@@ -40,10 +40,17 @@
     </div>
     <div class="pf-dep-item" style="padding:10px 0">
       <div class="pf-dep-main">
-        <strong class="mono" id="builtin-sig">analyze_image(image_url, question)</strong>
+        <strong class="mono" id="builtin-sig">analyze_image(question, image_url | image_base64[, mime_type])</strong>
         <span class="pf-chip gray" id="builtin-model">—</span>
       </div>
       <span class="pf-chip gray" id="builtin-status"><span class="pf-dot"></span>加载中</span>
+    </div>
+    <div class="pf-dep-item" style="padding:10px 0">
+      <div class="pf-dep-main">
+        <strong class="mono">upload_image(image_base64[, mime_type])</strong>
+        <span class="pf-chip gray">→ 临时 URL（30min）</span>
+      </div>
+      <span class="pf-chip ok"><span class="pf-dot ok"></span>可用</span>
     </div>
     <div class="pf-form-row" style="margin:4px 0 14px">
       <label for="vision-model">Vision 模型</label>
@@ -58,7 +65,7 @@
     </div>
     <div class="pf-kv" style="margin-top:10px">
       <div class="pf-kv-k">凭据边界</div><div class="pf-kv-v">网关以调用者自己的 Key 回调回环 <span class="mono">/v1/chat/completions</span>；私有上游无鉴权，出站不带任何 Key（C5）。</div>
-      <div class="pf-kv-k">本地图片</div><div class="pf-kv-v">先经 <span class="mono">POST /mcp/upload</span>（同一 Key）换取限时临时 URL，再调用工具；toolcall 参数只含路径/URL 短字符串，base64 转换发生在 mcp-hub 进程内。</div>
+      <div class="pf-kv-k">本地图片</div><div class="pf-kv-v">三种方式任选（issue #71）：① <span class="mono">analyze_image</span> 直接传 <span class="mono">image_base64</span>（+可选 <span class="mono">mime_type</span>，缺省按字节签名识别）一步识别；② <span class="mono">upload_image</span> 传 Base64 换 30 分钟临时 URL，可反复用于 <span class="mono">image_url</span>；③ <span class="mono">POST /mcp/upload</span>（multipart，同一 Key）换临时 URL。三条路径共用同一套校验（类型白名单、签名一致、≤10MB）与临时文件存储。</div>
       <div class="pf-kv-k">用量归属</div><div class="pf-kv-v">模型消耗计入调用者自己的 Key，与 API 通道共用同一账本（与 US-P10 口径一致）。</div>
       <div class="pf-kv-k">客户端兼容</div><div class="pf-kv-v">契约 = Streamable HTTP + 标准 <span class="mono">Authorization: Bearer</span>（与 API 使用同一密钥）+ 小写下划线工具名；Claude Code / Hermes / DeepSeek Harness / Pi（需先安装 pi-mcp-adapter 扩展）四类客户端均可接入，接入示例见 runbook。</div>
     </div>

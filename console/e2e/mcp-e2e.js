@@ -17,7 +17,7 @@ const fail = message => { console.error('FAIL:', message); process.exit(1); };
   }));
   await page.route('**/console/api/mcp', route => route.fulfill({
     contentType: 'application/json', body: JSON.stringify({
-      builtin: { tool: 'analyze_image(image_url, question)', model: 'unit' },
+      builtin: { tool: 'analyze_image(question, image_url | image_base64[, mime_type])', model: 'unit' },
       groups: ['home'], external: [{ name: 'svc', url: 'https://mcp.invalid/mcp',
         api_key_last4: '...1234', prefix: 'svc_', groups: ['home'] }]
     })

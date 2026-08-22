@@ -135,7 +135,7 @@
 
       var tools = (d.mcp && d.mcp.tools) || {};
       document.getElementById('my-mcp-rows').innerHTML = Object.keys(tools).map(function (name) {
-        var builtin = name === 'analyze_image' || name === 'upload';
+        var builtin = name === 'analyze_image' || name === 'upload' || name === 'upload_image';
         return '<tr>' +
           '<td class="mono">' + esc(name) + '</td>' +
           '<td><span class="pf-chip ' + (builtin ? 'info' : 'violet') + '">' + (builtin ? '内建' : '外部 MCP') + '</span></td>' +
