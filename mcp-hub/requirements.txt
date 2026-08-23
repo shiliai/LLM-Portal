@@ -1,4 +1,4 @@
 fastmcp==3.4.7      # 授权中间件行为经本版本验证；发布构建不得漂移
-uvicorn>=0.52.2
+uvicorn>=0.52.4
 python-multipart>=0.0.32
 httpx>=0.28.1
