@@ -131,6 +131,15 @@ fi
 docker compose $COMPOSE_PROFILES up -d --build
 sleep 3
 docker compose ps
+# Existing volumes skip docker-entrypoint-initdb.d, so converge the dedicated
+# console role on every deploy without exposing the database owner URL to it.
+docker compose exec -T postgres sh -ec 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v usage_password="$CONSOLE_USAGE_PASSWORD" <<'"'"'SQL'"'"'
+SELECT format('CREATE ROLE console_usage LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT', :'"'"'usage_password'"'"') WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='console_usage') \gexec
+ALTER ROLE console_usage PASSWORD :'"'"'usage_password'"'"';
+GRANT CONNECT ON DATABASE litellm TO console_usage;
+GRANT USAGE ON SCHEMA public TO console_usage;
+GRANT SELECT ON TABLE public."LiteLLM_SpendLogs" TO console_usage;
+SQL'
 
 echo "== [4/7] edge certificate/site ($DOMAIN)"
 EDGE_DIR=$STATE_DIR/edge

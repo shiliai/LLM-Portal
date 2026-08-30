@@ -247,7 +247,7 @@
   }
 
   /* ---------- 明细 Tab ---------- */
-  var RL = [], rlPage = 1, PAGE = 20;
+  var RL = [], rlPage = 1, PAGE = 20, nextCursor = '', prevCursors = [], requestEpoch = 0, activeTab = 'trend';
   var SORT = { col: 'ts', dir: -1 };
   var COLS = [
     ['ts', '时间'], ['alias', 'Key'], ['model', '模型'], ['call_type', '类型'],
@@ -316,13 +316,10 @@
   function rlRender() {
     renderHead();
     var list = rlFiltered();
-    var pages = Math.max(1, Math.ceil(list.length / PAGE));
-    if (rlPage > pages) rlPage = pages;
-    var slice = list.slice((rlPage - 1) * PAGE, rlPage * PAGE);
+    var pages = rlPage + (nextCursor ? 1 : 0), slice = list;
     var fails = RL.filter(function (r) { return r.status === 'failure'; }).length;
-    $('rl-extra').textContent = '匹配 ' + fmtN(list.length) + ' / 共 ' + fmtN(RL.length) + ' 次' +
-      (fails ? ' · 失败 ' + fails : '') + ' · 明细最多 500 条';
-    $('rl-page').textContent = rlPage + ' / ' + pages;
+    $('rl-extra').textContent = '本页 ' + fmtN(list.length) + ' 条' + (fails ? ' · 失败 ' + fails : '') + ' · 每页 ' + PAGE + ' 条';
+    $('rl-page').textContent = '第 ' + rlPage + ' 页';
     $('rl-prev').disabled = rlPage <= 1;
     $('rl-next').disabled = rlPage >= pages;
     $('rl-rows').innerHTML = slice.map(function (r) {
@@ -384,29 +381,33 @@
       return '<option value="' + esc(m) + '"' + (m === mv ? ' selected' : '') + '>' + esc(m) + '</option>'; }).join('');
   }
 
+  function setLoading(on) { var b=$('btn-refresh'); b.disabled=on; b.textContent=on?'↻ 刷新中…':'↻ 刷新'; }
+  function loadLogs(cursor, push) {
+    var epoch=++requestEpoch, days=$('filter-days').value;
+    window.pfApi('GET','/usage/logs?days='+days+'&limit='+PAGE+(cursor?'&cursor='+encodeURIComponent(cursor):'')).then(function(d){
+      if(epoch!==requestEpoch)return; if(push) prevCursors.push(cursor); RL=d.logs||[]; nextCursor=d.next_cursor||''; rlPage=prevCursors.length+1; rlFillFilters(); rlRender();
+    }).catch(function(e){ if(epoch===requestEpoch) window.pfErr(e.error||'请求明细加载失败'); });
+  }
   function loadAll() {
     var days = $('filter-days').value;
+    var epoch=++requestEpoch; setLoading(true);
     window.pfApi('GET', '/usage?days=' + days).then(function (d) {
+      if(epoch!==requestEpoch)return;
       renderTrend(d, days === '1' ? '今天' : '最近 ' + days + ' 天');
-    }).catch(function (e) { window.pfErr(e.error || '用量加载失败'); });
-    window.pfApi('GET', '/usage/logs?days=' + days).then(function (d) {
-      RL = d.logs || [];
-      rlPage = 1;
-      rlFillFilters();
-      rlRender();
-    }).catch(function (e) { window.pfErr(e.error || '请求明细加载失败'); });
+      setLoading(false); window.pfToast('数据已刷新 · 更新于 '+new Date().toLocaleTimeString('zh-CN'));
+    }).catch(function (e) { if(epoch===requestEpoch){setLoading(false);window.pfErr(e.error||'用量加载失败');} });
   }
 
   window.pfReady.then(function () {
-    bindTabs();
-    $('filter-days').addEventListener('change', loadAll);
-    $('btn-refresh').addEventListener('click', function () { loadAll(); window.pfToast('数据已刷新'); });
+    bindTabs(); document.querySelectorAll('.utab').forEach(function(t){t.addEventListener('click',function(){activeTab=t.dataset.tab;if(activeTab==='logs'&&!RL.length)loadLogs('',false);});});
+    $('filter-days').addEventListener('change', function(){RL=[];nextCursor='';prevCursors=[];rlPage=1;loadAll();if(activeTab==='logs')loadLogs('',false);});
+    $('btn-refresh').addEventListener('click', function () { if(activeTab==='logs') loadLogs(prevCursors[prevCursors.length-1]||'',false); else loadAll(); });
     ['rl-key', 'rl-model', 'rl-status'].forEach(function (id) {
       $(id).addEventListener('change', function () { rlPage = 1; rlRender(); });
     });
     $('rl-search').addEventListener('input', function () { rlPage = 1; rlRender(); });
-    $('rl-prev').addEventListener('click', function () { if (rlPage > 1) { rlPage--; rlRender(); } });
-    $('rl-next').addEventListener('click', function () { rlPage++; rlRender(); });
+    $('rl-prev').addEventListener('click', function () { if(prevCursors.length){var c=prevCursors.pop();loadLogs(c,false);} });
+    $('rl-next').addEventListener('click', function () { if(nextCursor)loadLogs(nextCursor,true); });
     loadAll();
   });
 })();

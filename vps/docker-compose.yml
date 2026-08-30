@@ -68,10 +68,12 @@ services:
       POSTGRES_USER: litellm
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: litellm
+      CONSOLE_USAGE_PASSWORD: ${CONSOLE_USAGE_PASSWORD}
     volumes:
       # postgres 18+ 规范挂载点（镜像默认 PGDATA=/var/lib/postgresql/18/docker，须落在卷内；
       # 挂 …/data 会被 entrypoint 拒启）。注意：从旧布局（…/data）迁来需一次性 pg_dump 恢复
       - pgdata:/var/lib/postgresql
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
 
   mcp-hub:
     build: ../mcp-hub
@@ -146,6 +148,8 @@ services:
       # 站点握手状态查询 / mcp-hub 重启（宿主机语义默认值见 console.py）
       WG_EXEC: docker exec private-llm-wireguard wg
       MCP_RESTART_CMD: docker restart private-llm-mcp-hub
+      # Dedicated SELECT-only account; no owner DATABASE_URL is exposed to Console.
+      USAGE_DATABASE_URL: postgresql://console_usage:${CONSOLE_USAGE_PASSWORD}@private-llm-postgres:5432/litellm
     volumes:
       - /var/lib/private-llm/console:/var/lib/private-llm/console
       # 只读用量账本（mcp-hub 写、consoled 聚合读）
