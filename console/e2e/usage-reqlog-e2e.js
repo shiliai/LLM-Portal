@@ -1,21 +1,25 @@
 /* 用量页请求明细 E2E */
 const { chromium } = require('playwright');
-const BASE = 'http://127.0.0.1:8399';
+const BASE = process.env.BASE || 'http://127.0.0.1:8399';
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || ['admin', 'test.local'].join('@');
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'test-pass-1';
 
 (async () => {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } : {});
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
   page.on('dialog', d => d.accept());
 
   await page.goto(BASE + '/console/admin-login.html');
-  await page.fill('#lg-email', 'admin@test.local');
-  await page.fill('#lg-pwd', 'test-pass-1');
+  await page.fill('#lg-email', ADMIN_EMAIL);
+  await page.fill('#lg-pwd', ADMIN_PASSWORD);
   await page.click('#lg-go');
   await page.waitForURL('**/console/');
   await page.goto(BASE + '/console/usage.html');
   await page.waitForTimeout(800);
+  await page.selectOption('#filter-days', '7');
+  await page.waitForTimeout(400);
   await page.click('button[data-tab="logs"]');   // 页面默认激活「趋势」Tab，明细交互前需切换
   await page.waitForTimeout(200);
 
@@ -40,12 +44,18 @@ const BASE = 'http://127.0.0.1:8399';
   await page.waitForTimeout(200);
 
   console.log('== 4. 分页:');
+  const pageOneRequest = await page.locator('#rl-rows tr').first().locator('td').first().innerText();
   await page.click('#rl-next');
   await page.waitForTimeout(200);
+  const pageTwoRequest = await page.locator('#rl-rows tr').first().locator('td').first().innerText();
   console.log('第2页页码:', await page.locator('#rl-page').textContent(),
     '| 行数:', await page.locator('#rl-rows tr').count());
   await page.click('#rl-prev');
   await page.waitForTimeout(200);
+  const pageOneAgain = await page.locator('#rl-rows tr').first().locator('td').first().innerText();
+  if (pageOneRequest === pageTwoRequest || pageOneAgain !== pageOneRequest) {
+    throw new Error('cursor previous page did not return to page one');
+  }
 
   console.log('== 5. 思考列:');
   const effortHead = await page.locator('#rl-head th', { hasText: '思考' }).count();
