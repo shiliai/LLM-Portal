@@ -60,7 +60,7 @@ async def aggregate(days):
           coalesce(sum({_CACHED}),0) cached_tokens,
           coalesce(round(avg(request_duration_ms))::bigint,0) avg_ms FROM "LiteLLM_SpendLogs"
           WHERE "startTime">=$1 AND "startTime"<$2 AND {_VALID_KEY} GROUP BY 1,2 ORDER BY 3 DESC''', start, end)
-        errors = await conn.fetch('''SELECT "startTime",api_key,coalesce(nullif(model_group,''),model,'?') model,
+        errors = await conn.fetch(f'''SELECT "startTime",api_key,coalesce(nullif(model_group,''),model,'?') model,
           left({_ERROR},160) detail
           FROM "LiteLLM_SpendLogs" WHERE "startTime">=$1 AND "startTime"<$2 AND status='failure' ORDER BY "startTime" DESC LIMIT 10''', start,end)
         return _plain(total), [_plain(x) for x in rows], [_plain(x) for x in by], [_plain(x) for x in errors]
