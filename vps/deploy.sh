@@ -21,6 +21,8 @@ docker info >/dev/null 2>&1 || { echo "docker 不可用（用户需在 docker �
 set -a; . ./.env; set +a
 
 DOMAIN=${DOMAIN:?DOMAIN}
+CONSOLE_USAGE_PASSWORD=${CONSOLE_USAGE_PASSWORD:?CONSOLE_USAGE_PASSWORD missing (generate: openssl rand -hex 24)}
+[[ "$CONSOLE_USAGE_PASSWORD" =~ ^[0-9a-f]{48}$ ]] || { echo "CONSOLE_USAGE_PASSWORD must be a 48-char hex value"; exit 1; }
 WG_PORT=${WG_PORT:-51820}
 WG_VPS_IP=${WG_VPS_IP:-10.77.0.1}
 # WG_SUBNET（.env，如 10.78.0.0/24）→ 派生前缀传给 onboardd（站点 AllowedIPs/自检 ping；

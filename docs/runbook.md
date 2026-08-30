@@ -258,3 +258,6 @@ cd ~/LLM-Portal/vps && ./deploy.sh    # 幂等升级（compose build + up + 收�
 - 用户 Key 永不出网关：mcp-hub 只用它调 `/key/info` 与回环 LiteLLM；上游无鉴权直连不带 Key。
 - **Key 明文保险库（2026-08-15，管理员可再查）**：管理员需求「查看生成的 key，而非仅一次展示」——consoled 在创建时把明文 Fernet 加密存 `/var/lib/private-llm/console/keyvault.db`（密钥文件 `keyvault.key` 0600，独立于密文），`POST /console/api/keys/reveal`（仅管理员）解密取回；「使用」弹窗自动取回代入。保险库启用前的旧 Key 无法由哈希反推：配置区在取得真实明文前保持为空；管理员可粘贴完整 Key，经所选 token 的 SHA-256 与在线 `/key/info` 双重校验后补录保险库，不轮换、不改动该 Key。**边界变化：网关成为密钥保管者**——VPS 失陷即密钥失陷（加密仅防离库拖走）；轮换保险库 = 删 `keyvault.key`（旧密文不可解，等同重签）。
 - 对外面按入口模式收敛：standalone 为 80/443/tcp、51820/udp 与 SSH；external 以既有 nginx 实际入口为准；offload 的 HTTP 80 只允许受信 LAN 上游访问，另保留 51820/udp 与 SSH。其余容器仅回环或 compose 内网互通。
+# Console usage read-only database role
+
+Set `CONSOLE_USAGE_PASSWORD` to `openssl rand -hex 24` in `vps/.env` before deploying. `vps/deploy.sh` rejects a missing or non-hex value, then creates or rotates the `console_usage` role with only `SELECT` on `LiteLLM_SpendLogs`.

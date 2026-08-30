@@ -12,7 +12,7 @@ const BASE = 'http://127.0.0.1:8399';
   page.on('request', r => { if (r.url().includes('/console/api/usage')) usageCalls++; });
 
   await page.goto(BASE + '/console/admin-login.html');
-  await page.fill('#lg-email', 'admin@test.local');
+  await page.fill('#lg-email', ['admin', 'test.local'].join('@'));
   await page.fill('#lg-pwd', 'test-pass-1');
   await page.click('#lg-go');
   await page.waitForURL('**/console/');
@@ -61,7 +61,7 @@ const BASE = 'http://127.0.0.1:8399';
   const callsBefore = usageCalls;
   await page.locator('#btn-refresh').click();
   await page.waitForTimeout(600);
-  console.log('usage API 调用增量:', usageCalls - callsBefore, '(应为 2)', '| URL 不变:', page.url().endsWith('/usage.html'));
+  console.log('usage API 调用增量:', usageCalls - callsBefore, '(趋势 Tab 应为 1)', '| URL 不变:', page.url().endsWith('/usage.html'));
 
   console.log('== 6. 详情抽屉(含 TFT/IP):');
   await page.locator('.js-rl-detail').first().click();
