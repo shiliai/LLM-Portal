@@ -133,6 +133,11 @@ fi
 docker compose $COMPOSE_PROFILES up -d --build
 sleep 3
 docker compose ps
+# Materialize the two supported cache-token shapes once.  Spend-log aggregates
+# then avoid decompressing metadata JSON for every historical row.
+docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<'SQL'
+ALTER TABLE public."LiteLLM_SpendLogs" ADD COLUMN IF NOT EXISTS portal_cached_tokens bigint GENERATED ALWAYS AS (coalesce(nullif(metadata #>> '{usage_object,prompt_tokens_details,cached_tokens}','')::bigint,nullif(metadata #>> '{usage_object,cache_read_input_tokens}','')::bigint,0)) STORED;
+SQL
 # Existing volumes skip docker-entrypoint-initdb.d, so converge the dedicated
 # console role on every deploy without exposing the database owner URL to it.
 docker compose exec -T postgres sh -ec 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v usage_password="$CONSOLE_USAGE_PASSWORD" <<'"'"'SQL'"'"'
