@@ -77,6 +77,7 @@ from pathlib import Path
 import httpx
 import segno
 import uvicorn
+from usage_db import aggregate as usage_aggregate, logs as usage_logs
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Response
@@ -138,6 +139,8 @@ HANDSHAKE_ONLINE = 180  # 最近握手 3 分钟内视为在线
 # （supported 列表不含、vLLM 上游实际支持）——retag/别名克隆重建 deployment 时
 # 必须带上，否则一次分组改写就把直通配置洗掉
 PASS_THROUGH_OPENAI_PARAMS = ["reasoning_effort"]
+USAGE_KEY_CACHE_TTL = 60
+_usage_alias_cache: tuple[float, dict[str, str]] = (0, {})
 MCP_CONFIG_LOCK = asyncio.Lock()
 
 
@@ -1027,6 +1030,54 @@ async def api_sites_token(request: Request) -> Response:
         return jerr(f"onboardd unreachable: {exc}", 502)
     return JSONResponse(r.json(), status_code=r.status_code)
 
+
+async def _usage_days(request: Request) -> int:
+    try: return min(max(int(request.query_params.get("days", "1")), 1), 30)
+    except ValueError: return 1
+
+async def usage_aliases() -> dict[str, str]:
+    global _usage_alias_cache
+    exp, cached = _usage_alias_cache
+    if exp > time.monotonic():
+        return cached
+    aliases = {k.get("token"): k.get("key_alias") or "?" for k in await key_list_full()}
+    _usage_alias_cache = (time.monotonic() + USAGE_KEY_CACHE_TTL, aliases)
+    return aliases
+
+async def api_usage(request: Request) -> Response:
+    sess = await require(request)
+    if isinstance(sess, JSONResponse): return sess
+    try:
+        days = await _usage_days(request)
+        totals, buckets, rows, errors = await usage_aggregate(days)
+    except Exception as exc:
+        return jerr(f"usage database unavailable: {exc}", 502)
+    aliases = await usage_aliases()
+    def alias(k): return aliases.get(k) or ("管理员（master key）" if k == "litellm_proxy_master_key" else "已删除密钥")
+    out, per_key = [], {}
+    for r in rows:
+        api_key = r.pop("api_key")
+        r["key"], r["alias"] = str(api_key)[-4:], alias(api_key)
+        r["total_tokens"] = r["prompt_tokens"] + r["completion_tokens"] + r["cached_tokens"]
+        per_key[r["alias"]] = per_key.get(r["alias"], 0) + r["requests"]; out.append(r)
+    hourly = {(datetime.fromisoformat(x["b"]).strftime("%H:00" if days == 1 else "%m-%d")): {k:v for k,v in x.items() if k != "b"} | {"label": datetime.fromisoformat(x["b"]).strftime("%H:00" if days == 1 else "%m-%d")} for x in buckets}
+    now = datetime.now(_CST); labels = [f"{i:02d}:00" for i in range(24)] if days == 1 else [(now - timedelta(days=i)).strftime("%m-%d") for i in range(days-1,-1,-1)]
+    empty = {"reqs":0,"in":0,"out":0,"cache":0,"avg_tft":0}
+    return JSONResponse({"totals": totals, "rows": out, "per_key": sorted(per_key.items(), key=lambda x:-x[1]),
+      "hourly": [hourly.get(x, {**empty,"label":x}) for x in labels],
+      "errors": [{"time": iso_to_cst(str(x["startTime"])),"key":key_last4({"api_key":x["api_key"]}),"model":x["model"],"detail":x["detail"]} for x in errors]})
+
+async def api_usage_logs(request: Request) -> Response:
+    sess = await require(request)
+    if isinstance(sess, JSONResponse): return sess
+    try: limit = min(max(int(request.query_params.get("limit", "20")), 1), 50)
+    except ValueError: limit = 20
+    try: rows, next_cursor = await usage_logs(await _usage_days(request), request.query_params.get("cursor", ""), limit)
+    except Exception as exc: return jerr(f"usage database unavailable: {exc}", 502)
+    aliases = await usage_aliases()
+    for r in rows:
+        ak=r.pop("api_key"); r["ts"]=iso_to_cst(str(r.pop("startTime"))); r["key"]=key_last4({"api_key":ak}); r["alias"]=aliases.get(ak) or ("管理员（master key）" if ak=="litellm_proxy_master_key" else "已删除密钥"); r["status"]="failure" if r["status"]=="failure" else "ok"
+    return JSONResponse({"logs":rows,"next_cursor":next_cursor,"has_more":bool(next_cursor)})
 
 async def api_sites_revoke(request: Request) -> Response:
     sess = await require(request)
