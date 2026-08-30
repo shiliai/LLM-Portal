@@ -1,6 +1,7 @@
 """Read-only, indexed queries for the Console usage screen."""
 import base64
 import json
+from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -32,6 +33,9 @@ async def connection():
 
 _VALID_KEY = "(api_key = ('litellm_proxy_' || 'master' || '_key') OR api_key ~ '^[0-9a-f]{64}$')"
 
+def _plain(row):
+    return {key: int(value) if isinstance(value, Decimal) else value for key, value in dict(row).items()}
+
 async def aggregate(days):
     start, end = window(days)
     conn = await connection()
@@ -57,7 +61,7 @@ async def aggregate(days):
         errors = await conn.fetch('''SELECT "startTime",api_key,coalesce(nullif(model_group,''),model,'?') model,
           left(coalesce(metadata->>'error_str',metadata->>'status_code','failure'),160) detail
           FROM "LiteLLM_SpendLogs" WHERE "startTime">=$1 AND "startTime"<$2 AND status='failure' ORDER BY "startTime" DESC LIMIT 10''', start,end)
-        return dict(total), [dict(x) for x in rows], [dict(x) for x in by], [dict(x) for x in errors]
+        return _plain(total), [_plain(x) for x in rows], [_plain(x) for x in by], [_plain(x) for x in errors]
     finally: await conn.close()
 
 async def logs(days, cursor, limit):
@@ -74,6 +78,6 @@ async def logs(days, cursor, limit):
           coalesce(request_duration_ms,0) duration_ms,status,session_id,requester_ip_address ip,
           left(coalesce(metadata->>'error_str',metadata->>'status_code',''),160) error
           FROM "LiteLLM_SpendLogs" WHERE ''' + ' AND '.join(where) + ' ORDER BY "startTime" DESC,request_id DESC LIMIT $' + str(len(args))
-        rows = [dict(x) for x in await conn.fetch(sql,*args)]; more=len(rows)>limit; rows=rows[:limit]
+        rows = [_plain(x) for x in await conn.fetch(sql,*args)]; more=len(rows)>limit; rows=rows[:limit]
         return rows, encode_cursor(rows[-1]['startTime'],rows[-1]['request_id']) if more else None
     finally: await conn.close()
