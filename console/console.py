@@ -139,6 +139,8 @@ HANDSHAKE_ONLINE = 180  # 最近握手 3 分钟内视为在线
 # （supported 列表不含、vLLM 上游实际支持）——retag/别名克隆重建 deployment 时
 # 必须带上，否则一次分组改写就把直通配置洗掉
 PASS_THROUGH_OPENAI_PARAMS = ["reasoning_effort"]
+USAGE_KEY_CACHE_TTL = 60
+_usage_alias_cache: tuple[float, dict[str, str]] = (0, {})
 MCP_CONFIG_LOCK = asyncio.Lock()
 
 
@@ -1033,6 +1035,15 @@ async def _usage_days(request: Request) -> int:
     try: return min(max(int(request.query_params.get("days", "1")), 1), 30)
     except ValueError: return 1
 
+async def usage_aliases() -> dict[str, str]:
+    global _usage_alias_cache
+    exp, cached = _usage_alias_cache
+    if exp > time.monotonic():
+        return cached
+    aliases = {k.get("token"): k.get("key_alias") or "?" for k in await key_list_full()}
+    _usage_alias_cache = (time.monotonic() + USAGE_KEY_CACHE_TTL, aliases)
+    return aliases
+
 async def api_usage(request: Request) -> Response:
     sess = await require(request)
     if isinstance(sess, JSONResponse): return sess
@@ -1041,8 +1052,7 @@ async def api_usage(request: Request) -> Response:
         totals, buckets, rows, errors = await usage_aggregate(days)
     except Exception as exc:
         return jerr(f"usage database unavailable: {exc}", 502)
-    keys = await key_list_full()
-    aliases = {k.get("token"): k.get("key_alias") or "?" for k in keys}
+    aliases = await usage_aliases()
     def alias(k): return aliases.get(k) or ("管理员（master key）" if k == "litellm_proxy_master_key" else "已删除密钥")
     out, per_key = [], {}
     for r in rows:
@@ -1064,7 +1074,7 @@ async def api_usage_logs(request: Request) -> Response:
     except ValueError: limit = 20
     try: rows, next_cursor = await usage_logs(await _usage_days(request), request.query_params.get("cursor", ""), limit)
     except Exception as exc: return jerr(f"usage database unavailable: {exc}", 502)
-    aliases = {k.get("token"): k.get("key_alias") or "?" for k in await key_list_full()}
+    aliases = await usage_aliases()
     for r in rows:
         ak=r.pop("api_key"); r["ts"]=iso_to_cst(str(r.pop("startTime"))); r["key"]=key_last4({"api_key":ak}); r["alias"]=aliases.get(ak) or ("管理员（master key）" if ak=="litellm_proxy_master_key" else "已删除密钥"); r["status"]="failure" if r["status"]=="failure" else "ok"
     return JSONResponse({"logs":rows,"next_cursor":next_cursor,"has_more":bool(next_cursor)})
