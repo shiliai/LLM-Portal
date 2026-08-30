@@ -1050,7 +1050,7 @@ async def api_usage(request: Request) -> Response:
         r["key"], r["alias"] = str(api_key)[-4:], alias(api_key)
         r["total_tokens"] = r["prompt_tokens"] + r["completion_tokens"] + r["cached_tokens"]
         per_key[r["alias"]] = per_key.get(r["alias"], 0) + r["requests"]; out.append(r)
-    hourly = {x["b"].strftime("%H:00" if days == 1 else "%m-%d"): {**x, "label": x["b"].strftime("%H:00" if days == 1 else "%m-%d")} for x in buckets}
+    hourly = {x["b"].strftime("%H:00" if days == 1 else "%m-%d"): {k:v for k,v in x.items() if k != "b"} | {"label": x["b"].strftime("%H:00" if days == 1 else "%m-%d")} for x in buckets}
     now = datetime.now(_CST); labels = [f"{i:02d}:00" for i in range(24)] if days == 1 else [(now - timedelta(days=i)).strftime("%m-%d") for i in range(days-1,-1,-1)]
     empty = {"reqs":0,"in":0,"out":0,"cache":0,"avg_tft":0}
     return JSONResponse({"totals": totals, "rows": out, "per_key": sorted(per_key.items(), key=lambda x:-x[1]),
