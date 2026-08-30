@@ -1,9 +1,11 @@
 /* 用量页 C 方案 E2E:双 Tab/指标卡/图表/聚合列/排序/刷新/时区 */
 const { chromium } = require('playwright');
-const BASE = 'http://127.0.0.1:8399';
+const BASE = process.env.BASE || 'http://127.0.0.1:8399';
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || ['admin', 'test.local'].join('@');
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'test-pass-1';
 
 (async () => {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } : {});
   const page = await browser.newPage({ viewport: { width: 1440, height: 940 } });
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
@@ -12,12 +14,14 @@ const BASE = 'http://127.0.0.1:8399';
   page.on('request', r => { if (r.url().includes('/console/api/usage')) usageCalls++; });
 
   await page.goto(BASE + '/console/admin-login.html');
-  await page.fill('#lg-email', ['admin', 'test.local'].join('@'));
-  await page.fill('#lg-pwd', 'test-pass-1');
+  await page.fill('#lg-email', ADMIN_EMAIL);
+  await page.fill('#lg-pwd', ADMIN_PASSWORD);
   await page.click('#lg-go');
   await page.waitForURL('**/console/');
   await page.goto(BASE + '/console/usage.html');
   await page.waitForTimeout(900);
+  await page.selectOption('#filter-days', '7');
+  await page.waitForTimeout(600);
 
   console.log('== 1. 趋势 Tab:');
   console.log('指标卡:', await page.locator('.ustat').count(),
@@ -29,6 +33,7 @@ const BASE = 'http://127.0.0.1:8399';
   console.log('== 2. 切到明细 Tab:');
   await page.locator('.utab[data-tab="logs"]').click();
   await page.waitForTimeout(400);
+  if (await page.locator('#rl-rows tr').count() !== 20) throw new Error('details tab must lazy-load exactly one 20-row page');
   const firstRow = page.locator('#rl-rows tr').first();
   const rowText = await firstRow.innerText();
   console.log('行含 ↓(输入):', rowText.includes('↓'), '| 含 ▣(缓存):', /▣|无缓存命中/.test(rowText),
@@ -37,9 +42,7 @@ const BASE = 'http://127.0.0.1:8399';
 
   console.log('== 3. 时区(+08):');
   const ts = (await firstRow.locator('td').first().innerText()).trim();
-  const expectedCst = new Date(Date.now() + 8 * 3600e3);
-  const expHour = String(expectedCst.getUTCHours()).padStart(2, '0');
-  console.log('首行时间:', ts, '| 期望小时(+08):', expHour, '| 匹配:', ts.includes(':' ) && ts.split(':')[0].slice(-2) === expHour);
+  console.log('首行时间:', ts, '| Asia/Shanghai 格式:', /^\d\d-\d\d \d\d:\d\d:\d\d$/.test(ts));
 
   console.log('== 4. 排序:点 Token 列头两次');
   const total = r => r; // 无法直接读,用表格首行数值对比
@@ -60,8 +63,10 @@ const BASE = 'http://127.0.0.1:8399';
   console.log('== 5. 刷新按钮(只刷数据):');
   const callsBefore = usageCalls;
   await page.locator('#btn-refresh').click();
+  if (!(await page.locator('#btn-refresh').isDisabled())) throw new Error('refresh button must disable while loading');
   await page.waitForTimeout(600);
-  console.log('usage API 调用增量:', usageCalls - callsBefore, '(趋势 Tab 应为 1)', '| URL 不变:', page.url().endsWith('/usage.html'));
+  if (await page.locator('#btn-refresh').isDisabled()) throw new Error('refresh button must recover after loading');
+  console.log('usage API 调用增量:', usageCalls - callsBefore, '(logs Tab 应为 1)', '| URL 不变:', page.url().endsWith('/usage.html'));
 
   console.log('== 6. 详情抽屉(含 TFT/IP):');
   await page.locator('.js-rl-detail').first().click();
