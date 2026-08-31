@@ -77,7 +77,7 @@ from pathlib import Path
 import httpx
 import segno
 import uvicorn
-from usage_db import aggregate as usage_aggregate, logs as usage_logs
+from usage_db import aggregate as usage_aggregate, logs as usage_logs, window as usage_window
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Response
@@ -2388,16 +2388,17 @@ async def api_mcp_usage(request: Request) -> Response:
     if isinstance(sess, JSONResponse):
         return sess
     try:
-        days = min(max(float(request.query_params.get("days", 1)), 0.02), 90)
+        days = min(max(int(request.query_params.get("days", 1)), 1), 90)
     except ValueError:
-        days = 1.0
-    cutoff = time.time() - days * 86400
+        days = 1
+    start, _ = usage_window(days)
+    cutoff = int(start.replace(tzinfo=timezone.utc).timestamp())
     try:
         with sqlite3.connect(f"file:{MCP_USAGE_DB}?mode=ro", uri=True) as db:
             rows = db.execute("SELECT key_hash, tool, ts FROM usage WHERE ts >= ? ORDER BY ts",
                               (int(cutoff),)).fetchall()
     except sqlite3.Error as exc:
-        return jerr(f"usage db unreadable: {exc}", 500)
+        return jerr(f"MCP 用量数据库不可读：{exc}", 500)
     alias_of = {k.get("token"): k.get("key_alias") or "?" for k in await key_list_full()}
     agg: dict[tuple, int] = {}
     for kh, tool, _ts in rows:

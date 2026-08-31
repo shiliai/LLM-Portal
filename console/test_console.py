@@ -367,6 +367,39 @@ def _mcp_only_handler(method, path, bearer, json_body):
     return _mcp_handler(method, path, bearer, json_body)
 
 
+def test_mcp_usage_api_filters_selected_range_and_keeps_key_private(tmp_path, monkeypatch):
+    usage_db = tmp_path / "mcp-usage.db"
+    with sqlite3.connect(usage_db) as db:
+        db.execute("CREATE TABLE usage (key_hash TEXT, tool TEXT, ts INTEGER)")
+        now = int(time.time())
+        cst_midnight = ((now + 8 * 3600) // 86400) * 86400 - 8 * 3600
+        db.executemany("INSERT INTO usage VALUES (?,?,?)", [
+            ("a" * 16, "svc_ping", now - 60),
+            ("a" * 16, "svc_ping", cst_midnight - 60),
+            ("a" * 16, "svc_ping", cst_midnight - 8 * 86400),
+        ])
+    mod = _load(tmp_path, {"MCP_USAGE_DB": str(usage_db), "ADMIN_EMAIL": ADMIN_EMAIL,
+                           "ADMIN_PASSWORD": ADMIN_PASSWORD})
+
+    async def keys():
+        return [{"token": "a" * 64, "key_alias": "team-a"}]
+
+    monkeypatch.setattr(mod, "key_list_full", keys)
+    client = TestClient(mod.app)
+    login = client.post("/console/api/admin-login",
+                        json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}, headers=XRW)
+    assert login.status_code == 200
+    hdr = {"Cookie": _cookie_of(login)}
+    today = client.get("/console/api/mcp/usage?days=1", headers=hdr)
+    week = client.get("/console/api/mcp/usage?days=7", headers=hdr)
+    assert today.status_code == week.status_code == 200
+    assert today.json()["keys"] == [{"key_hash": "a" * 16, "alias": "team-a",
+                                      "tools": {"svc_ping": 1}, "total": 1}]
+    assert week.json()["keys"] == [{"key_hash": "a" * 16, "alias": "team-a",
+                                     "tools": {"svc_ping": 2}, "total": 2}]
+    assert USER_KEY not in today.text
+
+
 VISION_DEPLOYMENTS = [{
     "model_name": "qwen3.8-27b",
     "litellm_params": {"model": "openai/qwen3.8-27b-mtp2"},
@@ -911,6 +944,17 @@ def test_mcp_use_config_never_contains_placeholder_and_binds_reveal_generation()
     assert "id=\"vision-model\"" in source
     assert "'/mcp/vision'" in source
     assert "catalog_id: catalog.value" in source
+
+
+def test_mcp_usage_overview_has_ranges_states_refresh_and_stale_protection():
+    source = (CONSOLE_DIR / "static" / "mcp.html").read_text()
+    for required in (
+            "按 Key 调用计数", "data-mcp-usage-days=\"1\"", "data-mcp-usage-days=\"7\"",
+            "data-mcp-usage-days=\"30\"", "今天", "最近 7 天", "最近 30 天", "↻ 刷新",
+            "↻ 刷新中…", "正在加载", "数据已刷新", "暂无 MCP 工具调用", "MCP 工具调用加载失败",
+            "window.pfErr(message)", "flex-wrap:wrap", "mcpUsageRequest",
+            "request !== mcpUsageRequest", "'/mcp/usage?days=' + mcpUsageDays"):
+        assert required in source
 
 
 def test_mcp_registration_uses_accessible_page_confirmation_without_native_dialogs():
