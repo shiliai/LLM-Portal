@@ -372,9 +372,11 @@ def test_mcp_usage_api_filters_selected_range_and_keeps_key_private(tmp_path, mo
     with sqlite3.connect(usage_db) as db:
         db.execute("CREATE TABLE usage (key_hash TEXT, tool TEXT, ts INTEGER)")
         now = int(time.time())
+        cst_midnight = ((now + 8 * 3600) // 86400) * 86400 - 8 * 3600
         db.executemany("INSERT INTO usage VALUES (?,?,?)", [
             ("a" * 16, "svc_ping", now - 60),
-            ("a" * 16, "svc_ping", now - 8 * 86400),
+            ("a" * 16, "svc_ping", cst_midnight - 60),
+            ("a" * 16, "svc_ping", cst_midnight - 8 * 86400),
         ])
     mod = _load(tmp_path, {"MCP_USAGE_DB": str(usage_db), "ADMIN_EMAIL": ADMIN_EMAIL,
                            "ADMIN_PASSWORD": ADMIN_PASSWORD})
@@ -393,7 +395,8 @@ def test_mcp_usage_api_filters_selected_range_and_keeps_key_private(tmp_path, mo
     assert today.status_code == week.status_code == 200
     assert today.json()["keys"] == [{"key_hash": "a" * 16, "alias": "team-a",
                                       "tools": {"svc_ping": 1}, "total": 1}]
-    assert week.json()["keys"] == today.json()["keys"]
+    assert week.json()["keys"] == [{"key_hash": "a" * 16, "alias": "team-a",
+                                     "tools": {"svc_ping": 2}, "total": 2}]
     assert USER_KEY not in today.text
 
 
