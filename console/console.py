@@ -2397,7 +2397,7 @@ async def api_mcp_usage(request: Request) -> Response:
             rows = db.execute("SELECT key_hash, tool, ts FROM usage WHERE ts >= ? ORDER BY ts",
                               (int(cutoff),)).fetchall()
     except sqlite3.Error as exc:
-        return jerr(f"usage db unreadable: {exc}", 500)
+        return jerr(f"MCP 用量数据库不可读：{exc}", 500)
     alias_of = {k.get("token"): k.get("key_alias") or "?" for k in await key_list_full()}
     agg: dict[tuple, int] = {}
     for kh, tool, _ts in rows:

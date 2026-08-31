@@ -18,6 +18,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -30,6 +31,7 @@ MCP_HUB_DIR = Path(__file__).parent
 VALID_KEY = "testkey-valid-0001"
 DISABLED_KEY = "testkey-disabled-02"
 BAD_KEY = "testkey-bad-0003"
+SECOND_KEY = VALID_KEY + "-other"
 
 
 def _handler(method, path, bearer, json_body):
@@ -255,6 +257,62 @@ def test_external_tools_inherit_configured_groups(hub, monkeypatch):
     tool = asyncio.run(hub.mcp.get_tool("svc_ping"))
     assert tool is not None
     assert tool.tags == {"home", "lab"}
+
+
+def test_external_proxy_records_only_success_by_caller_and_prefixed_name(hub, monkeypatch):
+    """A successful upstream call is written once under the caller hash and public tool name."""
+    hub.EXTERNAL_MCP_CONF.write_text(json.dumps([{
+        "name": "svc", "url": "https://mcp.invalid/mcp", "api_key": "",
+        "prefix": "svc_", "groups": [],
+    }]))
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            return False
+        async def list_tools(self):
+            return [SimpleNamespace(name="ping", description="", inputSchema={})]
+        async def call_tool(self, name, kwargs):
+            assert name == "ping" and kwargs == {"query": "ok"}
+            return SimpleNamespace(content=[SimpleNamespace(text="pong")], isError=False)
+
+    monkeypatch.setattr(hub, "Client", lambda *args, **kwargs: FakeClient())
+    asyncio.run(hub.register_external_tools())
+    proxy = asyncio.run(hub.mcp.get_tool("svc_ping"))
+    _as_caller(hub, monkeypatch, VALID_KEY)
+    assert asyncio.run(proxy.fn(query="ok")) == "pong"
+    _as_caller(hub, monkeypatch, SECOND_KEY)
+    assert asyncio.run(proxy.fn(query="ok")) == "pong"
+
+    with sqlite3.connect(hub.DB_PATH) as db:
+        rows = db.execute("SELECT key_hash, tool FROM usage ORDER BY key_hash").fetchall()
+    assert rows == [(hub.key_hash(SECOND_KEY), "svc_ping"), (hub.key_hash(VALID_KEY), "svc_ping")]
+
+
+def test_external_proxy_does_not_record_upstream_error(hub, monkeypatch):
+    hub.EXTERNAL_MCP_CONF.write_text(json.dumps([{
+        "name": "svc", "url": "https://mcp.invalid/mcp", "api_key": "",
+        "prefix": "svc_", "groups": [],
+    }]))
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            return False
+        async def list_tools(self):
+            return [SimpleNamespace(name="ping", description="", inputSchema={})]
+        async def call_tool(self, _name, _kwargs):
+            return SimpleNamespace(content=[SimpleNamespace(text="upstream failed")], isError=True)
+
+    monkeypatch.setattr(hub, "Client", lambda *args, **kwargs: FakeClient())
+    asyncio.run(hub.register_external_tools())
+    proxy = asyncio.run(hub.mcp.get_tool("svc_ping"))
+    _as_caller(hub, monkeypatch)
+    assert asyncio.run(proxy.fn()) == "upstream failed"
+    with sqlite3.connect(hub.DB_PATH) as db:
+        assert db.execute("SELECT COUNT(*) FROM usage").fetchone()[0] == 0
 
 
 def test_config_state_attests_actual_restarted_surface_and_owner(hub, monkeypatch):

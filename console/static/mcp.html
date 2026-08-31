@@ -97,7 +97,17 @@
 
   <!-- 按 Key 调用计数 -->
   <div class="pf-card flush">
-    <div class="pf-card-head"><div class="pf-card-title" id="usage-title">按 Key 调用计数（今日）</div></div>
+    <div class="pf-card-head" style="flex-wrap:wrap;gap:10px">
+      <div><div class="pf-card-title" id="usage-title">按 Key 调用计数</div><div class="pf-desc" id="mcp-usage-status" role="status" aria-live="polite">等待加载</div></div>
+      <div class="pf-card-extra" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;max-width:100%">
+        <div class="pf-tabs" aria-label="MCP 用量范围" style="gap:12px;margin-bottom:0">
+          <button class="pf-tab active" data-mcp-usage-days="1" type="button">今天</button>
+          <button class="pf-tab" data-mcp-usage-days="7" type="button">最近 7 天</button>
+          <button class="pf-tab" data-mcp-usage-days="30" type="button">最近 30 天</button>
+        </div>
+        <button class="pf-btn" id="btn-refresh-mcp-usage" type="button">↻ 刷新</button>
+      </div>
+    </div>
     <table class="pf-table">
       <thead>
         <tr><th>Key</th><th>工具明细</th><th class="num">合计</th></tr>
@@ -513,6 +523,16 @@
     document.getElementById('btn-save-vision').disabled = !model.value;
   }
 
+  var mcpUsageDays = 1;
+  var mcpUsageRequest = 0;
+  var mcpUsageLabels = {1: '今天', 7: '最近 7 天', 30: '最近 30 天'};
+
+  function setUsageState(state, message) {
+    document.getElementById('mcp-usage-status').textContent = message;
+    if (state !== 'data') document.getElementById('mcp-usage-rows').innerHTML =
+      '<tr><td colspan="3" class="pf-desc" style="padding:10px">' + esc(message) + '</td></tr>';
+  }
+
   function renderUsage(d) {
     document.getElementById('mcp-usage-rows').innerHTML = d.keys.map(function (k) {
       var tools = Object.keys(k.tools || {}).map(function (t) {
@@ -523,17 +543,52 @@
         '<td>' + (tools || '<span class="pf-desc">—</span>') + '</td>' +
         '<td class="num" style="font-weight:600">' + fmtN(k.total) + '</td>' +
       '</tr>';
-    }).join('') || '<tr><td colspan="3" class="pf-desc" style="padding:10px">今日暂无 MCP 工具调用</td></tr>';
+    }).join('') || '<tr><td colspan="3" class="pf-desc" style="padding:10px">此范围内暂无 MCP 工具调用</td></tr>';
+    document.getElementById('mcp-usage-status').textContent = d.keys.length ?
+      mcpUsageLabels[mcpUsageDays] + '数据已刷新' : mcpUsageLabels[mcpUsageDays] + '暂无 MCP 工具调用';
+  }
+
+  function setUsageRefreshLoading(on) {
+    var button = document.getElementById('btn-refresh-mcp-usage');
+    button.disabled = on;
+    button.textContent = on ? '↻ 刷新中…' : '↻ 刷新';
+  }
+
+  function loadUsage() {
+    var request = ++mcpUsageRequest;
+    setUsageState('loading', '正在加载' + mcpUsageLabels[mcpUsageDays] + ' MCP 工具调用…');
+    setUsageRefreshLoading(true);
+    window.pfApi('GET', '/mcp/usage?days=' + mcpUsageDays).then(function (d) {
+      if (request !== mcpUsageRequest) return;
+      renderUsage(d);
+    }).catch(function (e) {
+      if (request !== mcpUsageRequest) return;
+      var message = 'MCP 工具调用加载失败：' + (e.error || '请求失败');
+      setUsageState('error', message);
+      window.pfErr(message);
+    }).finally(function () {
+      if (request === mcpUsageRequest) setUsageRefreshLoading(false);
+    });
   }
 
   function load() {
     window.pfApi('GET', '/mcp').then(renderMcp).catch(function (e) { window.pfErr(e.error || 'MCP 注册加载失败'); });
     window.pfApi('GET', '/mcp/vision').then(renderVision).catch(function (e) { window.pfErr(e.error || 'Vision 模型加载失败'); });
-    window.pfApi('GET', '/mcp/usage?days=1').then(renderUsage).catch(function () { /* 计数为空不报错 */ });
+    loadUsage();
   }
 
   window.pfReady.then(function () {
     load();
+    document.querySelectorAll('[data-mcp-usage-days]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        mcpUsageDays = Number(button.dataset.mcpUsageDays);
+        document.querySelectorAll('[data-mcp-usage-days]').forEach(function (item) {
+          item.classList.toggle('active', item === button);
+        });
+        loadUsage();
+      });
+    });
+    document.getElementById('btn-refresh-mcp-usage').addEventListener('click', loadUsage);
     document.getElementById('btn-use-mcp').addEventListener('click', function () {
       var key = document.getElementById('mcp-use-key');
       key.value = '';

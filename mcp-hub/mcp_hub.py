@@ -363,8 +363,13 @@ async def register_external_tools() -> None:
             external_clients[name] = client
             for tool in tools:
 
-                async def _proxy(_client=client, _name=tool.name, **kwargs):
+                async def _proxy(_client=client, _name=tool.name,
+                                 _exposed_name=f"{prefix}{tool.name}", **kwargs):
                     result = await _client.call_tool(_name, kwargs)
+                    # The upstream may return an MCP tool error without raising.  It is
+                    # still a failed call and therefore must not enter the usage ledger.
+                    if not (getattr(result, "isError", False) or getattr(result, "is_error", False)):
+                        record_usage(current_key(None), _exposed_name)
                     return result.content[0].text if result.content else "(empty)"
 
                 from fastmcp.tools import FunctionTool
