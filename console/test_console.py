@@ -1019,14 +1019,15 @@ def test_pi_and_dsh_use_config_contracts():
     assert "reasoningEffort: high" in source
     assert "thinkingFormat:" not in source
 
-    # models.dev: alibaba/qwen3.8-27b is a reasoning vision-language model
-    # (text/image/video input, 256K context, 32K output). Do not inherit
+    # models.dev advertises video too, but Pi's models.json schema only accepts
+    # text/image inputs. Do not inherit unsupported catalog modalities or
     # DeepSeek's provider-specific high/max effort mapping.
     assert "id: qwen3.8-27b" in source
     assert "name: \"Private Qwen3.8 27B\"" in source
     assert "contextWindow: 262144" in source
     assert "id: 'qwen3.8-27b'" in source
-    assert "input: ['text', 'image', 'video']" in source
+    assert "input: ['text', 'image']" in source
+    assert "input: ['text', 'image', 'video']" not in source
     assert "contextWindow: 262144," in source
 
     # The addition must not change the established DeepSeek default contract.
