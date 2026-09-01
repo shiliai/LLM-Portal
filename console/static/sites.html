@@ -15,7 +15,7 @@
 
   <!-- 页头 -->
   <div class="pf-page-head">
-    <div class="pf-desc">每个局域网站点以一把 WireGuard 公钥标识身份；公钥可列出、可吊销；隧道断开或吊销后该站点模型立即从路由池摘除（US-P7/P8）。</div>
+    <div class="pf-desc">WireGuard 站点以公钥接入；本机或受信任局域网 OpenAI 兼容服务可作为 Direct 站点登记并统一管理路由。</div>
     <button class="pf-btn primary" data-modal="modal-addsite" id="btn-open-addsite">新增站点</button>
   </div>
 
@@ -28,7 +28,7 @@
     <table class="pf-table">
       <thead>
         <tr>
-          <th>站点名</th><th>公钥指纹</th><th>WG IP</th><th>最近握手</th>
+          <th>站点名</th><th>类型</th><th>地址</th><th>公钥指纹</th><th>WG IP</th><th>最近握手</th>
           <th class="num">模型数</th><th>分组</th><th>状态</th><th>操作</th>
         </tr>
       </thead>
@@ -53,6 +53,22 @@
           </div>
         </div>
         <div class="pf-form-row">
+          <label class="req">接入方式</label>
+          <div>
+            <label style="margin-right:16px"><input type="radio" name="addsite-transport" value="wireguard" checked> WireGuard</label>
+            <label><input type="radio" name="addsite-transport" value="direct"> Direct / 局域网</label>
+          </div>
+        </div>
+        <div class="pf-form-row" id="addsite-direct-address" style="display:none">
+          <label class="req">服务地址</label>
+          <div>
+            <input class="pf-input mono" id="addsite-address" placeholder="http://192.168.100.55:8005/v1">
+            <div class="pf-desc">仅允许本机、RFC1918/ULA 或 CGNAT IP 地址；不跟随重定向。</div>
+            <button class="pf-link" id="btn-direct-probe" type="button" style="margin-top:7px">探测模型</button>
+            <div id="addsite-direct-models" class="pf-desc" style="margin-top:7px"></div>
+          </div>
+        </div>
+        <div class="pf-form-row" id="addsite-wg-ip-row">
           <label class="req">模型清单</label>
           <div>
             <div class="pf-desc" style="margin-bottom:8px">格式为「对外模型名:端口」，对应站点机器上已在跑的 OpenAI 兼容模型服务。</div>
@@ -67,6 +83,10 @@
           <label>WG IP</label>
           <div class="pf-desc" style="padding-top:6px">自动从 10.77.0.x 段分配下一个可用地址，无需手动指定。</div>
         </div>
+      </div>
+
+      <div id="addsite-direct-result" style="display:none">
+        <div class="pf-banner">Direct 站点已登记，模型已进入路由池。该操作不会修改 WireGuard 或启动/停止上游服务。</div>
       </div>
 
       <div id="addsite-result" style="display:none">
@@ -192,6 +212,10 @@
     if (sec < 86400) return Math.round(sec / 3600) + ' 小时前';
     return Math.round(sec / 86400) + ' 天前';
   }
+  function probeAgo(ts) {
+    if (!ts) return '未探测';
+    return ago(Math.max(0, Math.floor(Date.now() / 1000) - ts));
+  }
   var SITE_DATA = [];
 
   function render(sites) {
@@ -211,16 +235,17 @@
           '<button class="pf-link js-edit-groups" data-site="' + esc(s.name) + '">分组</button> ' +
           '<button class="pf-link danger js-revoke-btn" data-site="' + esc(s.name) + '" data-wg="' + esc(s.wg_ip) + '" data-models="' + s.models.length + '">吊销</button>';
       return '<tr' + (revoked ? ' class="pf-row-muted"' : '') + ' data-site-row="' + esc(s.name) + '">' +
-        '<td>' + esc(s.name) + '</td>' +
+        '<td><span class="pf-chip gray">' + (s.transport === 'direct' ? 'Direct' : 'WireGuard') + '</span></td>' +
+        '<td class="mono">' + esc(s.address || '-') + '</td>' +
         '<td><span class="pf-key">' + esc(s.pubkey) + '</span></td>' +
         '<td class="mono">' + esc(s.wg_ip) + '</td>' +
-        '<td class="mono">' + ago(s.handshake) + '</td>' +
+        '<td class="mono">' + (s.transport === 'direct' ? probeAgo(s.latest_probe) : ago(s.handshake)) + '</td>' +
         '<td class="num">' + s.models.length + '</td>' +
         '<td class="site-groups">' + groups + '</td>' +
         '<td class="site-status">' + statusChip + '</td>' +
         '<td>' + actions + '</td>' +
       '</tr>';
-    }).join('') || '<tr><td colspan="8" class="pf-desc" style="padding:10px">暂无站点；点击右上「新增站点」接入首个站点</td></tr>';
+    }).join('') || '<tr><td colspan="10" class="pf-desc" style="padding:10px">暂无站点；点击右上「新增站点」接入首个站点</td></tr>';
     bindRowActions();
   }
 
@@ -339,13 +364,27 @@
     function addsiteState(showResult) {
       document.getElementById('addsite-form').style.display = showResult ? 'none' : '';
       document.getElementById('addsite-result').style.display = showResult ? '' : 'none';
+      document.getElementById('addsite-direct-result').style.display = 'none';
       document.getElementById('addsite-cancel').style.display = showResult ? 'none' : '';
       document.getElementById('btn-gen-addsite').style.display = showResult ? 'none' : '';
       document.getElementById('btn-addsite-done').style.display = showResult ? '' : 'none';
       document.getElementById('addsite-title').textContent = showResult ? '安装命令已生成（一次性）' : '新增站点';
       if (!showResult) clearInterval(countdownTimer);
     }
-    document.getElementById('btn-open-addsite').addEventListener('click', function () { addsiteState(false); });
+    function addsiteTransport() {
+      return document.querySelector('input[name="addsite-transport"]:checked').value;
+    }
+    function updateAddsiteTransport() {
+      var direct = addsiteTransport() === 'direct';
+      document.getElementById('addsite-direct-address').style.display = direct ? '' : 'none';
+      document.getElementById('addsite-wg-ip-row').style.display = direct ? 'none' : '';
+      document.getElementById('addsite-models').closest('.pf-form-row').querySelector('.pf-desc').textContent = direct
+        ? '先填服务地址；模型名填写对外名称:端口，提交时会探测 /v1/models 并只注册已探测到的模型。'
+        : '格式为「对外模型名:端口」，对应站点机器上已在跑的 OpenAI 兼容模型服务。';
+      document.getElementById('btn-gen-addsite').textContent = direct ? '探测并登记' : '生成安装命令';
+    }
+    document.querySelectorAll('input[name="addsite-transport"]').forEach(function (el) { el.addEventListener('change', updateAddsiteTransport); });
+    document.getElementById('btn-open-addsite').addEventListener('click', function () { addsiteState(false); updateAddsiteTransport(); });
     document.getElementById('addsite-addmodel').addEventListener('click', function () {
       var input = document.createElement('input');
       input.className = 'pf-input mono';
@@ -356,6 +395,8 @@
 
     document.getElementById('btn-gen-addsite').addEventListener('click', function () {
       var name = document.getElementById('addsite-name').value.trim();
+      var direct = addsiteTransport() === 'direct';
+      var address = document.getElementById('addsite-address').value.trim();
       var models = [];
       var bad = false;
       document.querySelectorAll('#addsite-models input').forEach(function (inp) {
@@ -366,7 +407,22 @@
         inp.style.borderColor = '';
         models.push({ name: m[0].trim(), port: parseInt(m[1], 10) });
       });
-      if (!name || bad || !models.length) { window.pfErr('请检查站点名与「模型名:端口」格式'); return; }
+      if (!name || bad || (!direct && !models.length) || (direct && !address)) { window.pfErr('请检查站点名、服务地址与「模型名:端口」格式'); return; }
+      if (direct) {
+        var selected = Array.prototype.slice.call(document.querySelectorAll('.direct-model:checked')).map(function (el) {
+          return { name: el.value, upstream_model: el.value };
+        });
+        if (!selected.length) { window.pfErr('请先探测并选择至少一个上游模型'); return; }
+        window.pfApi('POST', '/sites/direct', { site: name, address: address, models: selected, groups: ['default'] }).then(function () {
+          document.getElementById('addsite-form').style.display = 'none';
+          document.getElementById('addsite-direct-result').style.display = '';
+          document.getElementById('addsite-cancel').style.display = 'none';
+          document.getElementById('btn-gen-addsite').style.display = 'none';
+          document.getElementById('btn-addsite-done').style.display = '';
+          document.getElementById('addsite-title').textContent = 'Direct 站点已登记';
+        }).catch(function (e) { window.pfErr(e.error || '探测或登记失败'); });
+        return;
+      }
       window.pfApi('POST', '/sites/token', { site: name, models: models, groups: ['default'] }).then(function (d) {
         document.getElementById('addsite-cmd').textContent = d.install_command;
         document.getElementById('addsite-ttl').textContent = Math.round(d.expires_in / 60) + ' 分钟内有效';
@@ -385,6 +441,18 @@
         }, 1000);
         addsiteState(true);
       }).catch(function (e) { window.pfErr(e.error || '生成失败'); });
+    });
+    document.getElementById('btn-direct-probe').addEventListener('click', function () {
+      var address = document.getElementById('addsite-address').value.trim();
+      if (!address) { window.pfErr('请先填写服务地址'); return; }
+      var box = document.getElementById('addsite-direct-models');
+      box.textContent = '探测中…';
+      window.pfApi('POST', '/sites/direct/probe', { address: address }).then(function (d) {
+        if (!d.models || !d.models.length) { box.textContent = '上游 /v1/models 返回空列表'; return; }
+        box.innerHTML = d.models.map(function (m) {
+          return '<label style="display:block;margin:5px 0"><input class="direct-model" type="checkbox" value="' + esc(m.id) + '" checked> <span class="mono">' + esc(m.id) + '</span></label>';
+        }).join('');
+      }).catch(function (e) { box.textContent = '探测失败：' + (e.error || '上游不可达'); });
     });
     document.getElementById('btn-addsite-done').addEventListener('click', function () {
       window.pfModalClose(); addsiteState(false); load();

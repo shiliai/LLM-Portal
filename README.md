@@ -14,8 +14,8 @@
 - **双协议入口**：OpenAI `/v1/chat/completions` 与 Anthropic `/v1/messages`（含
   count_tokens、SSE 流式、tool calls）；协议兼容层 `compat` 处理 Anthropic 工具链的
   已知兼容性问题（内联 system 合并、强制工具选择改写、OpenAI 流式 finish_reason 修正）。
-- **多站点接入**：站点（内网机器）经 **WireGuard** 公钥隧道主动连出，零公网暴露；
-  `site-add` 一键签发接入命令，站点侧一条 curl 完成安装注册。
+- **多站点接入**：远程站点可经 **WireGuard** 公钥隧道主动连出；网关可直达的本机或受信任
+  局域网 OpenAI 兼容服务可登记为 **Direct** 站点，统一管理模型、分组与路由。
 - **模型路由**：LiteLLM 统一模型名 → 上游 deployment，least-busy 分流、故障 60s 冷却、
   模型别名；站点分组（tag）与 Key 绑定分组实现「按 Key 路由到指定站点组」。
 - **虚拟密钥**：签发/禁用/删除/模型白名单/分组绑定；明文仅签发时展示一次，管理端可再查

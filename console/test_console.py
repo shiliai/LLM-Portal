@@ -1335,3 +1335,46 @@ def test_sites_token_accepts_dotted_model_names(console, monkeypatch):
                        json={"site": "s1", "models": [{"name": "qwen3.8-27b", "port": 8004}]})
     assert resp.status_code == 200
     assert seen[0]["models"][0]["name"] == "qwen3.8-27b"
+
+
+def test_direct_site_adopts_matching_qwen_deployment(console, monkeypatch):
+    """The deployed dell endpoint is adopted by normalized api_base + model identity, not duplicated."""
+    dep = {"model_name": "qwen3.8-27b", "litellm_params": {
+        "model": "openai/qwen3.8-27b", "api_base": "http://192.168.100.55:8005/v1"},
+        "model_info": {"id": "qwen-dep"}}
+
+    def handler(method, path, bearer, json_body):
+        if path == "/model/info": return 200, {"data": [dep]}
+        if path == "/v1/models": return 200, {"data": [{"id": "qwen3.8-27b"}]}
+        if path == "/onboard/admin/direct": return 200, {"ok": True}
+        if path == "/global/spend" and bearer == MASTER_KEY: return 200, {}
+        return 404, {"error": f"unexpected stub path {path}"}
+
+    calls = install_litellm_stub(monkeypatch, handler)
+    client, hdr = _admin_client(console)
+    response = client.post("/console/api/sites/direct", headers=hdr, json={
+        "site": "dell-local", "address": "http://192.168.100.55:8005/v1/",
+        "models": [{"name": "qwen3.8-27b", "upstream_model": "qwen3.8-27b"}]})
+    assert response.status_code == 200
+    assert response.json()["adopted"] == 1
+    assert not [c for c in calls if c["path"] == "/model/new"]
+    registration = [c for c in calls if c["path"] == "/onboard/admin/direct"][0]["json"]
+    assert registration["address"] == "http://192.168.100.55:8005/v1"
+
+
+def test_direct_site_rejects_public_and_unprobed_models(console, monkeypatch):
+    install_litellm_stub(monkeypatch, lambda method, path, bearer, json_body:
+                         (200, {}) if path == "/global/spend" and bearer == MASTER_KEY else
+                         (404, {"error": "unexpected"}))
+    client, hdr = _admin_client(console)
+    public = client.post("/console/api/sites/direct/probe", headers=hdr,
+                         json={"address": "http://8.8.8.8:8005/v1"})
+    assert public.status_code == 400
+
+    async def models(_site, _port):
+        return [{"id": "served", "owned_by": ""}], ""
+    monkeypatch.setattr(console, "fetch_upstream_models", models)
+    response = client.post("/console/api/sites/direct", headers=hdr, json={
+        "site": "local", "address": "http://127.0.0.1:8005/v1",
+        "models": [{"name": "visible", "upstream_model": "not-served"}]})
+    assert response.status_code == 400

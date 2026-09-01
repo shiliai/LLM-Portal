@@ -27,7 +27,7 @@ GOOD_PUBKEY = "Q" * 43 + "="            # wg base64 公钥形状（43 位 + padd
 
 def _insert_site(mod, name: str, status: str = "active", wg_ip: str = "10.77.0.99") -> None:
     with sqlite3.connect(mod.DB_PATH) as conn:
-        conn.execute("INSERT INTO sites VALUES (?,?,?,?,?,?,?)",
+        conn.execute("INSERT INTO sites (name, pubkey, wg_ip, models, groups, status, created_at) VALUES (?,?,?,?,?,?,?)",
                      (name, GOOD_PUBKEY, wg_ip, "[]", '["default"]', status, int(time.time())))
 
 
@@ -302,7 +302,7 @@ def test_confirm_registers_with_param_passthrough(onboardd, monkeypatch):
     （supported 列表不含、vLLM 实际支持）——注册 payload 必须带 allowed_openai_params。"""
     calls = install_litellm_stub(monkeypatch, lambda m, p, b, j: (200, {"ok": True}))
     with sqlite3.connect(onboardd.DB_PATH) as conn:
-        conn.execute("INSERT INTO sites VALUES (?,?,?,?,?,?,?)",
+        conn.execute("INSERT INTO sites (name, pubkey, wg_ip, models, groups, status, created_at) VALUES (?,?,?,?,?,?,?)",
                      ("site-x", GOOD_PUBKEY, "10.77.0.21",
                       '[{"name": "m1", "port": 8890}]', '["home"]', "registered", int(time.time())))
         conn.execute("INSERT INTO tokens VALUES (?,?,?,?,?,?,?)",
@@ -322,3 +322,54 @@ def test_confirm_registers_with_param_passthrough(onboardd, monkeypatch):
     with sqlite3.connect(onboardd.DB_PATH) as conn:
         assert conn.execute("SELECT status FROM sites WHERE name='site-x'").fetchone()[0] == "active"
         assert conn.execute("SELECT COUNT(*) FROM tokens").fetchone()[0] == 0  # 一次性 token 已消耗
+
+
+# ---------------------------------------------------------------- Direct / LAN 站点
+
+def test_direct_address_rejects_public_dns_link_local_and_redirect_shapes(onboardd):
+    assert onboardd.normalize_direct_address("http://192.168.100.55:8005/v1/") == "http://192.168.100.55:8005/v1"
+    for bad in ("https://8.8.8.8/v1", "http://example.internal/v1", "http://169.254.1.2/v1",
+                "http://224.0.0.1/v1", "http://192.168.1.2/admin", "http://u:p@192.168.1.2/v1"):
+        with pytest.raises(ValueError):
+            onboardd.normalize_direct_address(bad)
+
+
+def test_init_db_migrates_legacy_sites_to_wireguard(onboardd, tmp_path):
+    legacy = tmp_path / "legacy.db"
+    with sqlite3.connect(legacy) as conn:
+        conn.execute("CREATE TABLE sites (name TEXT PRIMARY KEY, pubkey TEXT UNIQUE, wg_ip TEXT UNIQUE, models TEXT, groups TEXT, status TEXT, created_at INTEGER)")
+        conn.execute("CREATE TABLE tokens (token TEXT PRIMARY KEY, site TEXT, models TEXT, groups TEXT, wg_ip TEXT, expires_at INTEGER, used INTEGER DEFAULT 0)")
+        conn.execute("INSERT INTO sites VALUES (?,?,?,?,?,?,?)", ("old", GOOD_PUBKEY, "10.77.0.20", "[]", "[]", "active", 1))
+    onboardd.DB_PATH = legacy
+    onboardd.init_db()
+    with sqlite3.connect(legacy) as conn:
+        row = conn.execute("SELECT transport, address, latest_probe FROM sites WHERE name='old'").fetchone()
+    assert row == ("wireguard", None, None)
+
+
+def test_admin_direct_persists_transport_without_wg_fields(onboardd):
+    with TestClient(onboardd.app) as client:
+        resp = client.post("/onboard/admin/direct", headers=_admin_headers(), json={
+            "site": "dell-local", "address": "http://192.168.100.55:8005/v1",
+            "models": [{"name": "qwen3.8-27b", "upstream_model": "qwen3.8-27b"}], "groups": ["lab"]})
+        listed = client.get("/onboard/admin/list", headers=_admin_headers())
+    assert resp.status_code == 200
+    row = listed.json()["sites"][0]
+    assert (row["transport"], row["address"], row["pubkey"], row["wg_ip"]) == (
+        "direct", "http://192.168.100.55:8005/v1", None, None)
+
+
+def test_revoke_direct_deletes_routes_without_touching_wireguard(onboardd, monkeypatch):
+    with TestClient(onboardd.app) as client:
+        client.post("/onboard/admin/direct", headers=_admin_headers(), json={
+            "site": "dell-local", "address": "http://192.168.100.55:8005/v1",
+            "models": [{"name": "qwen3.8-27b", "upstream_model": "qwen3.8-27b"}]})
+        calls = install_litellm_stub(monkeypatch, lambda m, p, b, j: (
+            (200, {"data": [{"model_name": "qwen3.8-27b", "litellm_params": {"api_base": "http://192.168.100.55:8005/v1"}, "model_info": {"id": "dep-1"}}]})
+            if p == "/model/info" else (200, {"ok": True})))
+        monkeypatch.setattr(onboardd, "run", lambda cmd: pytest.fail("Direct revoke must not run wg"))
+        resp = client.post("/onboard/admin/revoke", headers=_admin_headers(), json={"site": "dell-local"})
+        listed = client.get("/onboard/admin/list", headers=_admin_headers())
+    assert resp.json()["status"] == "deleted"
+    assert listed.json() == {"sites": []}
+    assert [c["path"] for c in calls if c["path"] == "/model/delete"] == ["/model/delete"]

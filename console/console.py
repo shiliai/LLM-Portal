@@ -58,6 +58,7 @@ import base64
 import functools
 import hashlib
 import hmac
+import ipaddress
 import json
 import math
 import os
@@ -83,6 +84,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 from urllib.parse import quote
+from urllib.parse import urlsplit, urlunsplit
 
 LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://127.0.0.1:4000")
 ONBOARD_URL = os.environ.get("ONBOARDD_URL", "http://127.0.0.1:8100")
@@ -666,6 +668,45 @@ def dep_of_site(dep: dict, wg_ip: str) -> bool:
     return str((dep.get("litellm_params") or {}).get("api_base", "")).startswith(f"http://{wg_ip}:")
 
 
+def direct_address(raw: object) -> str:
+    """Canonicalize the only Direct targets this portal is allowed to reach.
+
+    IP literals avoid DNS rebinding entirely.  Do not broaden this to arbitrary
+    hostnames without a resolver/transport that pins the validated address.
+    """
+    if not isinstance(raw, str) or len(raw) > 256:
+        raise ValueError("bad direct address")
+    try:
+        p = urlsplit(raw.strip())
+        ip = ipaddress.ip_address(p.hostname or "")
+    except ValueError as exc:
+        raise ValueError("direct address must use a literal IP address") from exc
+    if p.scheme not in ("http", "https") or p.username or p.password or p.query or p.fragment:
+        raise ValueError("direct address must be http(s) without credentials, query, or fragment")
+    cgnat = isinstance(ip, ipaddress.IPv4Address) and ip in ipaddress.ip_network("100.64.0.0/10")
+    if not (ip.is_loopback or ip.is_private or cgnat) or ip.is_link_local or ip.is_multicast or ip.is_unspecified or ip.is_reserved:
+        raise ValueError("direct address must be loopback, RFC1918/ULA, or CGNAT (not link-local/multicast)")
+    if p.path.rstrip("/") not in ("", "/v1"):
+        raise ValueError("direct address must end at /v1")
+    host = f"[{ip.compressed}]" if ip.version == 6 else ip.compressed
+    if p.port:
+        host += f":{p.port}"
+    return urlunsplit((p.scheme, host, "/v1", "", ""))
+
+
+def site_api_base(site: dict, port: int | None = None) -> str:
+    if site.get("transport", "wireguard") == "direct":
+        return str(site.get("address") or "").rstrip("/")
+    return f"http://{site['wg_ip']}:{port}/v1"
+
+
+def dep_of_site_row(dep: dict, site: dict) -> bool:
+    base = str((dep.get("litellm_params") or {}).get("api_base", "")).rstrip("/")
+    if site.get("transport", "wireguard") == "direct":
+        return base == site_api_base(site)
+    return dep_of_site(dep, site.get("wg_ip") or "#")
+
+
 async def key_list_full() -> list[dict]:
     """全量 Key（1.96.2 上限 size=100；MVP 规模足够，超出再加分页）。"""
     _, body = await ll_json("GET", "/key/list", params={"return_full_object": "true", "size": 100})
@@ -675,9 +716,13 @@ async def key_list_full() -> list[dict]:
     return [k for k in (body or []) if isinstance(k, dict)]
 
 
-async def retag_site(wg_ip: str, new_groups: list[str]) -> list[str]:
+async def retag_site(site: dict | str, new_groups: list[str]) -> list[str]:
     """站点全部 deployment 换 tags：先 /model/new 建新、后 /model/delete 删旧（只用已验证端点）。"""
-    deps = [d for d in await litellm_deployments() if dep_of_site(d, wg_ip)]
+    # Keep the helper's old private signature for callers/tests outside this
+    # module while all production paths pass the richer site row.
+    if isinstance(site, str):
+        site = {"transport": "wireguard", "wg_ip": site}
+    deps = [d for d in await litellm_deployments() if dep_of_site_row(d, site)]
     errors = []
     for dep in deps:
         src = dep.get("litellm_params") or {}
@@ -711,18 +756,20 @@ async def sync_onboard_group(site_name: str, groups: list[str]) -> None:
     await onboard("POST", "/onboard/admin/groups", json={"site": site_name, "groups": groups})
 
 
-async def fetch_upstream_models(wg_ip: str, port: int) -> tuple[list[dict], str]:
+async def fetch_upstream_models(site: dict, port: int) -> tuple[list[dict], str]:
     """网关侧探测站点上游的 OpenAI 兼容 /v1/models（自动抓取 model id）。
 
-    SSRF 口径（US-03 C8）：URL 由注册表里的 wg_ip + 受校验端口拼出，不接受
-    任意用户提供的 URL；wg 网段属「本地显式放行」，与 LiteLLM 路由流量同一边界。
+    WG 站点 URL 由注册表 IP + 受校验端口拼出；Direct 站点地址在创建时只允许
+    私网 IP 字面量，禁用重定向，避免 DNS rebinding / redirect SSRF。
     返回 ([{id, owned_by}], "") 或 ([], 可判读错误)。
     """
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            r = await client.get(f"http://{wg_ip}:{port}/v1/models")
+            r = await client.get(f"{site_api_base(site, port)}/models", follow_redirects=False)
     except httpx.HTTPError as exc:
         return [], f"上游不可达（隧道断开或服务未启动？）：{exc}"
+    if 300 <= r.status_code < 400:
+        return [], "上游重定向被拒绝"
     if r.status_code != 200:
         return [], f"上游返回 HTTP {r.status_code}"
     try:
@@ -993,13 +1040,16 @@ async def api_sites(request: Request) -> Response:
     sites, hs, deps = await onboard_sites(), wg_handshakes(), await litellm_deployments()
     rows = []
     for s in sites:
-        site_deps = [d for d in deps if dep_of_site(d, s.get("wg_ip") or "#")]
+        direct = s.get("transport", "wireguard") == "direct"
+        site_deps = [d for d in deps if dep_of_site_row(d, s)]
         tags = sorted({t for d in site_deps for t in dep_tags(d)}) if site_deps else \
                sorted({g for g in s["groups"] if g != "default"})
-        ago = hs.get(s.get("pubkey") or "", -1)   # -1=未握手/不在 dump(wg 失败、peer 已摘),None 会让下方比较 TypeError→全表 500
+        ago = None if direct else hs.get(s.get("pubkey") or "", -1)
         rows.append({
-            "name": s["name"], "pubkey": (s.get("pubkey") or "")[:10] + "…=",
-            "wg_ip": s["wg_ip"], "handshake": ago,
+            "name": s["name"], "transport": "direct" if direct else "wireguard",
+            "address": s.get("address") if direct else None,
+            "pubkey": "-" if direct else (s.get("pubkey") or "")[:10] + "…=",
+            "wg_ip": None if direct else s.get("wg_ip"), "handshake": ago,
             "models": sorted({d.get("model_name") for d in site_deps}),
             "deps": [{"name": d.get("model_name"), "port": _dep_port(d),
                       "upstream": str((d.get("litellm_params") or {}).get("model") or "")
@@ -1012,7 +1062,9 @@ async def api_sites(request: Request) -> Response:
                                                 if isinstance(m, dict)})
                                    if isinstance(p, int) and p > 0}),
             "groups": tags, "status": s["status"],
-            "online": s["status"] in ("active", "partial") and 0 <= ago < HANDSHAKE_ONLINE,
+            "latest_probe": s.get("latest_probe"),
+            "online": (s["status"] in ("active", "partial") if direct else
+                       s["status"] in ("active", "partial") and 0 <= ago < HANDSHAKE_ONLINE),
             "created_at": s.get("created_at"),
         })
     return JSONResponse({"sites": rows})
@@ -1042,6 +1094,96 @@ async def api_sites_token(request: Request) -> Response:
     except httpx.HTTPError as exc:
         return jerr(f"onboardd unreachable: {exc}", 502)
     return JSONResponse(r.json(), status_code=r.status_code)
+
+
+async def api_sites_direct(request: Request) -> Response:
+    """Create a Direct site atomically from the console's point of view.
+
+    Probe first; adopt exact api_base + model identity matches; on a later
+    failure delete only deployments created by this request, never an adopted
+    deployment.  Registry persistence happens last.
+    """
+    sess = await require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    try:
+        body = await request.json()
+        site, address = body["site"], direct_address(body["address"])
+        selected = body["models"]
+        groups = body.get("groups") or ["default"]
+    except (KeyError, TypeError, ValueError) as exc:
+        return jerr(f"bad direct site: {exc}", 400)
+    if not NAME_RE.fullmatch(site or "") or not isinstance(selected, list) or not selected:
+        return jerr("bad direct site name or models", 400)
+    if any(not isinstance(m, dict) or not MODEL_RE.fullmatch(m.get("name") or "") or
+           not MODEL_RE.fullmatch(m.get("upstream_model") or "") for m in selected):
+        return jerr("bad direct models", 400)
+    if any(not GROUP_RE.fullmatch(g or "") for g in groups):
+        return jerr("bad group names", 400)
+    direct_site = {"transport": "direct", "address": address}
+    probe, perr = await fetch_upstream_models(direct_site, 0)
+    available = {m["id"] for m in probe}
+    if perr:
+        return jerr(perr, 502)
+    if any(m["upstream_model"] not in available for m in selected):
+        return jerr("selected model is not returned by upstream /v1/models", 400)
+    deps = await litellm_deployments()
+    existing_ids = {(d.get("model_info") or {}).get("id") for d in deps}
+    created = []
+    tags = [g for g in groups if g != "default"]
+    try:
+        for model in selected:
+            exact = [d for d in deps if d.get("model_name") == model["name"] and
+                     str((d.get("litellm_params") or {}).get("model") or "").removeprefix("openai/") == model["upstream_model"] and
+                     str((d.get("litellm_params") or {}).get("api_base") or "").rstrip("/") == address]
+            if exact:
+                continue
+            params = _dep_params({}, {}, model=f"openai/{model['upstream_model']}", api_base=address, tags=tags)
+            code, result = await ll_json("POST", "/model/new", json={"model_name": model["name"], "litellm_params": params})
+            if code != 200:
+                raise RuntimeError(str(result)[:200])
+            ident = (result.get("model_info") or {}).get("id") if isinstance(result, dict) else None
+            if not ident:
+                # Defensive fallback for a malformed success response: only
+                # select IDs absent before this request, so cleanup cannot
+                # remove an adopted/pre-existing route.
+                after = await litellm_deployments()
+                ident = next(((d.get("model_info") or {}).get("id") for d in after
+                              if (d.get("model_info") or {}).get("id") not in existing_ids and
+                              d.get("model_name") == model["name"] and
+                              str((d.get("litellm_params") or {}).get("api_base") or "").rstrip("/") == address), None)
+            if not ident:
+                raise RuntimeError("LiteLLM did not return deployment id")
+            created.append(ident)
+        port = urlsplit(address).port or (443 if address.startswith("https:") else 80)
+        registry_models = [{"name": m["name"], "port": port, "upstream_model": m["upstream_model"]} for m in selected]
+        r = await onboard("POST", "/onboard/admin/direct", json={"site": site, "address": address,
+                          "models": registry_models, "groups": groups})
+        if r.status_code != 200:
+            try:
+                detail = r.json().get("error")
+            except ValueError:
+                detail = r.text
+            raise RuntimeError(detail or "site registry rejected request")
+    except (httpx.HTTPError, RuntimeError) as exc:
+        for ident in created:
+            await ll_json("POST", "/model/delete", json={"id": ident})
+        return jerr(f"direct site creation failed: {exc}", 502)
+    return JSONResponse({"ok": True, "site": site, "address": address, "adopted": len(selected) - len(created)})
+
+
+async def api_sites_direct_probe(request: Request) -> Response:
+    sess = await require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    try:
+        address = direct_address((await request.json())["address"])
+    except (KeyError, TypeError, ValueError) as exc:
+        return jerr(f"bad direct address: {exc}", 400)
+    models, error = await fetch_upstream_models({"transport": "direct", "address": address}, 0)
+    if error:
+        return jerr(error, 502)
+    return JSONResponse({"address": address, "models": models})
 
 
 async def _usage_days(request: Request) -> int:
@@ -1125,7 +1267,7 @@ async def api_sites_groups(request: Request) -> Response:
     bad = [g for g in groups if g != "default" and not GROUP_RE.fullmatch(g or "")]
     if bad:
         return jerr(f"bad group names: {bad}", 400)
-    errors = await retag_site(row["wg_ip"], [g for g in groups if g != "default"])
+    errors = await retag_site(row, [g for g in groups if g != "default"])
     if errors:
         return jerr("; ".join(errors), 502)
     await sync_onboard_group(site, [g for g in groups if g != "default"])
@@ -1158,11 +1300,13 @@ async def api_sites_probe(request: Request) -> Response:
     row, err = await _site_row_or_error(site)
     if err:
         return err
-    models, perr = await fetch_upstream_models(row["wg_ip"], port)
+    models, perr = await fetch_upstream_models(row, port)
     if perr:
         return jerr(perr, 502)
+    if row.get("transport", "wireguard") == "direct":
+        await onboard("POST", "/onboard/admin/probe", json={"site": site})
     return JSONResponse({"site": site, "port": port,
-                         "api_base": f"http://{row['wg_ip']}:{port}/v1", "models": models})
+                         "api_base": site_api_base(row, port), "models": models})
 
 
 async def api_sites_models(request: Request) -> Response:
@@ -1186,8 +1330,8 @@ async def api_sites_models(request: Request) -> Response:
     row, err = await _site_row_or_error(site)
     if err:
         return err
-    deps = [d for d in await litellm_deployments() if dep_of_site(d, row["wg_ip"])]
-    api_base = f"http://{row['wg_ip']}:{port}/v1"
+    deps = [d for d in await litellm_deployments() if dep_of_site_row(d, row)]
+    api_base = site_api_base(row, port)
     if any(d.get("model_name") == name and _dep_port(d) == port for d in deps):
         return jerr(f"{site} 已有 {name}:{port}（换上游 id 请用「刷新上游」）", 409)
     tags = sorted({t for d in deps for t in dep_tags(d)} |
@@ -1206,8 +1350,8 @@ async def api_sites_models(request: Request) -> Response:
 
 async def _site_dep_or_error(site_row: dict, name: str, port: int):
     """定位站点某「对外名:端口」的 deployment（api_base 精确匹配，避免解析歧义）。"""
-    api_base = f"http://{site_row['wg_ip']}:{port}/v1"
-    deps = [d for d in await litellm_deployments() if dep_of_site(d, site_row["wg_ip"])]
+    api_base = site_api_base(site_row, port)
+    deps = [d for d in await litellm_deployments() if dep_of_site_row(d, site_row)]
     dep = next((d for d in deps if d.get("model_name") == name
                 and (d.get("litellm_params") or {}).get("api_base") == api_base), None)
     if dep is None:
@@ -1290,15 +1434,12 @@ async def api_sites_models_delete(request: Request) -> Response:
 async def group_snapshot() -> dict:
     """分组现状：组名 -> {sites, keys}；default 为系统组（成员=全部未吊销站点）。"""
     sites, deps, keys = await onboard_sites(), await litellm_deployments(), await key_list_full()
-    tags_of_ip = {}
-    for d in deps:
-        ip = str((d.get("litellm_params") or {}).get("api_base", "")).split("//")[-1].split(":")[0]
-        tags_of_ip.setdefault(ip, set()).update(dep_tags(d))
     groups: dict[str, dict] = {}
     for s in sites:
         if s["status"] == "revoked":
             continue
-        for g in (tags_of_ip.get(s["wg_ip"], set()) | {g for g in s["groups"] if g != "default"}):
+        site_tags = {t for d in deps if dep_of_site_row(d, s) for t in dep_tags(d)}
+        for g in (site_tags | {g for g in s["groups"] if g != "default"}):
             if g != "default":
                 groups.setdefault(g, {"sites": set(), "keys": 0})["sites"].add(s["name"])
     for k in keys:
@@ -2479,6 +2620,8 @@ api_routes = [
     Route("/console/api/usage/logs", api_usage_logs, methods=["GET"]),
     Route("/console/api/sites", api_sites, methods=["GET"]),
     Route("/console/api/sites/token", api_sites_token, methods=["POST"]),
+    Route("/console/api/sites/direct", api_sites_direct, methods=["POST"]),
+    Route("/console/api/sites/direct/probe", api_sites_direct_probe, methods=["POST"]),
     Route("/console/api/sites/revoke", api_sites_revoke, methods=["POST"]),
     Route("/console/api/sites/groups", api_sites_groups, methods=["POST"]),
     Route("/console/api/sites/probe", api_sites_probe, methods=["GET"]),

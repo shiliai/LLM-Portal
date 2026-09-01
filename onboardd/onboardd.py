@@ -19,6 +19,7 @@
 """
 
 import json
+import ipaddress
 import os
 import re
 import secrets
@@ -27,6 +28,7 @@ import sqlite3
 import subprocess
 import time
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import uvicorn
@@ -87,6 +89,46 @@ def init_db() -> None:
                 wg_ip TEXT, expires_at INTEGER, used INTEGER DEFAULT 0);
             """
         )
+        # v1 的 sites 只有 WireGuard 字段；保留旧行并显式标记为 wireguard。
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(sites)")}
+        for name, definition in (
+            ("transport", "TEXT NOT NULL DEFAULT 'wireguard'"),
+            ("address", "TEXT"),
+            ("latest_probe", "INTEGER"),
+        ):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE sites ADD COLUMN {name} {definition}")
+
+
+def normalize_direct_address(raw: object) -> str:
+    """Accept only literal local/private/CGNAT OpenAI API bases.
+
+    Restricting v1 to IP literals deliberately eliminates DNS rebinding.  The
+    management API is not a general purpose HTTP proxy, and redirects are
+    rejected by the caller as a second boundary.
+    """
+    if not isinstance(raw, str) or len(raw) > 256:
+        raise ValueError("bad direct address")
+    try:
+        parsed = urlsplit(raw.strip())
+        host = parsed.hostname
+        ip = ipaddress.ip_address(host or "")
+    except ValueError as exc:
+        raise ValueError("direct address must use a literal IP address") from exc
+    if parsed.scheme not in ("http", "https") or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("direct address must be http(s) without credentials, query, or fragment")
+    # is_private includes IPv6 ULA but not 100.64.0.0/10; loopback is useful
+    # for local deployments. Link-local/multicast/unspecified/reserved remain out.
+    cgnat = isinstance(ip, ipaddress.IPv4Address) and ip in ipaddress.ip_network("100.64.0.0/10")
+    if not (ip.is_loopback or ip.is_private or cgnat) or ip.is_link_local or ip.is_multicast or ip.is_unspecified or ip.is_reserved:
+        raise ValueError("direct address must be loopback, RFC1918/ULA, or CGNAT (not link-local/multicast)")
+    path = parsed.path.rstrip("/")
+    if path not in ("", "/v1"):
+        raise ValueError("direct address must end at /v1")
+    netloc = f"[{ip.compressed}]" if ip.version == 6 else ip.compressed
+    if parsed.port:
+        netloc += f":{parsed.port}"
+    return urlunsplit((parsed.scheme, netloc, "/v1", "", ""))
 
 
 def run(cmd: list[str]) -> subprocess.CompletedProcess:
@@ -258,14 +300,18 @@ async def admin_revoke(request: Request) -> Response:
     if row is None:
         return JSONResponse({"error": f"unknown site {site}"}, status_code=404)
     outputs = {}
-    r = run(WG_EXEC + ["set", WG_IFACE, "peer", row["pubkey"], "remove"])
-    outputs["wg_remove"] = "ok" if r.returncode == 0 else r.stderr.strip()
-    remove_peer_from_conf(row["pubkey"])
+    if row["transport"] == "wireguard":
+        r = run(WG_EXEC + ["set", WG_IFACE, "peer", row["pubkey"], "remove"])
+        outputs["wg_remove"] = "ok" if r.returncode == 0 else r.stderr.strip()
+        remove_peer_from_conf(row["pubkey"])
     deleted = []
     async with httpx.AsyncClient(timeout=30) as client:
         info = await client.get(f"{LITELLM_BASE}/model/info", headers={"Authorization": f"Bearer {LITELLM_MASTER_KEY}"})
         for dep in info.json().get("data", []):
-            if str(dep.get("litellm_params", {}).get("api_base", "")).startswith(f"http://{row['wg_ip']}:"):
+            base = str(dep.get("litellm_params", {}).get("api_base", "")).rstrip("/")
+            managed = (base.startswith(f"http://{row['wg_ip']}:") if row["transport"] == "wireguard"
+                       else base == (row["address"] or "").rstrip("/"))
+            if managed:
                 r = await client.post(
                     f"{LITELLM_BASE}/model/delete",
                     json={"id": dep["model_info"]["id"]},
@@ -274,15 +320,22 @@ async def admin_revoke(request: Request) -> Response:
                 deleted.append({"model": dep.get("model_name"), "ok": r.status_code == 200})
     outputs["deployments_deleted"] = deleted
     with db() as conn:
-        conn.execute("UPDATE sites SET status='revoked' WHERE name=?", (site,))
-    return JSONResponse({"site": site, "status": "revoked", "detail": outputs})
+        if row["transport"] == "direct":
+            # Direct has no host-side state to preserve. Removing the row avoids
+            # a stale Portal registration while leaving the upstream untouched.
+            conn.execute("DELETE FROM sites WHERE name=?", (site,))
+            status = "deleted"
+        else:
+            conn.execute("UPDATE sites SET status='revoked' WHERE name=?", (site,))
+            status = "revoked"
+    return JSONResponse({"site": site, "status": status, "detail": outputs})
 
 
 async def admin_list(request: Request) -> Response:
     if not require_admin(request):
         return JSONResponse({"error": "forbidden"}, status_code=403)
     with db() as conn:
-        rows = conn.execute("SELECT name, pubkey, wg_ip, models, groups, status, created_at FROM sites ORDER BY created_at").fetchall()
+        rows = conn.execute("SELECT name, pubkey, wg_ip, models, groups, status, created_at, transport, address, latest_probe FROM sites ORDER BY created_at").fetchall()
     return JSONResponse({"sites": [dict(row) for row in rows]})
 
 
@@ -324,6 +377,46 @@ async def admin_models(request: Request) -> Response:
         if cur.rowcount == 0:
             return JSONResponse({"error": f"unknown site {site}"}, status_code=404)
     return JSONResponse({"ok": True, "site": site, "models": models})
+
+
+async def admin_direct(request: Request) -> Response:
+    """Persist a Direct site only after consoled has successfully staged routes."""
+    if not require_admin(request):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    try:
+        body = await request.json()
+        site = body["site"]
+        address = normalize_direct_address(body["address"])
+        models = body["models"]
+        groups = body.get("groups") or ["default"]
+    except (KeyError, ValueError, TypeError):
+        return JSONResponse({"error": "bad direct site request"}, status_code=400)
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,32}", site or ""):
+        return JSONResponse({"error": "bad site name"}, status_code=400)
+    if not isinstance(models, list) or not models or not all(isinstance(m, dict) and
+            re.fullmatch(r"[a-zA-Z0-9_.-]{1,64}", m.get("name") or "") and
+            re.fullmatch(r"[a-zA-Z0-9_.-]{1,64}", m.get("upstream_model") or "")
+            for m in models):
+        return JSONResponse({"error": "bad direct models"}, status_code=400)
+    if not isinstance(groups, list) or any(not re.fullmatch(r"[a-zA-Z0-9_-]{1,32}", g or "") for g in groups):
+        return JSONResponse({"error": "bad groups"}, status_code=400)
+    with db() as conn:
+        if conn.execute("SELECT 1 FROM sites WHERE name=? AND status IN ('active','partial','registered')", (site,)).fetchone():
+            return JSONResponse({"error": f"site {site} already exists (revoke first)"}, status_code=409)
+        conn.execute("INSERT OR REPLACE INTO sites (name, pubkey, wg_ip, models, groups, status, created_at, transport, address, latest_probe) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     (site, None, None, json.dumps(models), json.dumps(groups), "active", int(time.time()),
+                      "direct", address, int(time.time())))
+    return JSONResponse({"ok": True, "site": site, "address": address})
+
+
+async def admin_probe(request: Request) -> Response:
+    if not require_admin(request):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    site = (await request.json()).get("site", "")
+    with db() as conn:
+        cur = conn.execute("UPDATE sites SET latest_probe=? WHERE name=? AND transport='direct'",
+                           (int(time.time()), site))
+    return JSONResponse({"ok": bool(cur.rowcount)})
 
 
 # ---------------------------------------------------------------- wg0.conf 持久化辅助
@@ -441,6 +534,8 @@ app = Starlette(routes=[
     Route("/onboard/admin/revoke", admin_revoke, methods=["POST"]),
     Route("/onboard/admin/groups", admin_groups, methods=["POST"]),
     Route("/onboard/admin/models", admin_models, methods=["POST"]),
+    Route("/onboard/admin/direct", admin_direct, methods=["POST"]),
+    Route("/onboard/admin/probe", admin_probe, methods=["POST"]),
     Route("/onboard/admin/list", admin_list, methods=["GET"]),
 ])
 
