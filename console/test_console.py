@@ -1003,6 +1003,9 @@ def test_pi_and_dsh_use_config_contracts():
     assert "supportsReasoningEffort: true" in source
     assert "requiresReasoningContentOnAssistantMessages: true" in source
     assert "defaultThinkingLevel: 'high'" in source
+    assert "enabledModels:" in source
+    assert "'private-llm/deepseek-v4-flash-0731:high'" in source
+    assert "'private-llm/qwen3.8-27b:low'" in source
     for level in ("off", "minimal", "low", "medium", "xhigh"):
         assert f"{level}: null" in source
     assert "high: 'high'" in source
