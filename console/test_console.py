@@ -969,6 +969,15 @@ def test_mcp_usage_overview_has_ranges_states_refresh_and_stale_protection():
     assert "data-pf-bound=\"1\"" in source
 
 
+def test_usage_filters_refresh_from_full_selected_range():
+    source = (CONSOLE_DIR / "static" / "usage.html").read_text()
+    assert "function rlFillFilters(rows)" in source
+    assert "rlFillFilters(d.rows || []);" in source
+    assert "RL=d.logs||[]" in source and "RL=d.logs||[]; nextCursor" in source
+    assert "rlPage=index+1; rlFillFilters()" not in source
+    assert "RL=[];rlFillFilters([]);" in source
+
+
 def test_mcp_registration_uses_accessible_page_confirmation_without_native_dialogs():
     source = (CONSOLE_DIR / "static" / "mcp.html").read_text()
     assert "confirm(" not in source
