@@ -1,6 +1,6 @@
 /* 真实后端 E2E:本地 console.py + mock LiteLLM(生产数据形状) */
 const { chromium } = require('playwright');
-const BASE = 'http://127.0.0.1:8399';
+const BASE = process.env.CONSOLE_E2E_BASE || 'http://127.0.0.1:8399';
 const ADMIN_EMAIL = ['admin', 'test.local'].join('@');
 const AUTOFILL_EMAIL = ['autofill', 'example.com'].join('@');
 
@@ -181,7 +181,8 @@ const AUTOFILL_EMAIL = ['autofill', 'example.com'].join('@');
   const piJson = JSON.parse(await page.locator('#pi-json').textContent());
   const piSettings = JSON.parse(await page.locator('#pi-settings-json').textContent());
   const piProvider = piJson.providers['private-llm'];
-  const piModel = piProvider.models[0];
+  const piModel = piProvider.models.find((model) => model.id === 'deepseek-v4-flash-0731');
+  const piQwen = piProvider.models.find((model) => model.id === 'qwen3.8-27b');
   const piLevels = Object.entries(piModel.thinkingLevelMap)
     .filter(([, mapped]) => mapped !== null)
     .map(([level]) => level);
@@ -189,6 +190,7 @@ const AUTOFILL_EMAIL = ['autofill', 'example.com'].join('@');
     hasKey: piProvider.apiKey === fullKey.trim(),
     baseUrl: piProvider.baseUrl,
     api: piProvider.api,
+    models: piProvider.models.map((model) => model.id),
     levels: piLevels,
     defaultThinking: piSettings.defaultThinkingLevel
   });
@@ -199,10 +201,15 @@ const AUTOFILL_EMAIL = ['autofill', 'example.com'].join('@');
       || piProvider.compat.requiresReasoningContentOnAssistantMessages !== true
       || piModel.reasoning !== true
       || JSON.stringify(piLevels) !== JSON.stringify(['high', 'max'])
+      || !piQwen
+      || piQwen.reasoning !== true
+      || JSON.stringify(piQwen.input) !== JSON.stringify(['text', 'image', 'video'])
+      || piQwen.contextWindow !== 262144
+      || piQwen.maxTokens !== 32768
       || piSettings.defaultProvider !== 'private-llm'
-      || piSettings.defaultModel !== piModel.id
+      || piSettings.defaultModel !== 'deepseek-v4-flash-0731'
       || piSettings.defaultThinkingLevel !== 'high') {
-    console.error('ASSERT FAIL: Pi 配置必须可直接使用且仅开放 high/max effort'); process.exitCode = 1;
+    console.error('ASSERT FAIL: Pi 配置必须包含能力准确的 Qwen 且保持 DeepSeek 默认与 high/max effort'); process.exitCode = 1;
   }
   const dshCredentials = await page.locator('#dsh-credentials-yaml').textContent();
   const dshSettings = await page.locator('#dsh-settings-yaml').textContent();
@@ -215,12 +222,13 @@ const AUTOFILL_EMAIL = ['autofill', 'example.com'].join('@');
     dshSettings.includes('contextWindow: 1048576'),
     dshSettings.includes('maxTokens: 32768'),
     dshSettings.includes('reasoningEfforts:\n            high: high\n            max: max'),
+    dshSettings.includes('        - id: qwen3.8-27b\n          name: "Private Qwen3.8 27B"\n          contextWindow: 262144\n          maxTokens: 32768'),
     dshSettings.includes('agent-default-model:\n  provider: private-llm\n  model: deepseek-v4-flash-0731\n  reasoningEffort: high'),
     !dshSettings.includes('thinkingFormat:')
   ];
   console.log('dsh config checks:', dshChecks);
   if (dshChecks.some((ok) => !ok)) {
-    console.error('ASSERT FAIL: dsh 配置必须包含 1M 上下文且仅开放 high/max effort'); process.exitCode = 1;
+    console.error('ASSERT FAIL: dsh 配置必须包含能力准确的 Qwen 且保持 DeepSeek 默认'); process.exitCode = 1;
   }
   const dshTab = page.locator('.pf-tabs > .pf-tab:has-text("DeepSeek Harness")').first();
   await dshTab.click();

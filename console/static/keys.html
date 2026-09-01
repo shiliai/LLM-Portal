@@ -460,6 +460,10 @@
       '          reasoningEfforts:\n' +
       '            high: high\n' +
       '            max: max\n' +
+      '        - id: qwen3.8-27b\n' +
+      '          name: "Private Qwen3.8 27B"\n' +
+      '          contextWindow: 262144\n' +
+      '          maxTokens: 32768\n' +
       'agent-default-model:\n' +
       '  provider: private-llm\n' +
       '  model: deepseek-v4-flash-0731\n' +
@@ -490,6 +494,14 @@
             },
             input: ['text'],
             contextWindow: 1048576,
+            maxTokens: 32768,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+          }, {
+            id: 'qwen3.8-27b',
+            name: 'Private Qwen3.8 27B',
+            reasoning: true,
+            input: ['text', 'image', 'video'],
+            contextWindow: 262144,
             maxTokens: 32768,
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
           }]
