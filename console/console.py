@@ -114,8 +114,21 @@ def positive_seconds_env(name: str, default: float, minimum: float) -> float:
     return value if math.isfinite(value) and value >= minimum else default
 
 
+def boolean_env(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 MCP_HUB_READY_TIMEOUT = positive_seconds_env("MCP_HUB_READY_TIMEOUT", 45.0, 1.0)
 MCP_HUB_READY_POLL_INTERVAL = positive_seconds_env("MCP_HUB_READY_POLL_INTERVAL", 0.5, 0.05)
+SESSION_COOKIE_SECURE = boolean_env("SESSION_COOKIE_SECURE", True)
 WG_IFACE = os.environ.get("WG_IFACE", "wg0")
 # 宿主机操作命令前缀（#7 容器化）：默认保留宿主机直跑语义；容器模式由 compose 注入
 # docker.sock 版本（挂载 /var/run/docker.sock 的容器 ≈ 宿主机 root，见 runbook §7 取舍）
@@ -385,7 +398,7 @@ def _start_session(role: str, key_hash: str = "", key_last4: str = "") -> Respon
                      (sid, role, key_hash, key_last4, exp))
     resp = JSONResponse({"ok": True, "role": role})
     resp.set_cookie("pll_session", f"{sid}.{sign(sid)}", max_age=SESSION_TTL,
-                    httponly=True, secure=True, samesite="lax", path="/console")
+                    httponly=True, secure=SESSION_COOKIE_SECURE, samesite="lax", path="/console")
     return resp
 
 

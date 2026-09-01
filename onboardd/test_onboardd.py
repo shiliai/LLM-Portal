@@ -257,6 +257,7 @@ def onboardd_offload(tmp_path):
         "WG_ENDPOINT_HOST": "192.168.88.22",
         "WG_SUBNET_PREFIX": "10.78.0",
         "WG_VPS_IP": "10.78.0.1",
+        "SITE_WG_IFACE": "wg1",
     })
 
 
@@ -280,6 +281,9 @@ def test_offload_env_shapes_install_command_and_script(onboardd_offload):
     assert "s|__ENDPOINT_WG__|192.168.88.22:51820|" in script
     assert "AllowedIPs = 10.78.0.0/24" in script
     assert "ping -c 2 -W 3 10.78.0.1 " in script
+    assert 'SITE_WG_IFACE="wg1"' in script
+    assert 'SITE_WG_CONF="/etc/wireguard/${SITE_WG_IFACE}.conf"' in script
+    assert 'systemctl enable --now "wg-quick@${SITE_WG_IFACE}"' in script
 
 
 def test_default_env_keeps_legacy_addresses(onboardd):
@@ -288,6 +292,7 @@ def test_default_env_keeps_legacy_addresses(onboardd):
     assert onboardd.WG_ENDPOINT_HOST == onboardd.DOMAIN
     assert onboardd.WG_ALLOWED == "10.77.0.0/24"
     assert onboardd.GW_WG_IP == "10.77.0.1"
+    assert onboardd.SITE_WG_IFACE == "wg0"
 
 
 # ---------------------------------------------------------------- confirm → /model/new 注册

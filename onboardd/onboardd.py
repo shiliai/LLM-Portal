@@ -44,6 +44,10 @@ PUBLIC_BASE = os.environ.get("PUBLIC_BASE", f"https://{DOMAIN}").rstrip("/")
 WG_ENDPOINT_HOST = os.environ.get("WG_ENDPOINT_HOST", DOMAIN)
 WG_CONF = Path(os.environ.get("WG_CONF", "/etc/wireguard/wg0.conf"))
 WG_IFACE = os.environ.get("WG_IFACE", "wg0")
+SITE_WG_IFACE = os.environ.get("SITE_WG_IFACE", "wg0")
+for _iface_name, _iface_value in (("WG_IFACE", WG_IFACE), ("SITE_WG_IFACE", SITE_WG_IFACE)):
+    if not re.fullmatch(r"[a-zA-Z0-9_=+.-]{1,15}", _iface_value):
+        raise RuntimeError(f"invalid {_iface_name}: {_iface_value!r}")
 WG_EXEC = shlex.split(os.environ.get("WG_EXEC", "wg"))
 WG_PORT = os.environ.get("WG_PORT", "51820")
 WG_SUBNET_PREFIX = os.environ.get("WG_SUBNET_PREFIX", "10.77.0")  # 站点 IP 从 .11 递增
@@ -120,6 +124,7 @@ async def install(request: Request) -> Response:
               .replace("__WG_ENDPOINT__", f"{WG_ENDPOINT_HOST}:{WG_PORT}")
               .replace("__WG_ALLOWED__", WG_ALLOWED)
               .replace("__GW_WG_IP__", GW_WG_IP)
+              .replace("__SITE_WG_IFACE__", SITE_WG_IFACE)
               .replace("__MODEL_PORTS__", ports))
     return PlainTextResponse(script, media_type="text/x-shellscript")
 
@@ -351,6 +356,8 @@ INSTALL_SH = """#!/usr/bin/env bash
 set -euo pipefail
 TOKEN="{token}"
 ENDPOINT="{endpoint}"
+SITE_WG_IFACE="__SITE_WG_IFACE__"
+SITE_WG_CONF="/etc/wireguard/${{SITE_WG_IFACE}}.conf"
 
 echo "== private-llm site onboarding =="
 if ! command -v wg >/dev/null; then
@@ -370,9 +377,9 @@ REG=$(curl -fsS -X POST "$ENDPOINT/onboard/register" -H 'content-type: applicati
      -d "{{\\"token\\":\\"$TOKEN\\",\\"pubkey\\":\\"$PUBKEY\\"}}")
 WG_IP=$(echo "$REG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["wg_ip"])')
 
-echo "-- writing /etc/wireguard/wg0.conf (wg_ip=$WG_IP)"
+echo "-- writing $SITE_WG_CONF (wg_ip=$WG_IP)"
 mkdir -p /etc/wireguard; umask 077
-sed "s|<SITE_PRIVATE_KEY>|$(cat /tmp/pll.key)|" > /etc/wireguard/wg0.conf <<'EOF'
+sed "s|<SITE_PRIVATE_KEY>|$(cat /tmp/pll.key)|" > "$SITE_WG_CONF" <<'EOF'
 [Interface]
 PrivateKey = <SITE_PRIVATE_KEY>
 Address = __WG_IP__/24
@@ -384,10 +391,14 @@ Endpoint = __ENDPOINT_WG__
 AllowedIPs = __WG_ALLOWED__
 PersistentKeepalive = 25
 EOF
-sed -i "s|__WG_IP__|$WG_IP|; s|__VPS_PUB__|__VPS_PUBLIC_KEY__|; s|__ENDPOINT_WG__|__WG_ENDPOINT__|" /etc/wireguard/wg0.conf
+sed -i "s|__WG_IP__|$WG_IP|; s|__VPS_PUB__|__VPS_PUBLIC_KEY__|; s|__ENDPOINT_WG__|__WG_ENDPOINT__|" "$SITE_WG_CONF"
 
-echo "-- enabling wg-quick@wg0 (auto-start & self-healing)"
-if systemctl is-active --quiet wg-quick@wg0; then systemctl restart wg-quick@wg0; else systemctl enable --now wg-quick@wg0; fi
+echo "-- enabling wg-quick@${{SITE_WG_IFACE}} (auto-start & self-healing)"
+if systemctl is-active --quiet "wg-quick@${{SITE_WG_IFACE}}"; then
+  systemctl restart "wg-quick@${{SITE_WG_IFACE}}"
+else
+  systemctl enable --now "wg-quick@${{SITE_WG_IFACE}}"
+fi
 sleep 2
 
 echo "-- tuning tunnel transport (BBR, robust to cross-border random loss)"

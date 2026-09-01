@@ -201,6 +201,28 @@ def test_admin_login_session_db_has_no_master_key(console_admin, monkeypatch):
     assert ADMIN_PASSWORD.encode() not in raw      # 登录口令同样不落库
 
 
+def test_session_cookie_is_secure_by_default(console_admin, monkeypatch):
+    install_litellm_stub(monkeypatch, _handler)
+    with TestClient(console_admin.app) as client:
+        resp = client.post("/console/api/admin-login",
+                           json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}, headers=XRW)
+    assert "secure" in resp.headers["set-cookie"].lower()
+
+
+def test_session_cookie_can_support_explicit_intranet_http(tmp_path, monkeypatch):
+    mod = _load(tmp_path, {
+        "ADMIN_EMAIL": ADMIN_EMAIL,
+        "ADMIN_PASSWORD": ADMIN_PASSWORD,
+        "SESSION_COOKIE_SECURE": "false",
+    })
+    install_litellm_stub(monkeypatch, _handler)
+    with TestClient(mod.app) as client:
+        resp = client.post("/console/api/admin-login",
+                           json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}, headers=XRW)
+        assert "secure" not in resp.headers["set-cookie"].lower()
+        assert client.get("/console/api/me").status_code == 200
+
+
 def test_admin_login_wrong_credentials(console_admin, monkeypatch):
     install_litellm_stub(monkeypatch, _handler)
     with TestClient(console_admin.app) as client:
