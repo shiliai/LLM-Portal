@@ -1445,6 +1445,8 @@ def test_direct_list_and_overview_use_probe_health(console, monkeypatch):
     sites = client.get("/console/api/sites", headers=hdr).json()["sites"]
     overview = client.get("/console/api/overview", headers=hdr).json()["sites"]
     assert {s["name"]: s["online"] for s in sites} == {"direct": True, "down": False}
+    assert next(s for s in sites if s["name"] == "direct")["latest_probe"] is not None
+    assert next(s for s in sites if s["name"] == "down")["status"] == "offline"
     assert overview["online"] == 1
 
 
@@ -1459,3 +1461,12 @@ def test_direct_rejects_duplicate_selection_and_wrong_port(console, monkeypatch)
         json={"site": "direct", "name": "m2", "port": 9000, "upstream_model": "m2"})
     assert duplicate.status_code == 400
     assert wrong_port.status_code == 400
+
+
+def test_direct_rejects_an_address_owned_by_another_site(console, monkeypatch):
+    install_litellm_stub(monkeypatch, _direct_group_handler([]))
+    client, hdr = _admin_client(console)
+    response = client.post("/console/api/sites/direct", headers=hdr, json={
+        "site": "duplicate", "address": DIRECT_SITE["address"],
+        "models": [{"name": "m1", "upstream_model": "m1"}]})
+    assert response.status_code == 409

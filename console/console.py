@@ -800,6 +800,10 @@ async def probe_direct_site(site: dict) -> bool:
 async def direct_health(sites: list[dict]) -> dict[str, bool]:
     direct = [s for s in sites if s.get("transport", "wireguard") == "direct" and s.get("status") != "revoked"]
     results = await asyncio.gather(*(probe_direct_site(s) for s in direct), return_exceptions=True)
+    now = int(time.time())
+    for site, result in zip(direct, results):
+        if result is True:
+            site["latest_probe"] = now
     return {s["name"]: value is True for s, value in zip(direct, results)}
 
 
@@ -890,9 +894,11 @@ async def api_overview(request: Request) -> Response:
         n_deps = sum(1 for d in deps if dep_of_site_row(d, s))
         online = (s["status"] in ("active", "partial") and health.get(s["name"], False)) if direct else \
                  s["status"] in ("active", "partial") and 0 <= ago < HANDSHAKE_ONLINE
+        status = "offline" if direct and s["status"] in ("active", "partial") and not online else \
+                 "online" if online else s["status"]
         site_rows.append({"name": s["name"], "transport": "direct" if direct else "wireguard",
                           "address": s.get("address") if direct else None, "wg_ip": None if direct else s["wg_ip"], "handshake": ago,
-                          "deployments": n_deps, "status": "online" if online else s["status"]})
+                          "deployments": n_deps, "status": status})
     per_dep = {}
     for r in today:
         k = (r.get("model_id") or r.get("api_base") or "?", r.get("model_group") or "?")
@@ -1068,6 +1074,8 @@ async def api_sites(request: Request) -> Response:
         tags = sorted({t for d in site_deps for t in dep_tags(d)}) if site_deps else \
                sorted({g for g in s["groups"] if g != "default"})
         ago = None if direct else hs.get(s.get("pubkey") or "", -1)
+        online = (s["status"] in ("active", "partial") and health.get(s["name"], False) if direct else
+                  s["status"] in ("active", "partial") and 0 <= ago < HANDSHAKE_ONLINE)
         rows.append({
             "name": s["name"], "transport": "direct" if direct else "wireguard",
             "address": s.get("address") if direct else None,
@@ -1084,10 +1092,10 @@ async def api_sites(request: Request) -> Response:
                                                {m.get("port") for m in s["models"]
                                                 if isinstance(m, dict)})
                                    if isinstance(p, int) and p > 0}),
-            "groups": tags, "status": s["status"],
+            "groups": tags,
+            "status": "offline" if direct and s["status"] in ("active", "partial") and not online else s["status"],
             "latest_probe": s.get("latest_probe"),
-            "online": (s["status"] in ("active", "partial") and health.get(s["name"], False) if direct else
-                       s["status"] in ("active", "partial") and 0 <= ago < HANDSHAKE_ONLINE),
+            "online": online,
             "created_at": s.get("created_at"),
         })
     return JSONResponse({"sites": rows})
@@ -1145,6 +1153,11 @@ async def api_sites_direct(request: Request) -> Response:
         return jerr("duplicate direct model selection", 400)
     if any(not GROUP_RE.fullmatch(g or "") for g in groups):
         return jerr("bad group names", 400)
+    registered = await onboard_sites()
+    if any(s.get("transport", "wireguard") == "direct" and
+           str(s.get("address") or "").rstrip("/") == address and
+           s.get("status") != "revoked" for s in registered):
+        return jerr("direct address is already managed by another site", 409)
     direct_site = {"transport": "direct", "address": address}
     probe, perr = await fetch_upstream_models(direct_site, 0)
     available = {m["id"] for m in probe}

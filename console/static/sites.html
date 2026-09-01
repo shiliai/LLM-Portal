@@ -229,7 +229,7 @@
       }).join(' ');
       var statusChip = revoked ? '<span class="pf-chip gray">已吊销</span>'
         : s.online ? '<span class="pf-chip ok"><span class="pf-dot ok"></span>在线</span>'
-        : '<span class="pf-chip warn">' + esc(s.status) + '</span>';
+        : '<span class="pf-chip warn">' + (s.transport === 'direct' && s.status === 'offline' ? '离线' : esc(s.status)) + '</span>';
       var actions = revoked ? '<button class="pf-link" disabled>已吊销</button>'
         : '<button class="pf-link js-site-models" data-site="' + esc(s.name) + '">模型</button> ' +
           '<button class="pf-link js-edit-groups" data-site="' + esc(s.name) + '">分组</button> ' +

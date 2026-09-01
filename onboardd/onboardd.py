@@ -413,6 +413,12 @@ async def admin_direct(request: Request) -> Response:
     with db() as conn:
         if conn.execute("SELECT 1 FROM sites WHERE name=? AND status IN ('active','partial','registered')", (site,)).fetchone():
             return JSONResponse({"error": f"site {site} already exists (revoke first)"}, status_code=409)
+        owner = conn.execute(
+            "SELECT name FROM sites WHERE transport='direct' AND address=? "
+            "AND status IN ('active','partial','registered')", (address,)).fetchone()
+        if owner is not None:
+            return JSONResponse({"error": f"direct address already belongs to site {owner['name']}"},
+                                status_code=409)
         conn.execute("INSERT OR REPLACE INTO sites (name, pubkey, wg_ip, models, groups, status, created_at, transport, address, latest_probe) VALUES (?,?,?,?,?,?,?,?,?,?)",
                      (site, None, None, json.dumps(models), json.dumps(groups), "active", int(time.time()),
                       "direct", address, int(time.time())))

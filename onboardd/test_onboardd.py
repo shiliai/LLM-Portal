@@ -359,6 +359,18 @@ def test_admin_direct_persists_transport_without_wg_fields(onboardd):
         "direct", "http://192.168.100.55:8005/v1", None, None)
 
 
+def test_admin_direct_rejects_duplicate_address_owner(onboardd):
+    payload = {"address": "http://192.168.100.55:8005/v1",
+               "models": [{"name": "qwen3.8-27b", "upstream_model": "qwen3.8-27b"}]}
+    with TestClient(onboardd.app) as client:
+        first = client.post("/onboard/admin/direct", headers=_admin_headers(),
+                            json={"site": "first", **payload})
+        second = client.post("/onboard/admin/direct", headers=_admin_headers(),
+                             json={"site": "second", **payload})
+    assert first.status_code == 200
+    assert second.status_code == 409
+
+
 def test_revoke_direct_deletes_routes_without_touching_wireguard(onboardd, monkeypatch):
     with TestClient(onboardd.app) as client:
         client.post("/onboard/admin/direct", headers=_admin_headers(), json={
