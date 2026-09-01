@@ -23,6 +23,8 @@ set -a; . ./.env; set +a
 DOMAIN=${DOMAIN:?DOMAIN}
 CONSOLE_USAGE_PASSWORD=${CONSOLE_USAGE_PASSWORD:?CONSOLE_USAGE_PASSWORD missing (generate: openssl rand -hex 24)}
 [[ "$CONSOLE_USAGE_PASSWORD" =~ ^[0-9a-f]{48}$ ]] || { echo "CONSOLE_USAGE_PASSWORD must be a 48-char hex value"; exit 1; }
+POSTGRES_USER=${POSTGRES_USER:-litellm}
+POSTGRES_DB=${POSTGRES_DB:-litellm}
 WG_PORT=${WG_PORT:-51820}
 WG_VPS_IP=${WG_VPS_IP:-10.77.0.1}
 # WG_SUBNET（.env，如 10.78.0.0/24）→ 派生前缀传给 onboardd（站点 AllowedIPs/自检 ping；
@@ -140,13 +142,7 @@ ALTER TABLE public."LiteLLM_SpendLogs" ADD COLUMN IF NOT EXISTS portal_cached_to
 SQL
 # Existing volumes skip docker-entrypoint-initdb.d, so converge the dedicated
 # console role on every deploy without exposing the database owner URL to it.
-docker compose exec -T postgres sh -ec 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v usage_password="$CONSOLE_USAGE_PASSWORD" <<'"'"'SQL'"'"'
-SELECT format('CREATE ROLE console_usage LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT', :'"'"'usage_password'"'"') WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='console_usage') \gexec
-ALTER ROLE console_usage PASSWORD :'"'"'usage_password'"'"';
-GRANT CONNECT ON DATABASE litellm TO console_usage;
-GRANT USAGE ON SCHEMA public TO console_usage;
-GRANT SELECT ON TABLE public."LiteLLM_SpendLogs" TO console_usage;
-SQL'
+converge_console_usage_role
 
 echo "== [4/7] edge certificate/site ($DOMAIN)"
 EDGE_DIR=$STATE_DIR/edge
