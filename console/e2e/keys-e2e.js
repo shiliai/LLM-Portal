@@ -203,7 +203,7 @@ const AUTOFILL_EMAIL = ['autofill', 'example.com'].join('@');
       || JSON.stringify(piLevels) !== JSON.stringify(['high', 'max'])
       || !piQwen
       || piQwen.reasoning !== true
-      || JSON.stringify(piQwen.input) !== JSON.stringify(['text', 'image', 'video'])
+      || JSON.stringify(piQwen.input) !== JSON.stringify(['text', 'image'])
       || piQwen.contextWindow !== 262144
       || piQwen.maxTokens !== 32768
       || piSettings.defaultProvider !== 'private-llm'
