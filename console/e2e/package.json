@@ -9,6 +9,7 @@
     "keys-vault": "node keys-vault-e2e.js",
     "usage-redesign": "node usage-redesign-e2e.js",
     "usage-reqlog": "node usage-reqlog-e2e.js",
+    "usage-filter": "node usage-filter-e2e.js",
     "sites-models": "node sites-models-e2e.js",
     "mcp": "node mcp-e2e.js",
     "mcp-usage": "node mcp-usage-e2e.js"
