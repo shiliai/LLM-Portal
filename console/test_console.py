@@ -949,12 +949,24 @@ def test_mcp_use_config_never_contains_placeholder_and_binds_reveal_generation()
 def test_mcp_usage_overview_has_ranges_states_refresh_and_stale_protection():
     source = (CONSOLE_DIR / "static" / "mcp.html").read_text()
     for required in (
-            "按 Key 调用计数", "data-mcp-usage-days=\"1\"", "data-mcp-usage-days=\"7\"",
-            "data-mcp-usage-days=\"30\"", "今天", "最近 7 天", "最近 30 天", "↻ 刷新",
+            "mcp-tab-tools", "mcp-tab-external", "mcp-tab-usage", "mcp-tab-config",
+            "工具与模型", "外部服务", "调用用量", "接入配置",
+            "aria-controls=\"mcp-pane-usage\"", "aria-labelledby=\"mcp-tab-usage\"",
+            "data-mcp-main-tab=\"usage\"", "data-mcp-main-pane=\"usage\"",
+            "按 Key 调用", "id=\"filter-mcp-usage-days\"", "value=\"1\"", "value=\"7\"",
+            "value=\"30\"", "今天", "最近 7 天", "最近 30 天", "↻ 刷新",
             "↻ 刷新中…", "正在加载", "数据已刷新", "暂无 MCP 工具调用", "MCP 工具调用加载失败",
             "window.pfErr(message)", "flex-wrap:wrap", "mcpUsageRequest",
-            "request !== mcpUsageRequest", "'/mcp/usage?days=' + mcpUsageDays"):
+            "request !== mcpUsageRequest", "'/mcp/usage?days=' + mcpUsageDays",
+            "renderUsageStats(total, keys.length, Object.keys(allTools).length)",
+            "mcp-usage-table-wrap", "Asia/Shanghai", "data-mcp-client-tab=\"codex\""):
         assert required in source
+    assert 'id="mcp-tab-usage" role="tab" aria-selected="true"' in source
+    assert "失败率" not in source
+    assert "失败数" not in source
+    assert "最后调用" not in source
+    assert "mcp-usage-table-wrap { overflow-x:auto; min-height" in source
+    assert "data-pf-bound=\"1\"" in source
 
 
 def test_mcp_registration_uses_accessible_page_confirmation_without_native_dialogs():

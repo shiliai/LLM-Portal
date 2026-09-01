@@ -18,6 +18,21 @@
   .mcp-use-blk { margin-top: 12px; }
   .mcp-use-blk-label { font-size: 12px; color: #595959; margin-bottom: 2px; }
   .vision-controls { display:grid; grid-template-columns:minmax(180px,1fr) minmax(220px,1.25fr) auto; gap:8px; }
+  .mcp-main-tabs { gap: 22px; margin-bottom: 14px; overflow-x: auto; scrollbar-width: thin; }
+  .mcp-main-tab { flex: 0 0 auto; min-width:88px; }
+  .mcp-main-pane { min-width: 0; }
+  .mcp-usage-toolbar { border-bottom:1px solid #f0f0f0; padding:0; flex-wrap:nowrap; overflow-x:auto; }
+  .mcp-usage-spacer { flex:1 0 12px; }
+  .mcp-usage-stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; padding:14px 0; }
+  .mcp-usage-stat { border:1px solid #f0f0f0; border-radius:6px; padding:11px 13px; min-width:0; }
+  .mcp-usage-stat-label { color:#8c8c8c; font-size:12px; }
+  .mcp-usage-stat-value { font-size:20px; font-weight:600; margin-top:4px; }
+  .mcp-usage-table-wrap { overflow-x:auto; min-height:108px; }
+  .mcp-tool-list { display:flex; flex-wrap:wrap; gap:4px; min-width:180px; }
+  .mcp-share { display:flex; align-items:center; gap:7px; min-width:132px; }
+  .mcp-share-track { width:72px; height:5px; overflow:hidden; border-radius:3px; background:#f0f0f0; }
+  .mcp-share-bar { height:100%; background:#1677ff; border-radius:3px; }
+  @media (max-width: 540px) { .mcp-usage-stats { grid-template-columns:repeat(2,minmax(0,1fr)); } .mcp-usage-toolbar .pf-btn { flex:0 0 auto; } }
   @media (max-width: 760px) { .vision-controls { grid-template-columns:1fr; } }
 </style>
 </head>
@@ -26,12 +41,16 @@
 
   <div class="pf-page-head">
     <div class="pf-desc">客户端以 <span class="mono">/mcp</span> + 与 API 相同的 Key 注册网关 MCP（Streamable HTTP）；网关按 Key 所属分组裁剪外部工具，用户的 Key 只用于网关鉴权与记账，永不发往任何上游（US-P4/C5）。</div>
-    <div style="display:flex;gap:8px">
-      <button class="pf-btn" id="btn-use-mcp" type="button">使用</button>
-      <button class="pf-btn primary" data-modal="modal-newmcp">注册外部 MCP</button>
-    </div>
   </div>
 
+  <div class="pf-tabs mcp-main-tabs" data-pf-bound="1" role="tablist" aria-label="MCP 管理">
+    <button class="pf-tab mcp-main-tab" id="mcp-tab-tools" role="tab" aria-selected="false" aria-controls="mcp-pane-tools" tabindex="-1" data-mcp-main-tab="tools" type="button">工具与模型</button>
+    <button class="pf-tab mcp-main-tab" id="mcp-tab-external" role="tab" aria-selected="false" aria-controls="mcp-pane-external" tabindex="-1" data-mcp-main-tab="external" type="button">外部服务</button>
+    <button class="pf-tab mcp-main-tab active" id="mcp-tab-usage" role="tab" aria-selected="true" aria-controls="mcp-pane-usage" data-mcp-main-tab="usage" type="button">调用用量</button>
+    <button class="pf-tab mcp-main-tab" id="mcp-tab-config" role="tab" aria-selected="false" aria-controls="mcp-pane-config" tabindex="-1" data-mcp-main-tab="config" type="button">接入配置</button>
+  </div>
+
+  <section class="pf-tabpane mcp-main-pane" id="mcp-pane-tools" role="tabpanel" aria-labelledby="mcp-tab-tools" data-mcp-main-pane="tools" hidden>
   <!-- 内建工具 -->
   <div class="pf-card">
     <div class="pf-card-head">
@@ -70,12 +89,14 @@
       <div class="pf-kv-k">客户端兼容</div><div class="pf-kv-v">契约 = Streamable HTTP + 标准 <span class="mono">Authorization: Bearer</span>（与 API 使用同一密钥）+ 小写下划线工具名；Claude Code / Hermes / DeepSeek Harness / Pi（需先安装 pi-mcp-adapter 扩展）四类客户端均可接入，接入示例见 runbook。</div>
     </div>
   </div>
+  </section>
 
+  <section class="pf-tabpane mcp-main-pane" id="mcp-pane-external" role="tabpanel" aria-labelledby="mcp-tab-external" data-mcp-main-pane="external" hidden>
   <!-- 外部 MCP 注册表 -->
   <div class="pf-card flush">
     <div class="pf-card-head">
       <div class="pf-card-title">外部 MCP 注册（US-P12）</div>
-      <div class="pf-card-extra" id="mcp-extra">加载中…</div>
+      <div class="pf-card-extra"><span id="mcp-extra">加载中…</span><button class="pf-btn primary" data-modal="modal-newmcp" type="button">注册外部 MCP</button></div>
     </div>
     <table class="pf-table">
       <thead>
@@ -94,29 +115,43 @@
     </div>
     <div class="pf-code"><pre id="tools-preview">点击「刷新预览」连接各外部 MCP 获取实时工具清单</pre></div>
   </div>
+  </section>
 
+  <section class="pf-tabpane mcp-main-pane active" id="mcp-pane-usage" role="tabpanel" aria-labelledby="mcp-tab-usage" data-mcp-main-pane="usage">
   <!-- 按 Key 调用计数 -->
-  <div class="pf-card flush">
-    <div class="pf-card-head" style="flex-wrap:wrap;gap:10px">
-      <div><div class="pf-card-title" id="usage-title">按 Key 调用计数</div><div class="pf-desc" id="mcp-usage-status" role="status" aria-live="polite">等待加载</div></div>
-      <div class="pf-card-extra" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;max-width:100%">
-        <div class="pf-tabs" aria-label="MCP 用量范围" style="gap:12px;margin-bottom:0">
-          <button class="pf-tab active" data-mcp-usage-days="1" type="button">今天</button>
-          <button class="pf-tab" data-mcp-usage-days="7" type="button">最近 7 天</button>
-          <button class="pf-tab" data-mcp-usage-days="30" type="button">最近 30 天</button>
-        </div>
-        <button class="pf-btn" id="btn-refresh-mcp-usage" type="button">↻ 刷新</button>
-      </div>
+  <div class="pf-card" style="padding:0 14px">
+    <div class="pf-toolbar mcp-usage-toolbar">
+      <div class="pf-card-title" id="usage-title">按 Key 调用</div>
+      <span class="mcp-usage-spacer"></span>
+      <button class="pf-btn sm" id="btn-refresh-mcp-usage" type="button" title="只刷新数据，不刷新页面">↻ 刷新</button>
+      <select class="pf-select" id="filter-mcp-usage-days" aria-label="MCP 用量范围" style="width:auto;margin:8px 0">
+        <option value="1">今天</option>
+        <option value="7">最近 7 天</option>
+        <option value="30">最近 30 天</option>
+      </select>
     </div>
-    <table class="pf-table">
-      <thead>
-        <tr><th>Key</th><th>工具明细</th><th class="num">合计</th></tr>
-      </thead>
-      <tbody id="mcp-usage-rows"></tbody>
-    </table>
+    <div class="pf-desc" id="mcp-usage-status" role="status" aria-live="polite" style="padding-top:10px">等待加载</div>
+    <div class="mcp-usage-stats" id="mcp-usage-stats" aria-live="polite"></div>
+    <div class="mcp-usage-table-wrap" id="mcp-usage-table">
+      <table class="pf-table">
+        <thead><tr><th>Key</th><th>调用占比</th><th>主要工具</th><th>工具明细</th><th class="num">合计</th></tr></thead>
+        <tbody id="mcp-usage-rows"></tbody>
+      </table>
+    </div>
   </div>
+  <div class="pf-desc">范围按 Asia/Shanghai 自然日计算；Key 仅显示别名，不展示密钥内容。</div>
+  </section>
 
+  <section class="pf-tabpane mcp-main-pane" id="mcp-pane-config" role="tabpanel" aria-labelledby="mcp-tab-config" data-mcp-main-pane="config" hidden>
   <!-- 上传接口说明 -->
+  <div class="pf-card">
+    <div class="pf-card-head"><div class="pf-card-title">接入 MCP 网关</div><div class="pf-card-extra"><button class="pf-btn primary" id="btn-use-mcp" type="button">使用 MCP</button></div></div>
+    <div class="pf-kv">
+      <div class="pf-kv-k">Server URL</div><div class="pf-kv-v">在“使用 MCP”中按所选用户 Key 生成当前网关地址与客户端配置。</div>
+      <div class="pf-kv-k">鉴权</div><div class="pf-kv-v">与模型 API 使用同一把用户 Key；Key 不会发送给上游 MCP 服务。</div>
+      <div class="pf-kv-k">客户端</div><div class="pf-kv-v">提供 Codex CLI、Claude Code 和通用 Streamable HTTP 配置。</div>
+    </div>
+  </div>
   <div class="pf-card">
     <div class="pf-card-head"><div class="pf-card-title">本地图片上传接口</div></div>
     <div class="pf-kv" style="margin-bottom:12px">
@@ -132,6 +167,7 @@
 # 响应
 { "url": "https://<域名>/mcp/files/<随机token>.png", "expires_in": 1800 }</pre></div>
   </div>
+  </section>
 
   <!-- 注册外部 MCP 弹窗 -->
   <div class="pf-modal" id="modal-newmcp">
@@ -233,22 +269,22 @@
       </div>
       <div class="pf-desc" id="mcp-use-key-note" style="margin-top:-8px;margin-bottom:12px"></div>
 
-      <div class="pf-tabs">
-        <button class="pf-tab active" data-tab="mcp-codex" type="button">Codex CLI</button>
-        <button class="pf-tab" data-tab="mcp-claude" type="button">Claude Code</button>
-        <button class="pf-tab" data-tab="mcp-generic" type="button">通用配置</button>
+      <div class="pf-tabs" data-pf-bound="1" role="tablist" aria-label="MCP 客户端配置">
+        <button class="pf-tab active" id="mcp-client-tab-codex" role="tab" aria-selected="true" aria-controls="mcp-client-pane-codex" data-mcp-client-tab="codex" type="button">Codex CLI</button>
+        <button class="pf-tab" id="mcp-client-tab-claude" role="tab" aria-selected="false" aria-controls="mcp-client-pane-claude" tabindex="-1" data-mcp-client-tab="claude" type="button">Claude Code</button>
+        <button class="pf-tab" id="mcp-client-tab-generic" role="tab" aria-selected="false" aria-controls="mcp-client-pane-generic" tabindex="-1" data-mcp-client-tab="generic" type="button">通用配置</button>
       </div>
-      <div class="pf-tabpane active" data-tab="mcp-codex">
+      <div class="pf-tabpane active" id="mcp-client-pane-codex" role="tabpanel" aria-labelledby="mcp-client-tab-codex" data-mcp-client-pane="codex">
         <div class="mcp-use-blk"><div class="mcp-use-blk-label">macOS · Linux</div>
           <div class="pf-code"><pre id="mcp-codex-nix"></pre></div></div>
         <div class="mcp-use-blk"><div class="mcp-use-blk-label">Windows PowerShell</div>
           <div class="pf-code"><pre id="mcp-codex-win"></pre></div></div>
       </div>
-      <div class="pf-tabpane" data-tab="mcp-claude">
+      <div class="pf-tabpane" id="mcp-client-pane-claude" role="tabpanel" aria-labelledby="mcp-client-tab-claude" data-mcp-client-pane="claude" hidden>
         <div class="mcp-use-blk"><div class="mcp-use-blk-label">用户级配置</div>
           <div class="pf-code"><pre id="mcp-claude-command"></pre></div></div>
       </div>
-      <div class="pf-tabpane" data-tab="mcp-generic">
+      <div class="pf-tabpane" id="mcp-client-pane-generic" role="tabpanel" aria-labelledby="mcp-client-tab-generic" data-mcp-client-pane="generic" hidden>
         <div class="mcp-use-blk"><div class="mcp-use-blk-label">支持 Streamable HTTP 的 MCP 客户端</div>
           <div class="pf-code"><pre id="mcp-generic-json"></pre></div></div>
       </div>
@@ -297,7 +333,11 @@
     document.getElementById('btn-mcp-confirm-submit').disabled = false;
     setMcpConfirmInert(true);
     window.pfModal('modal-mcp-confirm');
-    setTimeout(function () { document.getElementById('btn-mcp-confirm-submit').focus({ preventScroll: true }); }, 50);
+    var confirmButton = document.getElementById('btn-mcp-confirm-submit');
+    requestAnimationFrame(function () { confirmButton.focus({ preventScroll: true }); });
+    setTimeout(function () {
+      if (pendingMcpAction) confirmButton.focus({ preventScroll: true });
+    }, 220);
   }
 
   function setMcpConfirmInert(active) {
@@ -527,25 +567,75 @@
   var mcpUsageRequest = 0;
   var mcpUsageLabels = {1: '今天', 7: '最近 7 天', 30: '最近 30 天'};
 
+  function renderUsageStats(total, activeKeys, toolCount) {
+    document.getElementById('mcp-usage-stats').innerHTML = [
+      ['总调用', fmtN(total)], ['活跃 Key', fmtN(activeKeys)], ['已调用工具', fmtN(toolCount)]
+    ].map(function (item) {
+      return '<div class="mcp-usage-stat"><div class="mcp-usage-stat-label">' + item[0] +
+        '</div><div class="mcp-usage-stat-value">' + item[1] + '</div></div>';
+    }).join('');
+  }
+
   function setUsageState(state, message) {
     document.getElementById('mcp-usage-status').textContent = message;
-    if (state !== 'data') document.getElementById('mcp-usage-rows').innerHTML =
-      '<tr><td colspan="3" class="pf-desc" style="padding:10px">' + esc(message) + '</td></tr>';
+    if (state !== 'data') {
+      renderUsageStats(0, 0, 0);
+      document.getElementById('mcp-usage-rows').innerHTML =
+        '<tr><td colspan="5" class="pf-desc" style="padding:10px">' + esc(message) + '</td></tr>';
+    }
   }
 
   function renderUsage(d) {
-    document.getElementById('mcp-usage-rows').innerHTML = d.keys.map(function (k) {
-      var tools = Object.keys(k.tools || {}).map(function (t) {
+    var keys = Array.isArray(d.keys) ? d.keys : [];
+    var total = keys.reduce(function (sum, key) { return sum + Number(key.total || 0); }, 0);
+    var allTools = {};
+    keys.forEach(function (key) { Object.keys(key.tools || {}).forEach(function (tool) { allTools[tool] = true; }); });
+    renderUsageStats(total, keys.length, Object.keys(allTools).length);
+    document.getElementById('mcp-usage-rows').innerHTML = keys.map(function (k) {
+      var toolNames = Object.keys(k.tools || {});
+      var tools = toolNames.map(function (t) {
         return '<span class="pf-chip">' + esc(t) + ' × ' + fmtN(k.tools[t]) + '</span>';
       }).join(' ');
+      var primary = toolNames.sort(function (a, b) { return Number(k.tools[b]) - Number(k.tools[a]); })[0] || '—';
+      var share = total ? Math.round(Number(k.total || 0) * 100 / total) : 0;
       return '<tr>' +
         '<td>' + esc(k.alias) + '</td>' +
-        '<td>' + (tools || '<span class="pf-desc">—</span>') + '</td>' +
+        '<td><div class="mcp-share"><div class="mcp-share-track"><div class="mcp-share-bar" style="width:' + share + '%"></div></div><span>' + share + '%</span></div></td>' +
+        '<td class="mono">' + esc(primary) + '</td>' +
+        '<td><div class="mcp-tool-list">' + (tools || '<span class="pf-desc">—</span>') + '</div></td>' +
         '<td class="num" style="font-weight:600">' + fmtN(k.total) + '</td>' +
       '</tr>';
-    }).join('') || '<tr><td colspan="3" class="pf-desc" style="padding:10px">此范围内暂无 MCP 工具调用</td></tr>';
-    document.getElementById('mcp-usage-status').textContent = d.keys.length ?
+    }).join('') || '<tr><td colspan="5" class="pf-desc" style="padding:10px">此范围内暂无 MCP 工具调用</td></tr>';
+    document.getElementById('mcp-usage-status').textContent = keys.length ?
       mcpUsageLabels[mcpUsageDays] + '数据已刷新' : mcpUsageLabels[mcpUsageDays] + '暂无 MCP 工具调用';
+  }
+
+  function selectMcpMainTab(name) {
+    document.querySelectorAll('[data-mcp-main-tab]').forEach(function (tab) {
+      var active = tab.dataset.mcpMainTab === name;
+      tab.classList.toggle('active', active);
+      tab.setAttribute('aria-selected', String(active));
+      tab.tabIndex = active ? 0 : -1;
+    });
+    document.querySelectorAll('[data-mcp-main-pane]').forEach(function (pane) {
+      var active = pane.dataset.mcpMainPane === name;
+      pane.classList.toggle('active', active);
+      pane.hidden = !active;
+    });
+  }
+
+  function selectMcpClientTab(name) {
+    document.querySelectorAll('[data-mcp-client-tab]').forEach(function (tab) {
+      var active = tab.dataset.mcpClientTab === name;
+      tab.classList.toggle('active', active);
+      tab.setAttribute('aria-selected', String(active));
+      tab.tabIndex = active ? 0 : -1;
+    });
+    document.querySelectorAll('[data-mcp-client-pane]').forEach(function (pane) {
+      var active = pane.dataset.mcpClientPane === name;
+      pane.classList.toggle('active', active);
+      pane.hidden = !active;
+    });
   }
 
   function setUsageRefreshLoading(on) {
@@ -579,14 +669,15 @@
 
   window.pfReady.then(function () {
     load();
-    document.querySelectorAll('[data-mcp-usage-days]').forEach(function (button) {
-      button.addEventListener('click', function () {
-        mcpUsageDays = Number(button.dataset.mcpUsageDays);
-        document.querySelectorAll('[data-mcp-usage-days]').forEach(function (item) {
-          item.classList.toggle('active', item === button);
-        });
-        loadUsage();
-      });
+    document.querySelectorAll('[data-mcp-main-tab]').forEach(function (button) {
+      button.addEventListener('click', function () { selectMcpMainTab(button.dataset.mcpMainTab); });
+    });
+    document.querySelectorAll('[data-mcp-client-tab]').forEach(function (button) {
+      button.addEventListener('click', function () { selectMcpClientTab(button.dataset.mcpClientTab); });
+    });
+    document.getElementById('filter-mcp-usage-days').addEventListener('change', function () {
+      mcpUsageDays = Number(this.value);
+      loadUsage();
     });
     document.getElementById('btn-refresh-mcp-usage').addEventListener('click', loadUsage);
     document.getElementById('btn-use-mcp').addEventListener('click', function () {
