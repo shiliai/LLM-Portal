@@ -27,6 +27,14 @@ POSTGRES_USER=${POSTGRES_USER:-litellm}
 POSTGRES_DB=${POSTGRES_DB:-litellm}
 WG_PORT=${WG_PORT:-51820}
 WG_VPS_IP=${WG_VPS_IP:-10.77.0.1}
+WG_IFACE=${WG_IFACE:-wg0}
+WG_CONF=${WG_CONF:-/etc/wireguard/${WG_IFACE}.conf}
+SITE_WG_IFACE=${SITE_WG_IFACE:-wg0}
+[[ "$WG_IFACE" =~ ^[a-zA-Z0-9_=+.-]{1,15}$ ]] || { echo "WG_IFACE 非法: $WG_IFACE"; exit 1; }
+[[ "$SITE_WG_IFACE" =~ ^[a-zA-Z0-9_=+.-]{1,15}$ ]] || { echo "SITE_WG_IFACE 非法: $SITE_WG_IFACE"; exit 1; }
+[ "$WG_CONF" = "/etc/wireguard/${WG_IFACE}.conf" ] \
+  || { echo "WG_CONF 必须与 WG_IFACE 对应（expect /etc/wireguard/${WG_IFACE}.conf）"; exit 1; }
+export WG_IFACE WG_CONF SITE_WG_IFACE
 # WG_SUBNET（.env，如 10.78.0.0/24）→ 派生前缀传给 onboardd（站点 AllowedIPs/自检 ping；
 # 换独立网段可让站点与另一套 10.77.0.0/24 网关双隧道并存）。
 # 校验 /24 形状：onboardd 硬性假设三段前缀（拼 .0/24、站点 IP 从 .11 递增）
@@ -49,12 +57,12 @@ for unit in console mcp-hub onboardd; do
     fi
   fi
 done
-if systemctl is-active --quiet wg-quick@wg0 2>/dev/null; then
-  if sudo -n systemctl disable --now wg-quick@wg0 2>/dev/null; then
-    echo "   wg-quick@wg0 已停用（隧道短暂中断，直至步骤 3 容器拉起）"
+if systemctl is-active --quiet "wg-quick@$WG_IFACE" 2>/dev/null; then
+  if sudo -n systemctl disable --now "wg-quick@$WG_IFACE" 2>/dev/null; then
+    echo "   wg-quick@$WG_IFACE 已停用（隧道短暂中断，直至步骤 3 容器拉起）"
   else
-    echo "   !! wg0 仍由 systemd 管理，容器无法接管："
-    echo "      sudo systemctl disable --now wg-quick@wg0 后重跑本脚本"
+    echo "   !! $WG_IFACE 仍由 systemd 管理，容器无法接管："
+    echo "      sudo systemctl disable --now wg-quick@$WG_IFACE 后重跑本脚本"
     exit 1
   fi
 fi
@@ -64,20 +72,20 @@ docker compose build wireguard >/dev/null
 # -i 必需：heredoc 走 stdin，缺 -i 时 sh -s 立即 EOF、bootstrap 体一行都不执行
 #（exit 0 的静默失败；VPS 迁移自 systemd 时密钥已存在故从未暴露）
 docker run --rm -i -v "$STATE_DIR":/state -v /etc/wireguard:/wg \
-  -e WG_VPS_IP -e WG_PORT private-llm-wireguard sh -es <<'BOOTSTRAP'
+  -e WG_VPS_IP -e WG_PORT -e WG_IFACE private-llm-wireguard sh -es <<'BOOTSTRAP'
 umask 077
 [ -f /state/wireguard-private.key ] || wg genkey > /state/wireguard-private.key
 wg pubkey < /state/wireguard-private.key > /state/wireguard-public.key
-if [ ! -f /wg/wg0.conf ]; then
+if [ ! -f "/wg/${WG_IFACE}.conf" ]; then
   # MTU=1280：跨境 UDP 链路对大包丢弃率高（晚高峰 10-25% 丢包），1280 实测吞吐 3-6 倍于默认 1420
-  cat > /wg/wg0.conf <<CONF
+  cat > "/wg/${WG_IFACE}.conf" <<CONF
 [Interface]
 Address = ${WG_VPS_IP:?}/24
 ListenPort = ${WG_PORT:?}
 MTU = 1280
 PrivateKey = $(cat /state/wireguard-private.key)
 CONF
-  echo "   已生成 /etc/wireguard/wg0.conf"
+  echo "   已生成 /etc/wireguard/${WG_IFACE}.conf"
 fi
 BOOTSTRAP
 echo "-- external MCP registry backup gate"
@@ -252,7 +260,7 @@ echo "-- compat-proxy:"; code=$(http_code -X POST http://127.0.0.1:8400/v1/chat/
 echo "-- onboardd:"; code=$(http_code "http://127.0.0.1:8100/onboard/install?token=x"); [ "$code" = "403" ] || fail_smoke "expect onboardd 403, got $code"
 echo "-- mcp-hub:"; code=$(http_code -H 'authorization: Bearer invalid' http://127.0.0.1:8200/mcp/usage); [ "$code" = "401" ] || fail_smoke "expect mcp-hub 401, got $code"
 echo "-- consoled:"; code=$(http_code http://127.0.0.1:8300/console/api/me); [ "$code" = "401" ] || fail_smoke "expect console 401, got $code"
-echo "-- wireguard:"; docker exec private-llm-wireguard wg show wg0 | head -3 || fail_smoke "wireguard unavailable"
+echo "-- wireguard:"; docker exec private-llm-wireguard wg show "$WG_IFACE" | head -3 || fail_smoke "wireguard unavailable"
 for container in litellm private-llm-compat private-llm-postgres private-llm-mcp-hub private-llm-onboardd private-llm-console private-llm-wireguard; do
   [ "$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || true)" = "running" ] \
     || fail_smoke "$container is not running"

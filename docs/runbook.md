@@ -118,6 +118,11 @@ curl -s http://127.0.0.1:4000/key/generate -H "Authorization: Bearer $LITELLM_MA
 
 ## 3. 站点接入（US-P7/P8）
 
+控制台「站点与公钥」的新增站点可选 Direct：填写形如
+`http://192.168.100.55:8005/v1` 的服务地址，探测并选择 `/v1/models` 返回的模型即可登记。
+Direct 仅接受 IP 字面量的本机、RFC1918/ULA 或 CGNAT 地址，不跟随 HTTP 重定向；它不创建
+WireGuard peer，也不会在删除时停止上游服务。需要跨网络接入的机器仍使用下述 WireGuard 流程。
+
 ```bash
 # VPS 上签发（例：site-a，注册两个模型端口）
 site-add site-a --model deepseek-v4-flash-0731:8890 \

@@ -114,13 +114,16 @@ services:
       WG_PORT: ${WG_PORT:-51820}
       WG_VPS_IP: ${WG_VPS_IP:-10.77.0.1}
       WG_SUBNET_PREFIX: ${WG_SUBNET_PREFIX:-10.77.0}
-      # wg0 在宿主机 netns（wireguard sidecar 托管），经 docker.sock exec 操作
+      WG_IFACE: ${WG_IFACE:-wg0}
+      WG_CONF: /etc/wireguard/${WG_IFACE:-wg0}.conf
+      SITE_WG_IFACE: ${SITE_WG_IFACE:-wg0}
+      # WG_IFACE 在宿主机 netns（wireguard sidecar 托管），经 docker.sock exec 操作
       WG_EXEC: docker exec private-llm-wireguard wg
     volumes:
       - /var/lib/private-llm/onboardd:/var/lib/private-llm/onboardd
       - /var/lib/private-llm/wireguard-public.key:/var/lib/private-llm/wireguard-public.key:ro
       # peer 持久化回写（与 wireguard sidecar 共享同一宿主机文件）
-      - /etc/wireguard/wg0.conf:/etc/wireguard/wg0.conf
+      - ${WG_CONF:-/etc/wireguard/wg0.conf}:/etc/wireguard/${WG_IFACE:-wg0}.conf
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "127.0.0.1:8100:8100"   # site-add 等 CLI 走本机回环
@@ -145,6 +148,8 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       ADMIN_TOTP_SECRET: ${ADMIN_TOTP_SECRET:-}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
+      WG_IFACE: ${WG_IFACE:-wg0}
       # 站点握手状态查询 / mcp-hub 重启（宿主机语义默认值见 console.py）
       WG_EXEC: docker exec private-llm-wireguard wg
       MCP_RESTART_CMD: docker restart private-llm-mcp-hub
@@ -167,13 +172,15 @@ services:
     build: ./wireguard
     container_name: private-llm-wireguard
     restart: unless-stopped
-    # host 网络：wg0 创建在宿主机网络命名空间——litellm 容器到站点（10.77.0.0/24）
-    # 的路由经宿主机默认网关进 wg0，模型不变；NET_ADMIN 供 wg-quick/ip 操作接口
+    # host 网络：WG_IFACE 创建在宿主机网络命名空间；NET_ADMIN 供 wg-quick/ip 操作接口
     network_mode: host
     cap_add:
       - NET_ADMIN
+    environment:
+      WG_IFACE: ${WG_IFACE:-wg0}
+      WG_CONF: /etc/wireguard/${WG_IFACE:-wg0}.conf
     volumes:
-      - /etc/wireguard/wg0.conf:/etc/wireguard/wg0.conf
+      - ${WG_CONF:-/etc/wireguard/wg0.conf}:/etc/wireguard/${WG_IFACE:-wg0}.conf
 
   # ---- standalone 边缘（EDGE_MODE=standalone；--profile edge 启用）----
   # edge-nginx：80/443 单入口（渲染后的 nginx/private-llm.conf 挂 conf.d）。

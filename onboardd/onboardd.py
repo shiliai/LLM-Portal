@@ -19,6 +19,7 @@
 """
 
 import json
+import ipaddress
 import os
 import re
 import secrets
@@ -27,6 +28,7 @@ import sqlite3
 import subprocess
 import time
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 import uvicorn
@@ -44,6 +46,10 @@ PUBLIC_BASE = os.environ.get("PUBLIC_BASE", f"https://{DOMAIN}").rstrip("/")
 WG_ENDPOINT_HOST = os.environ.get("WG_ENDPOINT_HOST", DOMAIN)
 WG_CONF = Path(os.environ.get("WG_CONF", "/etc/wireguard/wg0.conf"))
 WG_IFACE = os.environ.get("WG_IFACE", "wg0")
+SITE_WG_IFACE = os.environ.get("SITE_WG_IFACE", "wg0")
+for _iface_name, _iface_value in (("WG_IFACE", WG_IFACE), ("SITE_WG_IFACE", SITE_WG_IFACE)):
+    if not re.fullmatch(r"[a-zA-Z0-9_=+.-]{1,15}", _iface_value):
+        raise RuntimeError(f"invalid {_iface_name}: {_iface_value!r}")
 WG_EXEC = shlex.split(os.environ.get("WG_EXEC", "wg"))
 WG_PORT = os.environ.get("WG_PORT", "51820")
 WG_SUBNET_PREFIX = os.environ.get("WG_SUBNET_PREFIX", "10.77.0")  # 站点 IP 从 .11 递增
@@ -83,6 +89,46 @@ def init_db() -> None:
                 wg_ip TEXT, expires_at INTEGER, used INTEGER DEFAULT 0);
             """
         )
+        # v1 的 sites 只有 WireGuard 字段；保留旧行并显式标记为 wireguard。
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(sites)")}
+        for name, definition in (
+            ("transport", "TEXT NOT NULL DEFAULT 'wireguard'"),
+            ("address", "TEXT"),
+            ("latest_probe", "INTEGER"),
+        ):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE sites ADD COLUMN {name} {definition}")
+
+
+def normalize_direct_address(raw: object) -> str:
+    """Accept only literal local/private/CGNAT OpenAI API bases.
+
+    Restricting v1 to IP literals deliberately eliminates DNS rebinding.  The
+    management API is not a general purpose HTTP proxy, and redirects are
+    rejected by the caller as a second boundary.
+    """
+    if not isinstance(raw, str) or len(raw) > 256:
+        raise ValueError("bad direct address")
+    try:
+        parsed = urlsplit(raw.strip())
+        host = parsed.hostname
+        ip = ipaddress.ip_address(host or "")
+    except ValueError as exc:
+        raise ValueError("direct address must use a literal IP address") from exc
+    if parsed.scheme not in ("http", "https") or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("direct address must be http(s) without credentials, query, or fragment")
+    # is_private includes IPv6 ULA but not 100.64.0.0/10; loopback is useful
+    # for local deployments. Link-local/multicast/unspecified/reserved remain out.
+    cgnat = isinstance(ip, ipaddress.IPv4Address) and ip in ipaddress.ip_network("100.64.0.0/10")
+    if not (ip.is_loopback or ip.is_private or cgnat) or ip.is_link_local or ip.is_multicast or ip.is_unspecified or ip.is_reserved:
+        raise ValueError("direct address must be loopback, RFC1918/ULA, or CGNAT (not link-local/multicast)")
+    path = parsed.path.rstrip("/")
+    if path not in ("", "/v1"):
+        raise ValueError("direct address must end at /v1")
+    netloc = f"[{ip.compressed}]" if ip.version == 6 else ip.compressed
+    if parsed.port:
+        netloc += f":{parsed.port}"
+    return urlunsplit((parsed.scheme, netloc, "/v1", "", ""))
 
 
 def run(cmd: list[str]) -> subprocess.CompletedProcess:
@@ -120,6 +166,7 @@ async def install(request: Request) -> Response:
               .replace("__WG_ENDPOINT__", f"{WG_ENDPOINT_HOST}:{WG_PORT}")
               .replace("__WG_ALLOWED__", WG_ALLOWED)
               .replace("__GW_WG_IP__", GW_WG_IP)
+              .replace("__SITE_WG_IFACE__", SITE_WG_IFACE)
               .replace("__MODEL_PORTS__", ports))
     return PlainTextResponse(script, media_type="text/x-shellscript")
 
@@ -253,31 +300,52 @@ async def admin_revoke(request: Request) -> Response:
     if row is None:
         return JSONResponse({"error": f"unknown site {site}"}, status_code=404)
     outputs = {}
-    r = run(WG_EXEC + ["set", WG_IFACE, "peer", row["pubkey"], "remove"])
-    outputs["wg_remove"] = "ok" if r.returncode == 0 else r.stderr.strip()
-    remove_peer_from_conf(row["pubkey"])
+    if row["transport"] == "wireguard":
+        r = run(WG_EXEC + ["set", WG_IFACE, "peer", row["pubkey"], "remove"])
+        outputs["wg_remove"] = "ok" if r.returncode == 0 else r.stderr.strip()
+        remove_peer_from_conf(row["pubkey"])
     deleted = []
+    direct_models = {(m.get("name"), m.get("upstream_model") or m.get("name"))
+                     for m in json.loads(row["models"] or "[]") if isinstance(m, dict)}
+    failed = []
     async with httpx.AsyncClient(timeout=30) as client:
         info = await client.get(f"{LITELLM_BASE}/model/info", headers={"Authorization": f"Bearer {LITELLM_MASTER_KEY}"})
         for dep in info.json().get("data", []):
-            if str(dep.get("litellm_params", {}).get("api_base", "")).startswith(f"http://{row['wg_ip']}:"):
+            base = str(dep.get("litellm_params", {}).get("api_base", "")).rstrip("/")
+            upstream = str((dep.get("litellm_params") or {}).get("model") or "").removeprefix("openai/")
+            managed = (base.startswith(f"http://{row['wg_ip']}:") if row["transport"] == "wireguard"
+                       else base == (row["address"] or "").rstrip("/") and
+                            (dep.get("model_name"), upstream) in direct_models)
+            if managed:
                 r = await client.post(
                     f"{LITELLM_BASE}/model/delete",
                     json={"id": dep["model_info"]["id"]},
                     headers={"Authorization": f"Bearer {LITELLM_MASTER_KEY}"},
                 )
                 deleted.append({"model": dep.get("model_name"), "ok": r.status_code == 200})
+                if r.status_code != 200:
+                    failed.append(dep.get("model_name") or "?")
     outputs["deployments_deleted"] = deleted
+    if row["transport"] == "direct" and failed:
+        return JSONResponse({"error": "failed to delete managed deployments; site preserved for retry",
+                             "site": site, "detail": outputs}, status_code=502)
     with db() as conn:
-        conn.execute("UPDATE sites SET status='revoked' WHERE name=?", (site,))
-    return JSONResponse({"site": site, "status": "revoked", "detail": outputs})
+        if row["transport"] == "direct":
+            # Direct has no host-side state to preserve. Removing the row avoids
+            # a stale Portal registration while leaving the upstream untouched.
+            conn.execute("DELETE FROM sites WHERE name=?", (site,))
+            status = "deleted"
+        else:
+            conn.execute("UPDATE sites SET status='revoked' WHERE name=?", (site,))
+            status = "revoked"
+    return JSONResponse({"site": site, "status": status, "detail": outputs})
 
 
 async def admin_list(request: Request) -> Response:
     if not require_admin(request):
         return JSONResponse({"error": "forbidden"}, status_code=403)
     with db() as conn:
-        rows = conn.execute("SELECT name, pubkey, wg_ip, models, groups, status, created_at FROM sites ORDER BY created_at").fetchall()
+        rows = conn.execute("SELECT name, pubkey, wg_ip, models, groups, status, created_at, transport, address, latest_probe FROM sites ORDER BY created_at").fetchall()
     return JSONResponse({"sites": [dict(row) for row in rows]})
 
 
@@ -321,6 +389,52 @@ async def admin_models(request: Request) -> Response:
     return JSONResponse({"ok": True, "site": site, "models": models})
 
 
+async def admin_direct(request: Request) -> Response:
+    """Persist a Direct site only after consoled has successfully staged routes."""
+    if not require_admin(request):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    try:
+        body = await request.json()
+        site = body["site"]
+        address = normalize_direct_address(body["address"])
+        models = body["models"]
+        groups = body.get("groups") or ["default"]
+    except (KeyError, ValueError, TypeError):
+        return JSONResponse({"error": "bad direct site request"}, status_code=400)
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{1,32}", site or ""):
+        return JSONResponse({"error": "bad site name"}, status_code=400)
+    if not isinstance(models, list) or not models or not all(isinstance(m, dict) and
+            re.fullmatch(r"[a-zA-Z0-9_.-]{1,64}", m.get("name") or "") and
+            re.fullmatch(r"[a-zA-Z0-9_.-]{1,64}", m.get("upstream_model") or "")
+            for m in models):
+        return JSONResponse({"error": "bad direct models"}, status_code=400)
+    if not isinstance(groups, list) or any(not re.fullmatch(r"[a-zA-Z0-9_-]{1,32}", g or "") for g in groups):
+        return JSONResponse({"error": "bad groups"}, status_code=400)
+    with db() as conn:
+        if conn.execute("SELECT 1 FROM sites WHERE name=? AND status IN ('active','partial','registered')", (site,)).fetchone():
+            return JSONResponse({"error": f"site {site} already exists (revoke first)"}, status_code=409)
+        owner = conn.execute(
+            "SELECT name FROM sites WHERE transport='direct' AND address=? "
+            "AND status IN ('active','partial','registered')", (address,)).fetchone()
+        if owner is not None:
+            return JSONResponse({"error": f"direct address already belongs to site {owner['name']}"},
+                                status_code=409)
+        conn.execute("INSERT OR REPLACE INTO sites (name, pubkey, wg_ip, models, groups, status, created_at, transport, address, latest_probe) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     (site, None, None, json.dumps(models), json.dumps(groups), "active", int(time.time()),
+                      "direct", address, int(time.time())))
+    return JSONResponse({"ok": True, "site": site, "address": address})
+
+
+async def admin_probe(request: Request) -> Response:
+    if not require_admin(request):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    site = (await request.json()).get("site", "")
+    with db() as conn:
+        cur = conn.execute("UPDATE sites SET latest_probe=? WHERE name=? AND transport='direct'",
+                           (int(time.time()), site))
+    return JSONResponse({"ok": bool(cur.rowcount)})
+
+
 # ---------------------------------------------------------------- wg0.conf 持久化辅助
 
 PEER_BLOCK = "# peer {name}\n[Peer]\nPublicKey = {pubkey}\nAllowedIPs = {ip}/32\n"
@@ -351,6 +465,8 @@ INSTALL_SH = """#!/usr/bin/env bash
 set -euo pipefail
 TOKEN="{token}"
 ENDPOINT="{endpoint}"
+SITE_WG_IFACE="__SITE_WG_IFACE__"
+SITE_WG_CONF="/etc/wireguard/${{SITE_WG_IFACE}}.conf"
 
 echo "== private-llm site onboarding =="
 if ! command -v wg >/dev/null; then
@@ -370,9 +486,9 @@ REG=$(curl -fsS -X POST "$ENDPOINT/onboard/register" -H 'content-type: applicati
      -d "{{\\"token\\":\\"$TOKEN\\",\\"pubkey\\":\\"$PUBKEY\\"}}")
 WG_IP=$(echo "$REG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["wg_ip"])')
 
-echo "-- writing /etc/wireguard/wg0.conf (wg_ip=$WG_IP)"
+echo "-- writing $SITE_WG_CONF (wg_ip=$WG_IP)"
 mkdir -p /etc/wireguard; umask 077
-sed "s|<SITE_PRIVATE_KEY>|$(cat /tmp/pll.key)|" > /etc/wireguard/wg0.conf <<'EOF'
+sed "s|<SITE_PRIVATE_KEY>|$(cat /tmp/pll.key)|" > "$SITE_WG_CONF" <<'EOF'
 [Interface]
 PrivateKey = <SITE_PRIVATE_KEY>
 Address = __WG_IP__/24
@@ -384,10 +500,14 @@ Endpoint = __ENDPOINT_WG__
 AllowedIPs = __WG_ALLOWED__
 PersistentKeepalive = 25
 EOF
-sed -i "s|__WG_IP__|$WG_IP|; s|__VPS_PUB__|__VPS_PUBLIC_KEY__|; s|__ENDPOINT_WG__|__WG_ENDPOINT__|" /etc/wireguard/wg0.conf
+sed -i "s|__WG_IP__|$WG_IP|; s|__VPS_PUB__|__VPS_PUBLIC_KEY__|; s|__ENDPOINT_WG__|__WG_ENDPOINT__|" "$SITE_WG_CONF"
 
-echo "-- enabling wg-quick@wg0 (auto-start & self-healing)"
-if systemctl is-active --quiet wg-quick@wg0; then systemctl restart wg-quick@wg0; else systemctl enable --now wg-quick@wg0; fi
+echo "-- enabling wg-quick@${{SITE_WG_IFACE}} (auto-start & self-healing)"
+if systemctl is-active --quiet "wg-quick@${{SITE_WG_IFACE}}"; then
+  systemctl restart "wg-quick@${{SITE_WG_IFACE}}"
+else
+  systemctl enable --now "wg-quick@${{SITE_WG_IFACE}}"
+fi
 sleep 2
 
 echo "-- tuning tunnel transport (BBR, robust to cross-border random loss)"
@@ -430,6 +550,8 @@ app = Starlette(routes=[
     Route("/onboard/admin/revoke", admin_revoke, methods=["POST"]),
     Route("/onboard/admin/groups", admin_groups, methods=["POST"]),
     Route("/onboard/admin/models", admin_models, methods=["POST"]),
+    Route("/onboard/admin/direct", admin_direct, methods=["POST"]),
+    Route("/onboard/admin/probe", admin_probe, methods=["POST"]),
     Route("/onboard/admin/list", admin_list, methods=["GET"]),
 ])
 
