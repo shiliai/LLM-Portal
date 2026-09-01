@@ -192,7 +192,8 @@ const AUTOFILL_EMAIL = ['autofill', 'example.com'].join('@');
     api: piProvider.api,
     models: piProvider.models.map((model) => model.id),
     levels: piLevels,
-    defaultThinking: piSettings.defaultThinkingLevel
+    defaultThinking: piSettings.defaultThinkingLevel,
+    enabledModels: piSettings.enabledModels
   });
   if (piProvider.apiKey !== fullKey.trim()
       || !piProvider.baseUrl.endsWith('/v1')
@@ -208,8 +209,12 @@ const AUTOFILL_EMAIL = ['autofill', 'example.com'].join('@');
       || piQwen.maxTokens !== 32768
       || piSettings.defaultProvider !== 'private-llm'
       || piSettings.defaultModel !== 'deepseek-v4-flash-0731'
-      || piSettings.defaultThinkingLevel !== 'high') {
-    console.error('ASSERT FAIL: Pi 配置必须包含能力准确的 Qwen 且保持 DeepSeek 默认与 high/max effort'); process.exitCode = 1;
+      || piSettings.defaultThinkingLevel !== 'high'
+      || JSON.stringify(piSettings.enabledModels) !== JSON.stringify([
+        'private-llm/deepseek-v4-flash-0731:high',
+        'private-llm/qwen3.8-27b:low'
+      ])) {
+    console.error('ASSERT FAIL: Pi 配置必须包含能力准确的 Qwen，并设置 DeepSeek high/Qwen low 缺省 thinking'); process.exitCode = 1;
   }
   const dshCredentials = await page.locator('#dsh-credentials-yaml').textContent();
   const dshSettings = await page.locator('#dsh-settings-yaml').textContent();
