@@ -1378,3 +1378,84 @@ def test_direct_site_rejects_public_and_unprobed_models(console, monkeypatch):
         "site": "local", "address": "http://127.0.0.1:8005/v1",
         "models": [{"name": "visible", "upstream_model": "not-served"}]})
     assert response.status_code == 400
+
+
+DIRECT_SITE = {"name": "direct", "pubkey": None, "wg_ip": None, "transport": "direct",
+               "address": "http://192.168.100.55:8005/v1", "models": '[{"name":"m1","port":8005,"upstream_model":"m1"}]',
+               "groups": '[]', "status": "active", "created_at": 1, "latest_probe": None}
+
+
+def _direct_group_handler(deps):
+    def handler(method, path, bearer, body):
+        if path == "/onboard/admin/list": return 200, {"sites": [dict(DIRECT_SITE)]}
+        if path == "/model/info": return 200, {"data": deps}
+        if path == "/key/list": return 200, {"keys": []}
+        if path in ("/model/new", "/model/delete", "/onboard/admin/groups"): return 200, {"ok": True}
+        if path == "/global/spend" and bearer == MASTER_KEY: return 200, {}
+        return 404, {"error": f"unexpected {path}"}
+    return handler
+
+
+def _direct_dep(tags):
+    return {"model_name": "m1", "litellm_params": {"model": "openai/m1", "api_base": DIRECT_SITE["address"], "tags": tags}, "model_info": {"id": "direct-1"}}
+
+
+def test_direct_group_create_retags_by_address(console, monkeypatch):
+    calls = install_litellm_stub(monkeypatch, _direct_group_handler([_direct_dep([])]))
+    client, hdr = _admin_client(console)
+    response = client.post("/console/api/groups/create", headers=hdr, json={"name": "lab", "sites": ["direct"]})
+    assert response.status_code == 200
+    new = [c for c in calls if c["path"] == "/model/new"][0]["json"]
+    assert new["litellm_params"]["api_base"] == DIRECT_SITE["address"]
+    assert new["litellm_params"]["tags"] == ["lab"]
+
+
+def test_direct_group_rename_retags_by_address(console, monkeypatch):
+    calls = install_litellm_stub(monkeypatch, _direct_group_handler([_direct_dep(["old"])]))
+    client, hdr = _admin_client(console)
+    response = client.post("/console/api/groups/rename", headers=hdr, json={"from": "old", "to": "new"})
+    assert response.status_code == 200
+    assert [c for c in calls if c["path"] == "/model/new"][0]["json"]["litellm_params"]["tags"] == ["new"]
+
+
+def test_direct_group_delete_retags_by_address_and_groups_api_is_safe(console, monkeypatch):
+    calls = install_litellm_stub(monkeypatch, _direct_group_handler([_direct_dep(["old"])]))
+    client, hdr = _admin_client(console)
+    listed = client.get("/console/api/groups", headers=hdr)
+    response = client.post("/console/api/groups/delete", headers=hdr, json={"name": "old"})
+    assert listed.status_code == 200 and listed.json()["sites"][0]["transport"] == "direct"
+    assert response.status_code == 200
+    assert [c for c in calls if c["path"] == "/model/new"][0]["json"]["litellm_params"]["tags"] == []
+
+
+def test_direct_list_and_overview_use_probe_health(console, monkeypatch):
+    bad = dict(DIRECT_SITE, name="down", address="http://192.168.100.56:8005/v1")
+    deps = [_direct_dep([])]
+    def handler(method, path, bearer, body):
+        if path == "/onboard/admin/list": return 200, {"sites": [dict(DIRECT_SITE), bad]}
+        if path == "/model/info": return 200, {"data": deps}
+        if path in ("/onboard/admin/probe", "/global/spend"): return 200, {"data": []}
+        if path in ("/key/list", "/spend/logs"): return 200, {"keys": [], "data": []}
+        return 404, {"error": path}
+    install_litellm_stub(monkeypatch, handler)
+    async def probe(site, _port):
+        return ([{"id": "m1"}], "") if site["name"] == "direct" else ([], "unreachable")
+    monkeypatch.setattr(console, "fetch_upstream_models", probe)
+    client, hdr = _admin_client(console)
+    sites = client.get("/console/api/sites", headers=hdr).json()["sites"]
+    overview = client.get("/console/api/overview", headers=hdr).json()["sites"]
+    assert {s["name"]: s["online"] for s in sites} == {"direct": True, "down": False}
+    assert overview["online"] == 1
+
+
+def test_direct_rejects_duplicate_selection_and_wrong_port(console, monkeypatch):
+    install_litellm_stub(monkeypatch, _direct_group_handler([_direct_dep([])]))
+    async def probe(_site, _port): return [{"id": "m1"}], ""
+    monkeypatch.setattr(console, "fetch_upstream_models", probe)
+    client, hdr = _admin_client(console)
+    duplicate = client.post("/console/api/sites/direct", headers=hdr, json={"site": "new", "address": DIRECT_SITE["address"],
+        "models": [{"name": "m1", "upstream_model": "m1"}, {"name": "m1", "upstream_model": "m1"}]})
+    wrong_port = client.post("/console/api/sites/models", headers=hdr,
+        json={"site": "direct", "name": "m2", "port": 9000, "upstream_model": "m2"})
+    assert duplicate.status_code == 400
+    assert wrong_port.status_code == 400

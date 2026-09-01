@@ -28,7 +28,7 @@
     <table class="pf-table">
       <thead>
         <tr>
-          <th>站点名</th><th>类型</th><th>地址</th><th>公钥指纹</th><th>WG IP</th><th>最近握手</th>
+          <th>站点名</th><th>类型</th><th>地址</th><th>公钥指纹</th><th>WG IP</th><th>最近握手/探测</th>
           <th class="num">模型数</th><th>分组</th><th>状态</th><th>操作</th>
         </tr>
       </thead>
@@ -68,7 +68,7 @@
             <div id="addsite-direct-models" class="pf-desc" style="margin-top:7px"></div>
           </div>
         </div>
-        <div class="pf-form-row" id="addsite-wg-ip-row">
+        <div class="pf-form-row" id="addsite-models-row">
           <label class="req">模型清单</label>
           <div>
             <div class="pf-desc" style="margin-bottom:8px">格式为「对外模型名:端口」，对应站点机器上已在跑的 OpenAI 兼容模型服务。</div>
@@ -79,7 +79,7 @@
             <button class="pf-link" id="addsite-addmodel" type="button">+ 再加一个模型</button>
           </div>
         </div>
-        <div class="pf-form-row">
+        <div class="pf-form-row" id="addsite-wg-ip-row">
           <label>WG IP</label>
           <div class="pf-desc" style="padding-top:6px">自动从 10.77.0.x 段分配下一个可用地址，无需手动指定。</div>
         </div>
@@ -115,10 +115,10 @@
     <div class="pf-modal-body">
       <p style="margin:0 0 12px;font-size:12.5px">确定要吊销站点「<strong id="revoke-site-name"></strong>」吗？</p>
       <div class="pf-banner">
-        吊销后：① 隧道<strong>立即断开</strong>且无法重连；② 该站点全部 <span id="revoke-model-count">0</span> 个模型部署<strong>即刻从路由池摘除</strong>；③ 操作不可逆，如需再次接入须重新执行「新增站点」。
+        <span id="revoke-copy">吊销后：① 隧道<strong>立即断开</strong>且无法重连；② 该站点全部 <span id="revoke-model-count">0</span> 个模型部署<strong>即刻从路由池摘除</strong>；③ 操作不可逆，如需再次接入须重新执行「新增站点」。</span>
       </div>
       <div class="pf-kv">
-        <div class="pf-kv-k">WG IP</div><div class="pf-kv-v mono" id="revoke-wg"></div>
+        <div class="pf-kv-k" id="revoke-endpoint-label">WG IP</div><div class="pf-kv-v mono" id="revoke-wg"></div>
         <div class="pf-kv-k">影响范围</div><div class="pf-kv-v">经该站点分流的请求将全部转到其余健康站点；若无其余健康部署，客户端将收到可判读的 503。</div>
       </div>
     </div>
@@ -174,7 +174,7 @@
         <div>
           <select class="pf-select mono" id="sm-port-sel" style="width:auto;min-width:220px"></select>
           <input class="pf-input mono" id="sm-port-custom" placeholder="端口" style="width:100px;display:none;margin-left:8px">
-          <div class="pf-desc">站点已注册/已部署的端口；真开了新端口才选「其他端口…」手填。选定即自动探测。</div>
+          <div class="pf-desc" id="sm-port-desc">站点已注册/已部署的端口；真开了新端口才选「其他端口…」手填。选定即自动探测。</div>
         </div>
       </div>
       <div class="pf-form-row">
@@ -233,12 +233,13 @@
       var actions = revoked ? '<button class="pf-link" disabled>已吊销</button>'
         : '<button class="pf-link js-site-models" data-site="' + esc(s.name) + '">模型</button> ' +
           '<button class="pf-link js-edit-groups" data-site="' + esc(s.name) + '">分组</button> ' +
-          '<button class="pf-link danger js-revoke-btn" data-site="' + esc(s.name) + '" data-wg="' + esc(s.wg_ip) + '" data-models="' + s.models.length + '">吊销</button>';
+          '<button class="pf-link danger js-revoke-btn" data-site="' + esc(s.name) + '" data-transport="' + esc(s.transport) + '" data-address="' + esc(s.address || s.wg_ip) + '" data-models="' + s.models.length + '">吊销</button>';
       return '<tr' + (revoked ? ' class="pf-row-muted"' : '') + ' data-site-row="' + esc(s.name) + '">' +
+        '<td class="mono">' + esc(s.name) + '</td>' +
         '<td><span class="pf-chip gray">' + (s.transport === 'direct' ? 'Direct' : 'WireGuard') + '</span></td>' +
         '<td class="mono">' + esc(s.address || '-') + '</td>' +
         '<td><span class="pf-key">' + esc(s.pubkey) + '</span></td>' +
-        '<td class="mono">' + esc(s.wg_ip) + '</td>' +
+        '<td class="mono">' + esc(s.wg_ip || '-') + '</td>' +
         '<td class="mono">' + (s.transport === 'direct' ? probeAgo(s.latest_probe) : ago(s.handshake)) + '</td>' +
         '<td class="num">' + s.models.length + '</td>' +
         '<td class="site-groups">' + groups + '</td>' +
@@ -287,10 +288,21 @@
     var sel = document.getElementById('sm-port-sel');
     var custom = document.getElementById('sm-port-custom');
     var ports = (site && site.known_ports) || [];
+    var direct = site && site.transport === 'direct';
     var inUse = {};
     ((site && site.deps) || []).forEach(function (d) {
       (inUse[d.port] = inUse[d.port] || []).push(d.name);
     });
+    if (direct) {
+      sel.style.display = '';
+      sel.disabled = true;
+      sel.innerHTML = ports.map(function (p) { return '<option value="' + p + '">' + p + '（Direct 端点）</option>'; }).join('');
+      custom.style.display = 'none';
+      document.getElementById('sm-port-desc').textContent = 'Direct 站点使用登记地址中的固定端口，不能添加其他端口。';
+      return;
+    }
+    sel.disabled = false;
+    document.getElementById('sm-port-desc').textContent = '站点已注册/已部署的端口；真开了新端口才选「其他端口…」手填。选定即自动探测。';
     if (!ports.length) {                       // 站点还没有任何已知端口 → 只能手填
       sel.style.display = 'none';
       sel.innerHTML = '';
@@ -323,7 +335,12 @@
       btn.onclick = function () {
         pendingRevoke = btn.dataset.site;
         document.getElementById('revoke-site-name').textContent = btn.dataset.site;
-        document.getElementById('revoke-wg').textContent = btn.dataset.wg;
+        var direct = btn.dataset.transport === 'direct';
+        document.getElementById('revoke-wg').textContent = btn.dataset.address;
+        document.getElementById('revoke-endpoint-label').textContent = direct ? 'Direct 地址' : 'WG IP';
+        document.getElementById('revoke-copy').innerHTML = direct
+          ? '删除后：该站点受管的 <span id="revoke-model-count">0</span> 个模型部署将从路由池摘除；不会修改 WireGuard 或停止上游服务。'
+          : '吊销后：① 隧道<strong>立即断开</strong>且无法重连；② 该站点全部 <span id="revoke-model-count">0</span> 个模型部署<strong>即刻从路由池摘除</strong>；③ 操作不可逆，如需再次接入须重新执行「新增站点」。';
         document.getElementById('revoke-model-count').textContent = btn.dataset.models;
         window.pfModal('modal-revoke');
       };
@@ -377,10 +394,8 @@
     function updateAddsiteTransport() {
       var direct = addsiteTransport() === 'direct';
       document.getElementById('addsite-direct-address').style.display = direct ? '' : 'none';
+      document.getElementById('addsite-models-row').style.display = direct ? 'none' : '';
       document.getElementById('addsite-wg-ip-row').style.display = direct ? 'none' : '';
-      document.getElementById('addsite-models').closest('.pf-form-row').querySelector('.pf-desc').textContent = direct
-        ? '先填服务地址；模型名填写对外名称:端口，提交时会探测 /v1/models 并只注册已探测到的模型。'
-        : '格式为「对外模型名:端口」，对应站点机器上已在跑的 OpenAI 兼容模型服务。';
       document.getElementById('btn-gen-addsite').textContent = direct ? '探测并登记' : '生成安装命令';
     }
     document.querySelectorAll('input[name="addsite-transport"]').forEach(function (el) { el.addEventListener('change', updateAddsiteTransport); });
@@ -461,9 +476,10 @@
     /* ---------- 吊销确认 ---------- */
     document.getElementById('btn-revoke-confirm').addEventListener('click', function () {
       if (!pendingRevoke) return;
+      var revokeSite = SITE_DATA.filter(function (s) { return s.name === pendingRevoke; })[0] || {};
       window.pfApi('POST', '/sites/revoke', { site: pendingRevoke }).then(function () {
         window.pfModalClose();
-        window.pfToast('站点已吊销，隧道已断开');
+        window.pfToast(revokeSite.transport === 'direct' ? 'Direct 站点已删除，受管路由已摘除' : '站点已吊销，隧道已断开');
         load();
       }).catch(function (e) { window.pfErr(e.error || '吊销失败'); });
     });

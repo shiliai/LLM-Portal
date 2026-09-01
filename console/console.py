@@ -650,8 +650,8 @@ async def onboard_sites() -> list[dict]:
     except (httpx.HTTPError, ValueError):
         sites = []
     for s in sites:
-        s["models"] = json.loads(s.get("models") or "[]")
-        s["groups"] = json.loads(s.get("groups") or "[]")
+        s["models"] = json.loads(s.get("models") or "[]") if isinstance(s.get("models"), str) else (s.get("models") or [])
+        s["groups"] = json.loads(s.get("groups") or "[]") if isinstance(s.get("groups"), str) else (s.get("groups") or [])
     return sites
 
 
@@ -785,6 +785,24 @@ async def fetch_upstream_models(site: dict, port: int) -> tuple[list[dict], str]
     return models, ""
 
 
+async def probe_direct_site(site: dict) -> bool:
+    """Bounded health probe that never lets one Direct host fail a page load."""
+    try:
+        _, error = await fetch_upstream_models(site, 0)
+        if error:
+            return False
+        await onboard("POST", "/onboard/admin/probe", json={"site": site["name"]})
+        return True
+    except (httpx.HTTPError, KeyError):
+        return False
+
+
+async def direct_health(sites: list[dict]) -> dict[str, bool]:
+    direct = [s for s in sites if s.get("transport", "wireguard") == "direct" and s.get("status") != "revoked"]
+    results = await asyncio.gather(*(probe_direct_site(s) for s in direct), return_exceptions=True)
+    return {s["name"]: value is True for s, value in zip(direct, results)}
+
+
 def _dep_port(dep: dict) -> int:
     """从 api_base（http://wg_ip:port/v1）解出端口；解析失败给 0。"""
     tail = str((dep.get("litellm_params") or {}).get("api_base") or "").rsplit(":", 1)[-1]
@@ -855,6 +873,7 @@ async def api_overview(request: Request) -> Response:
     if isinstance(sess, JSONResponse):
         return sess
     logs, deps, sites, hs = await fetch_logs(), await litellm_deployments(), await onboard_sites(), wg_handshakes()
+    health = await direct_health(sites)
     today = logs_since(logs, 1)
     ok_rows = [r for r in today if r.get("status") != "failure"]
     totals = {
@@ -866,10 +885,13 @@ async def api_overview(request: Request) -> Response:
     }
     site_rows = []
     for s in sites:
-        ago = hs.get(s.get("pubkey") or "", -1)   # -1=未握手/不在 dump(wg 失败、peer 已摘),None 会让下方比较 TypeError→全表 500
-        n_deps = sum(1 for d in deps if dep_of_site(d, s.get("wg_ip") or "#"))
-        online = s["status"] in ("active", "partial") and 0 <= ago < HANDSHAKE_ONLINE
-        site_rows.append({"name": s["name"], "wg_ip": s["wg_ip"], "handshake": ago,
+        direct = s.get("transport", "wireguard") == "direct"
+        ago = None if direct else hs.get(s.get("pubkey") or "", -1)
+        n_deps = sum(1 for d in deps if dep_of_site_row(d, s))
+        online = (s["status"] in ("active", "partial") and health.get(s["name"], False)) if direct else \
+                 s["status"] in ("active", "partial") and 0 <= ago < HANDSHAKE_ONLINE
+        site_rows.append({"name": s["name"], "transport": "direct" if direct else "wireguard",
+                          "address": s.get("address") if direct else None, "wg_ip": None if direct else s["wg_ip"], "handshake": ago,
                           "deployments": n_deps, "status": "online" if online else s["status"]})
     per_dep = {}
     for r in today:
@@ -1038,6 +1060,7 @@ async def api_sites(request: Request) -> Response:
     if isinstance(sess, JSONResponse):
         return sess
     sites, hs, deps = await onboard_sites(), wg_handshakes(), await litellm_deployments()
+    health = await direct_health(sites)
     rows = []
     for s in sites:
         direct = s.get("transport", "wireguard") == "direct"
@@ -1063,7 +1086,7 @@ async def api_sites(request: Request) -> Response:
                                    if isinstance(p, int) and p > 0}),
             "groups": tags, "status": s["status"],
             "latest_probe": s.get("latest_probe"),
-            "online": (s["status"] in ("active", "partial") if direct else
+            "online": (s["status"] in ("active", "partial") and health.get(s["name"], False) if direct else
                        s["status"] in ("active", "partial") and 0 <= ago < HANDSHAKE_ONLINE),
             "created_at": s.get("created_at"),
         })
@@ -1118,6 +1141,8 @@ async def api_sites_direct(request: Request) -> Response:
     if any(not isinstance(m, dict) or not MODEL_RE.fullmatch(m.get("name") or "") or
            not MODEL_RE.fullmatch(m.get("upstream_model") or "") for m in selected):
         return jerr("bad direct models", 400)
+    if len({(m["name"], m["upstream_model"]) for m in selected}) != len(selected):
+        return jerr("duplicate direct model selection", 400)
     if any(not GROUP_RE.fullmatch(g or "") for g in groups):
         return jerr("bad group names", 400)
     direct_site = {"transport": "direct", "address": address}
@@ -1330,9 +1355,13 @@ async def api_sites_models(request: Request) -> Response:
     row, err = await _site_row_or_error(site)
     if err:
         return err
+    if row.get("transport", "wireguard") == "direct":
+        expected = urlsplit(site_api_base(row)).port or (443 if site_api_base(row).startswith("https:") else 80)
+        if port != expected:
+            return jerr(f"Direct site uses endpoint port {expected}", 400)
     deps = [d for d in await litellm_deployments() if dep_of_site_row(d, row)]
     api_base = site_api_base(row, port)
-    if any(d.get("model_name") == name and _dep_port(d) == port for d in deps):
+    if any(d.get("model_name") == name and (d.get("litellm_params") or {}).get("api_base") == api_base for d in deps):
         return jerr(f"{site} 已有 {name}:{port}（换上游 id 请用「刷新上游」）", 409)
     tags = sorted({t for d in deps for t in dep_tags(d)} |
                   {g for g in row["groups"] if g != "default"})
@@ -1351,6 +1380,10 @@ async def api_sites_models(request: Request) -> Response:
 async def _site_dep_or_error(site_row: dict, name: str, port: int):
     """定位站点某「对外名:端口」的 deployment（api_base 精确匹配，避免解析歧义）。"""
     api_base = site_api_base(site_row, port)
+    if site_row.get("transport", "wireguard") == "direct":
+        expected = urlsplit(api_base).port or (443 if api_base.startswith("https:") else 80)
+        if port != expected:
+            return None, None, jerr(f"Direct site uses endpoint port {expected}", 400)
     deps = [d for d in await litellm_deployments() if dep_of_site_row(d, site_row)]
     dep = next((d for d in deps if d.get("model_name") == name
                 and (d.get("litellm_params") or {}).get("api_base") == api_base), None)
@@ -1467,7 +1500,8 @@ async def api_groups(request: Request) -> Response:
               "mcps": snap["mcp_counts"].get(g, 0)}
              for g, v in sorted(snap["groups"].items())]
     return JSONResponse({"groups": rows,
-                         "sites": [{"name": s["name"], "wg_ip": s["wg_ip"], "status": s["status"]}
+                         "sites": [{"name": s["name"], "transport": s.get("transport", "wireguard"),
+                                    "address": s.get("address"), "wg_ip": s.get("wg_ip"), "status": s["status"]}
                                    for s in snap["sites"] if s["status"] != "revoked"]})
 
 
@@ -1494,19 +1528,19 @@ async def api_groups_create(request: Request) -> Response:
     errors = []
     for m in members:
         s = by_name[m]
-        cur = await site_current_tags(s["wg_ip"])
+        cur = await site_current_tags(s)
         new_tags = sorted(cur | {name})
-        errors += await retag_site(s["wg_ip"], new_tags)
+        errors += await retag_site(s, new_tags)
         await sync_onboard_group(m, sorted(set(s["groups"]) - {"default"} | {name}))
     if errors:
         return jerr("; ".join(errors), 502)
     return JSONResponse({"ok": True, "name": name, "sites": members})
 
 
-async def site_current_tags(wg_ip: str) -> set[str]:
+async def site_current_tags(site: dict) -> set[str]:
     tags = set()
     for d in await litellm_deployments():
-        if dep_of_site(d, wg_ip):
+        if dep_of_site_row(d, site):
             tags.update(dep_tags(d))
     return tags
 
@@ -1530,9 +1564,9 @@ async def api_groups_rename(request: Request) -> Response:
         return jerr(f"group {new} already exists", 409)
     errors = []
     for s in snap["sites"]:
-        cur = await site_current_tags(s["wg_ip"])
+        cur = await site_current_tags(s)
         if old in cur:
-            errors += await retag_site(s["wg_ip"], sorted((cur - {old}) | {new}))
+            errors += await retag_site(s, sorted((cur - {old}) | {new}))
             await sync_onboard_group(s["name"], sorted((set(s["groups"]) - {old}) | {new}))
     if errors:
         return jerr("; ".join(errors), 502)
@@ -1592,9 +1626,9 @@ async def api_groups_delete(request: Request) -> Response:
         return jerr(f"分组 {name} 仍有 {snap['mcp_counts'][name]} 个 MCP 绑定，先解除绑定", 409)
     errors = []
     for s in snap["sites"]:
-        cur = await site_current_tags(s["wg_ip"])
+        cur = await site_current_tags(s)
         if name in cur:
-            errors += await retag_site(s["wg_ip"], sorted(cur - {name}))
+            errors += await retag_site(s, sorted(cur - {name}))
             await sync_onboard_group(s["name"], sorted(set(s["groups"]) - {name}))
     if errors:
         return jerr("; ".join(errors), 502)

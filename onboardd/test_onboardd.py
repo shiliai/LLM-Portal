@@ -365,7 +365,7 @@ def test_revoke_direct_deletes_routes_without_touching_wireguard(onboardd, monke
             "site": "dell-local", "address": "http://192.168.100.55:8005/v1",
             "models": [{"name": "qwen3.8-27b", "upstream_model": "qwen3.8-27b"}]})
         calls = install_litellm_stub(monkeypatch, lambda m, p, b, j: (
-            (200, {"data": [{"model_name": "qwen3.8-27b", "litellm_params": {"api_base": "http://192.168.100.55:8005/v1"}, "model_info": {"id": "dep-1"}}]})
+            (200, {"data": [{"model_name": "qwen3.8-27b", "litellm_params": {"model": "openai/qwen3.8-27b", "api_base": "http://192.168.100.55:8005/v1"}, "model_info": {"id": "dep-1"}}]})
             if p == "/model/info" else (200, {"ok": True})))
         monkeypatch.setattr(onboardd, "run", lambda cmd: pytest.fail("Direct revoke must not run wg"))
         resp = client.post("/onboard/admin/revoke", headers=_admin_headers(), json={"site": "dell-local"})
@@ -373,3 +373,26 @@ def test_revoke_direct_deletes_routes_without_touching_wireguard(onboardd, monke
     assert resp.json()["status"] == "deleted"
     assert listed.json() == {"sites": []}
     assert [c["path"] for c in calls if c["path"] == "/model/delete"] == ["/model/delete"]
+
+
+def test_revoke_direct_keeps_unmanaged_same_address_and_preserves_failed_site(onboardd, monkeypatch):
+    with TestClient(onboardd.app) as client:
+        client.post("/onboard/admin/direct", headers=_admin_headers(), json={
+            "site": "direct", "address": "http://192.168.100.55:8005/v1",
+            "models": [{"name": "managed", "upstream_model": "real"}]})
+
+        def handler(method, path, bearer, body):
+            if path == "/model/info":
+                return 200, {"data": [
+                    {"model_name": "managed", "litellm_params": {"model": "openai/real", "api_base": "http://192.168.100.55:8005/v1"}, "model_info": {"id": "managed-id"}},
+                    {"model_name": "other", "litellm_params": {"model": "openai/other", "api_base": "http://192.168.100.55:8005/v1"}, "model_info": {"id": "other-id"}},
+                ]}
+            if path == "/model/delete": return 500, {"error": "busy"}
+            return 200, {"ok": True}
+
+        calls = install_litellm_stub(monkeypatch, handler)
+        response = client.post("/onboard/admin/revoke", headers=_admin_headers(), json={"site": "direct"})
+        listed = client.get("/onboard/admin/list", headers=_admin_headers())
+    assert response.status_code == 502
+    assert listed.json()["sites"][0]["name"] == "direct"
+    assert [c["json"]["id"] for c in calls if c["path"] == "/model/delete"] == ["managed-id"]

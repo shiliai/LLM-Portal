@@ -305,12 +305,17 @@ async def admin_revoke(request: Request) -> Response:
         outputs["wg_remove"] = "ok" if r.returncode == 0 else r.stderr.strip()
         remove_peer_from_conf(row["pubkey"])
     deleted = []
+    direct_models = {(m.get("name"), m.get("upstream_model") or m.get("name"))
+                     for m in json.loads(row["models"] or "[]") if isinstance(m, dict)}
+    failed = []
     async with httpx.AsyncClient(timeout=30) as client:
         info = await client.get(f"{LITELLM_BASE}/model/info", headers={"Authorization": f"Bearer {LITELLM_MASTER_KEY}"})
         for dep in info.json().get("data", []):
             base = str(dep.get("litellm_params", {}).get("api_base", "")).rstrip("/")
+            upstream = str((dep.get("litellm_params") or {}).get("model") or "").removeprefix("openai/")
             managed = (base.startswith(f"http://{row['wg_ip']}:") if row["transport"] == "wireguard"
-                       else base == (row["address"] or "").rstrip("/"))
+                       else base == (row["address"] or "").rstrip("/") and
+                            (dep.get("model_name"), upstream) in direct_models)
             if managed:
                 r = await client.post(
                     f"{LITELLM_BASE}/model/delete",
@@ -318,7 +323,12 @@ async def admin_revoke(request: Request) -> Response:
                     headers={"Authorization": f"Bearer {LITELLM_MASTER_KEY}"},
                 )
                 deleted.append({"model": dep.get("model_name"), "ok": r.status_code == 200})
+                if r.status_code != 200:
+                    failed.append(dep.get("model_name") or "?")
     outputs["deployments_deleted"] = deleted
+    if row["transport"] == "direct" and failed:
+        return JSONResponse({"error": "failed to delete managed deployments; site preserved for retry",
+                             "site": site, "detail": outputs}, status_code=502)
     with db() as conn:
         if row["transport"] == "direct":
             # Direct has no host-side state to preserve. Removing the row avoids
