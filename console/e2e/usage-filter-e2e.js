@@ -31,7 +31,7 @@ function totals(requests) {
   await page.route('**/console/api/usage/logs?days=*', route => {
     const params = new URL(route.request().url()).searchParams;
     const logs = params.get('key') === 'a1b2'
-      ? [{ alias: 'james-ubuntu', key: 'a1b2', model: 'qwen', request_id: 'older-james', status: 'ok',
+      ? [{ alias: 'james-ubuntu', key: '…a1b2', model: 'qwen', request_id: 'older-james', status: 'ok',
           prompt_tokens: 1, completion_tokens: 1, cached_tokens: 0, duration_ms: 1 }]
       : [];
     return route.fulfill({ json: { logs, next_cursor: '' } });

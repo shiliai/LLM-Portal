@@ -281,7 +281,7 @@
     var k = $('rl-key').value, m = $('rl-model').value, st = $('rl-status').value;
     var q = $('rl-search').value.trim().toLowerCase();
     var list = RL.filter(function (r) {
-      if (k && r.key !== k) return false;
+      if (k && String(r.key || '').slice(-4) !== k) return false;
       if (m && r.model !== m) return false;
       if (st && r.status !== st) return false;
       if (q && (r.model + ' ' + r.request_id + ' ' + r.alias + ' ' + r.ip + ' ' + (r.effort || '') + ' ' + (r.error || '')).toLowerCase().indexOf(q) < 0) return false;

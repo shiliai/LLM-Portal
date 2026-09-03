@@ -1000,7 +1000,7 @@ def test_usage_filters_refresh_from_full_selected_range():
     assert "RL=[];rlFillFilters([]);" in source
     assert "&key=' + encodeURIComponent($('rl-key').value)" in source
     assert "&model=' + encodeURIComponent($('rl-model').value)" in source
-    assert "if (k && r.key !== k)" in source
+    assert "if (k && String(r.key || '').slice(-4) !== k)" in source
 
 
 def test_usage_logs_api_passes_filters_to_database(console_admin, monkeypatch):
