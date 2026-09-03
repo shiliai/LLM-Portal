@@ -40,3 +40,19 @@ def test_logs_uses_keyset_cursor_and_page_limit(monkeypatch):
     assert asyncio.run(usage_db.logs(7, cursor, 20)) == ([], None)
     assert '("startTime",request_id)<($3,$4)' in seen["sql"]
     assert seen["args"][-1] == 21
+
+
+def test_logs_filters_before_pagination(monkeypatch):
+    seen = {}
+    class Conn:
+        async def fetch(self, sql, *args):
+            seen["sql"], seen["args"] = sql, args
+            return []
+        async def close(self): pass
+    async def conn(): return Conn()
+    monkeypatch.setattr(usage_db, "connection", conn)
+
+    assert asyncio.run(usage_db.logs(30, "", 20, key_suffix="a1b2", model="qwen")) == ([], None)
+    assert "right(api_key,4)=$3" in seen["sql"]
+    assert "coalesce(nullif(model_group,''),model,'?')=$4" in seen["sql"]
+    assert seen["args"][2:] == ("a1b2", "qwen", 21)

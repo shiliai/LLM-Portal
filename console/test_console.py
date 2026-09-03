@@ -998,6 +998,29 @@ def test_usage_filters_refresh_from_full_selected_range():
     assert "RL=d.logs||[]" in source and "RL=d.logs||[]; nextCursor" in source
     assert "rlPage=index+1; rlFillFilters()" not in source
     assert "RL=[];rlFillFilters([]);" in source
+    assert "&key=' + encodeURIComponent($('rl-key').value)" in source
+    assert "&model=' + encodeURIComponent($('rl-model').value)" in source
+    assert "if (k && String(r.key || '').slice(-4) !== k)" in source
+
+
+def test_usage_logs_api_passes_filters_to_database(console_admin, monkeypatch):
+    install_litellm_stub(monkeypatch, _handler)
+    seen = {}
+
+    async def filtered_logs(days, cursor, limit, key_suffix="", model=""):
+        seen.update(days=days, cursor=cursor, limit=limit, key_suffix=key_suffix, model=model)
+        return [], None
+
+    monkeypatch.setattr(console_admin, "usage_logs", filtered_logs)
+    with TestClient(console_admin.app) as client:
+        login = client.post("/console/api/admin-login",
+                            json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}, headers=XRW)
+        response = client.get(
+            "/console/api/usage/logs?days=30&limit=20&key=a1b2&model=qwen",
+            headers={"Cookie": _cookie_of(login)})
+
+    assert response.status_code == 200
+    assert seen == {"days": 30, "cursor": "", "limit": 20, "key_suffix": "a1b2", "model": "qwen"}
 
 
 def test_mcp_registration_uses_accessible_page_confirmation_without_native_dialogs():
