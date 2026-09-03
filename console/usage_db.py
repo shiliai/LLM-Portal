@@ -58,10 +58,18 @@ async def aggregate(days):
         return data['total'], data['buckets'], data['rows'], data['errors']
     finally: await conn.close()
 
-async def logs(days, cursor, limit):
+async def logs(days, cursor, limit, key_suffix="", model=""):
     start, end = window(days); cur = decode_cursor(cursor)
     where, args = ['"startTime">=$1','"startTime"<$2',_VALID_KEY], [start,end]
-    if cur: where.append('("startTime",request_id)<($3,$4)'); args += list(cur)
+    if key_suffix:
+        args.append(key_suffix)
+        where.append(f'right(api_key,4)=${len(args)}')
+    if model:
+        args.append(model)
+        where.append(f"coalesce(nullif(model_group,''),model,'?')=${len(args)}")
+    if cur:
+        args += list(cur)
+        where.append(f'("startTime",request_id)<(${len(args)-1},${len(args)})')
     args.append(limit + 1); conn = await connection()
     try:
         sql = f'''SELECT request_id,"startTime",api_key,coalesce(nullif(model_group,''),model,'?') model,call_type,

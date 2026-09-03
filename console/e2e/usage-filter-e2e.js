@@ -22,13 +22,20 @@ function totals(requests) {
 
   await page.route('**/console/api/usage?days=*', async route => {
     const days = new URL(route.request().url()).searchParams.get('days');
-    const rows = [{ alias: 'today-key', model: 'deepseek', requests: 1 }];
-    if (days === '7') rows.push({ alias: 'week-key', model: 'qwen', requests: 2 });
+    const rows = [{ alias: 'today-key', key: '1111', model: 'deepseek', requests: 1 }];
+    if (days === '7' || days === '30') rows.push({ alias: 'week-key', key: '7777', model: 'qwen', requests: 2 });
+    if (days === '30') rows.push({ alias: 'james-ubuntu', key: 'a1b2', model: 'qwen', requests: 1 });
     await route.fulfill({ json: { rows, errors: [], totals: totals(rows.length), hourly: [],
       per_key: rows.map(row => [row.alias, row.requests]) } });
   });
-  await page.route('**/console/api/usage/logs?days=*', route =>
-    route.fulfill({ json: { logs: [], next_cursor: '' } }));
+  await page.route('**/console/api/usage/logs?days=*', route => {
+    const params = new URL(route.request().url()).searchParams;
+    const logs = params.get('key') === 'a1b2'
+      ? [{ alias: 'james-ubuntu', key: 'a1b2', model: 'qwen', request_id: 'older-james', status: 'ok',
+          prompt_tokens: 1, completion_tokens: 1, cached_tokens: 0, duration_ms: 1 }]
+      : [];
+    return route.fulfill({ json: { logs, next_cursor: '' } });
+  });
 
   await page.goto(BASE + '/console/usage.html');
   await page.waitForFunction(() => document.querySelectorAll('#rl-key option').length === 2);
@@ -45,6 +52,14 @@ function totals(requests) {
   await page.selectOption('#filter-days', '1');
   await page.waitForFunction(() => document.querySelectorAll('#rl-key option').length === 2);
   if (await page.locator('#rl-key').inputValue() !== '') throw new Error('stale Key selection was not reset');
+
+  await page.selectOption('#filter-days', '30');
+  await page.waitForFunction(() => document.querySelectorAll('#rl-key option').length === 4);
+  await page.selectOption('#rl-key', 'a1b2');
+  await page.waitForFunction(() => document.querySelector('#rl-rows').textContent.includes('james-ubuntu'));
+  if (!(await page.locator('#rl-rows').textContent()).includes('james-ubuntu')) {
+    throw new Error('server-side Key filter did not return an older matching row');
+  }
 
   console.log('usage range filters refreshed correctly');
   await browser.close();

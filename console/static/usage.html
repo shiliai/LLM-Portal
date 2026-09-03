@@ -281,7 +281,7 @@
     var k = $('rl-key').value, m = $('rl-model').value, st = $('rl-status').value;
     var q = $('rl-search').value.trim().toLowerCase();
     var list = RL.filter(function (r) {
-      if (k && r.alias !== k) return false;
+      if (k && r.key !== k) return false;
       if (m && r.model !== m) return false;
       if (st && r.status !== st) return false;
       if (q && (r.model + ' ' + r.request_id + ' ' + r.alias + ' ' + r.ip + ' ' + (r.effort || '') + ' ' + (r.error || '')).toLowerCase().indexOf(q) < 0) return false;
@@ -369,15 +369,21 @@
   }
 
   function rlFillFilters(rows) {
-    var keys = [], models = [];
+    var keys = [], keyIds = {}, aliases = {}, models = [];
     rows.forEach(function (r) {
-      if (keys.indexOf(r.alias) < 0) keys.push(r.alias);
+      var key = String(r.key || '');
+      if (key && !keyIds[key]) {
+        keyIds[key] = true;
+        aliases[r.alias] = (aliases[r.alias] || 0) + 1;
+        keys.push({ value: key, label: r.alias });
+      }
       if (models.indexOf(r.model) < 0) models.push(r.model);
     });
-    keys.sort(); models.sort();
+    keys.sort(function (a, b) { return a.label.localeCompare(b.label) || a.value.localeCompare(b.value); }); models.sort();
     var kv = $('rl-key').value, mv = $('rl-model').value;
     $('rl-key').innerHTML = '<option value="">全部 Key</option>' + keys.map(function (k) {
-      return '<option value="' + esc(k) + '"' + (k === kv ? ' selected' : '') + '>' + esc(k) + '</option>'; }).join('');
+      var label = k.label + (aliases[k.label] > 1 ? ' (…' + k.value + ')' : '');
+      return '<option value="' + esc(k.value) + '"' + (k.value === kv ? ' selected' : '') + '>' + esc(label) + '</option>'; }).join('');
     $('rl-model').innerHTML = '<option value="">全部模型</option>' + models.map(function (m) {
       return '<option value="' + esc(m) + '"' + (m === mv ? ' selected' : '') + '>' + esc(m) + '</option>'; }).join('');
   }
@@ -385,7 +391,9 @@
   function setLoading(on) { var b=$('btn-refresh'); b.disabled=on; b.textContent=on?'↻ 刷新中…':'↻ 刷新'; }
   function loadLogs(cursor, index, refresh) {
     var epoch=++logEpoch, days=$('filter-days').value; if(refresh)setLoading(true);
-    window.pfApi('GET','/usage/logs?days='+days+'&limit='+PAGE+(cursor?'&cursor='+encodeURIComponent(cursor):'')).then(function(d){
+    var filters = ($('rl-key').value ? '&key=' + encodeURIComponent($('rl-key').value) : '') +
+      ($('rl-model').value ? '&model=' + encodeURIComponent($('rl-model').value) : '');
+    window.pfApi('GET','/usage/logs?days='+days+'&limit='+PAGE+filters+(cursor?'&cursor='+encodeURIComponent(cursor):'')).then(function(d){
       if(epoch!==logEpoch)return; RL=d.logs||[]; nextCursor=d.next_cursor||''; cursorIndex=index; cursors=cursors.slice(0,index+1); cursors[index]=cursor; rlPage=index+1; rlRender(); if(refresh){setLoading(false);window.pfToast('数据已刷新 · 更新于 '+new Date().toLocaleTimeString('zh-CN'));}
     }).catch(function(e){ if(epoch===logEpoch){if(refresh)setLoading(false);window.pfErr(e.error||'请求明细加载失败');} });
   }
@@ -404,9 +412,12 @@
     bindTabs(); document.querySelectorAll('.utab').forEach(function(t){t.addEventListener('click',function(){activeTab=t.dataset.tab;if(activeTab==='logs'&&!RL.length)loadLogs('',0,false);});});
     $('filter-days').addEventListener('change', function(){RL=[];rlFillFilters([]);nextCursor='';cursors=[''];cursorIndex=0;rlPage=1;loadAll();if(activeTab==='logs')loadLogs('',0,false);});
     $('btn-refresh').addEventListener('click', function () { if(activeTab==='logs') loadLogs(cursors[cursorIndex],cursorIndex,true); else loadAll(); });
-    ['rl-key', 'rl-model', 'rl-status'].forEach(function (id) {
-      $(id).addEventListener('change', function () { rlPage = 1; rlRender(); });
+    ['rl-key', 'rl-model'].forEach(function (id) {
+      $(id).addEventListener('change', function () {
+        RL=[];nextCursor='';cursors=[''];cursorIndex=0;rlPage=1;loadLogs('',0,false);
+      });
     });
+    $('rl-status').addEventListener('change', function () { rlPage = 1; rlRender(); });
     $('rl-search').addEventListener('input', function () { rlPage = 1; rlRender(); });
     $('rl-prev').addEventListener('click', function () { if(cursorIndex>0)loadLogs(cursors[cursorIndex-1],cursorIndex-1,false); });
     $('rl-next').addEventListener('click', function () { if(nextCursor)loadLogs(nextCursor,cursorIndex+1,false); });

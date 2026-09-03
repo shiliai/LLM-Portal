@@ -1265,7 +1265,13 @@ async def api_usage_logs(request: Request) -> Response:
     if isinstance(sess, JSONResponse): return sess
     try: limit = min(max(int(request.query_params.get("limit", "20")), 1), 50)
     except ValueError: limit = 20
-    try: rows, next_cursor = await usage_logs(await _usage_days(request), request.query_params.get("cursor", ""), limit)
+    key_suffix = request.query_params.get("key", "")
+    if len(key_suffix) != 4:
+        key_suffix = ""
+    model = request.query_params.get("model", "")[:200]
+    try: rows, next_cursor = await usage_logs(
+        await _usage_days(request), request.query_params.get("cursor", ""), limit,
+        key_suffix=key_suffix, model=model)
     except Exception as exc: return jerr(f"usage database unavailable: {exc}", 502)
     aliases = await usage_aliases()
     for r in rows:
