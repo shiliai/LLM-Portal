@@ -106,6 +106,8 @@ MCP_MAX_DISCOVERED_TOOLS = 64
 MCP_MAX_SCHEMA_DEPTH = 12
 MCP_MAX_SCHEMA_BYTES = 16 * 1024
 MCP_MAX_METADATA_BYTES = 96 * 1024
+PORTAL_VERSION = os.environ.get("PORTAL_VERSION", "dev")
+PORTAL_BUILD = os.environ.get("PORTAL_BUILD", os.environ.get("GIT_COMMIT", "unknown"))
 
 
 def positive_seconds_env(name: str, default: float, minimum: float) -> float:
@@ -569,7 +571,8 @@ async def api_me(request: Request) -> Response:
                 group = (k.get("metadata") or {}).get("group") or "default"
                 break
     return JSONResponse({"role": sess["role"], "alias": alias, "group": group,
-                         "key_last4": sess["key_last4"] or "—"})
+                         "key_last4": sess["key_last4"] or "—",
+                         "version": PORTAL_VERSION, "build": PORTAL_BUILD})
 
 
 # ---------------------------------------------------------------- 数据源辅助
@@ -807,6 +810,49 @@ async def direct_health(sites: list[dict]) -> dict[str, bool]:
     return {s["name"]: value is True for s, value in zip(direct, results)}
 
 
+async def site_metrics(site: dict, deps: list[dict]) -> dict:
+    """Best-effort Prometheus metrics for private deployments.
+
+    Nodes may expose vLLM/TGI style metrics at ``/metrics``.  Collection is
+    bounded and optional so an unavailable exporter never affects the dashboard.
+    """
+    bases = [str((d.get("litellm_params") or {}).get("api_base") or "")
+             for d in deps if dep_of_site_row(d, site)]
+    if site.get("transport", "wireguard") == "direct" and site.get("address"):
+        bases.insert(0, str(site["address"]))
+    for base in bases:
+        url = base.rstrip("/")
+        if url.endswith("/v1"):
+            url = url[:-3]
+        try:
+            async with httpx.AsyncClient(timeout=2, follow_redirects=False) as client:
+                r = await client.get(url + "/metrics")
+            if r.status_code != 200:
+                continue
+            vals = {}
+            for line in r.text.splitlines():
+                if line.startswith("#") or " " not in line:
+                    continue
+                name, raw = line.split(None, 1)
+                try:
+                    vals[name.split("{")[0]] = float(raw)
+                except ValueError:
+                    continue
+            aliases = {
+                "generation_tokens_per_second": "output_tok_s",
+                "vllm:gpu_cache_usage_perc": "kv_cache_pct",
+                "vllm:num_requests_running": "requests_running",
+                "vllm:num_requests_waiting": "requests_waiting",
+                "vllm:gpu_utilization": "gpu_util_pct",
+            }
+            out = {dst: vals[src] for src, dst in aliases.items() if src in vals}
+            if out:
+                return out
+        except (httpx.HTTPError, ValueError):
+            pass
+    return {}
+
+
 def _dep_port(dep: dict) -> int:
     """从 api_base（http://wg_ip:port/v1）解出端口；解析失败给 0。"""
     tail = str((dep.get("litellm_params") or {}).get("api_base") or "").rsplit(":", 1)[-1]
@@ -878,6 +924,7 @@ async def api_overview(request: Request) -> Response:
         return sess
     logs, deps, sites, hs = await fetch_logs(), await litellm_deployments(), await onboard_sites(), wg_handshakes()
     health = await direct_health(sites)
+    metrics = await asyncio.gather(*(site_metrics(s, deps) for s in sites), return_exceptions=True)
     today = logs_since(logs, 1)
     ok_rows = [r for r in today if r.get("status") != "failure"]
     totals = {
@@ -888,7 +935,9 @@ async def api_overview(request: Request) -> Response:
         "errors": sum(1 for r in today if r.get("status") == "failure"),
     }
     site_rows = []
-    for s in sites:
+    for s, metric in zip(sites, metrics):
+        if not isinstance(metric, dict):
+            metric = {}
         direct = s.get("transport", "wireguard") == "direct"
         ago = None if direct else hs.get(s.get("pubkey") or "", -1)
         n_deps = sum(1 for d in deps if dep_of_site_row(d, s))
@@ -898,7 +947,7 @@ async def api_overview(request: Request) -> Response:
                  "online" if online else s["status"]
         site_rows.append({"name": s["name"], "transport": "direct" if direct else "wireguard",
                           "address": s.get("address") if direct else None, "wg_ip": None if direct else s["wg_ip"], "handshake": ago,
-                          "deployments": n_deps, "status": status})
+                          "deployments": n_deps, "status": status, "metrics": metric})
     per_dep = {}
     for r in today:
         k = (r.get("model_id") or r.get("api_base") or "?", r.get("model_group") or "?")
@@ -921,7 +970,8 @@ async def api_overview(request: Request) -> Response:
                      for r in failures[-5:]][::-1]
     online_sites = sum(1 for x in site_rows if x["status"] == "online")
     healthy_deps = sum(1 for x in dep_rows if x["state"] == "健康")
-    return JSONResponse({"totals": totals,
+    return JSONResponse({"version": PORTAL_VERSION, "build": PORTAL_BUILD,
+                         "totals": totals,
                          "sites": {"online": online_sites, "total": len([s for s in sites if s["status"] != "revoked"]),
                                    "rows": site_rows},
                          "deployments": {"healthy": healthy_deps, "total": len(dep_rows), "rows": dep_rows},

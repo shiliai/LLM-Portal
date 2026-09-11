@@ -79,6 +79,11 @@
     </div>
   </div>
 
+  <div class="pf-card flush">
+    <div class="pf-card-head"><div class="pf-card-title">私有化节点实时指标</div><div class="pf-card-extra">节点自愿暴露 Prometheus /metrics</div></div>
+    <table class="pf-table"><thead><tr><th>节点</th><th>输出速度</th><th>请求队列</th><th>KV Cache</th><th>GPU 活跃度</th></tr></thead><tbody id="metric-rows"></tbody></table>
+  </div>
+
   <!-- 模型部署健康 -->
   <div class="pf-card flush">
     <div class="pf-card-head">
@@ -160,6 +165,11 @@
           '<span class="pf-chip ' + (online ? 'ok' : revoked ? 'gray' : 'warn') + '">' + (online ? '<span class="pf-dot ok"></span>在线' : revoked ? '已吊销' : esc(s.status)) + '</span>' +
         '</div>';
       }).join('') || '<div class="pf-desc" style="padding:10px 12px">暂无站点</div>';
+
+      document.getElementById('metric-rows').innerHTML = d.sites.rows.filter(function (s) { return s.metrics && Object.keys(s.metrics).length; }).map(function (s) {
+        var m = s.metrics || {}, q = (m.requests_running == null ? '—' : Math.round(m.requests_running)) + ' 活动 / ' + (m.requests_waiting == null ? '—' : Math.round(m.requests_waiting)) + ' 排队';
+        return '<tr><td>' + esc(s.name) + '</td><td class="num">' + (m.output_tok_s == null ? '—' : m.output_tok_s.toFixed(1) + ' tok/s') + '</td><td>' + q + '</td><td>' + (m.kv_cache_pct == null ? '—' : m.kv_cache_pct.toFixed(1) + '%') + '</td><td>' + (m.gpu_util_pct == null ? '—' : m.gpu_util_pct.toFixed(1) + '%') + '</td></tr>';
+      }).join('') || '<tr><td colspan="5" class="pf-desc" style="padding:10px">暂无可用实时指标（节点需提供 /metrics）</td></tr>';
 
       document.getElementById('dep-rows').innerHTML = d.deployments.rows.map(function (r) {
         var chip = r.state === '健康' ? '<span class="pf-chip ok"><span class="pf-dot ok"></span>健康</span>'

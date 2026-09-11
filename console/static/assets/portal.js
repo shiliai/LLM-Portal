@@ -101,7 +101,7 @@
       '<div class="pf-main">' +
         '<header class="pf-topbar">' +
           '<div class="pf-topbar-title">' + title + '</div>' +
-          '<div class="pf-topbar-right"><span class="pf-avatar">' + (sess.role === 'admin' ? 'A' : 'U') + '</span></div>' +
+          '<div class="pf-topbar-right"><span class="pf-build">v' + (sess.version || 'dev') + ' · ' + (sess.build || 'unknown').slice(0, 12) + '</span><span class="pf-avatar">' + (sess.role === 'admin' ? 'A' : 'U') + '</span></div>' +
         '</header>' +
         '<main class="pf-content"></main>' +
       '</div>';
