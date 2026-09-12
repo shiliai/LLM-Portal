@@ -723,6 +723,15 @@ function buildOverview(){
       ov.node = document.getElementById('ovNode').value;
       ov.model = document.getElementById('ovModel').value;
       ov.key = document.getElementById('ovKey').value;
+      /* 节点与模型必须保持同一宿主范围，避免显示“节点 A × 模型 B”的伪聚合。 */
+      if(ov.node!=='all' && ov.model!=='all' && MODEL_NODE[ov.model]!==ov.node){
+        if(id==='ovNode'){
+          ov.model='all'; document.getElementById('ovModel').value='all';
+        }else if(id==='ovModel'){
+          ov.node='all'; document.getElementById('ovNode').value='all';
+        }
+        toast('节点与模型范围不一致，已重置另一项筛选');
+      }
       updateOverview(true);
     });
   });
@@ -736,6 +745,7 @@ function buildOverview(){
     const b = e.target.closest('button'); if(!b) return;
     ov.interval = parseInt(b.dataset.int,10); ov.left = ov.interval;
     this.querySelectorAll('button').forEach(function(x){x.classList.toggle('on', x===b);});
+    updateOvClock();
   });
   document.getElementById('ovRefresh').addEventListener('click', function(){
     doRefresh(true);
@@ -2183,15 +2193,15 @@ function doRefresh(manual){
   tickToday();
   slideOvSeries();
   ov.lastUpdate = new Date();
+  if(manual) ov.left = ov.interval;
   const r = ROUTES[currentRoute];
   if(r && r.update) r.update(false);
   updateOvClock();
-  if(manual) ov.left = ov.interval;
 }
 setInterval(function(){
   if(ov.auto){
     ov.left -= 1;
-    if(ov.left <= 0){ doRefresh(false); ov.left = ov.interval; }
+    if(ov.left <= 0){ doRefresh(false); ov.left = ov.interval; updateOvClock(); }
     else updateOvClock();
   } else {
     updateOvClock();
