@@ -957,9 +957,10 @@ function genRecords(){
   RECS.sort(function(a,b){ return b.t - a.t; });
 }
 genRecords();
-const ug = {built:false, tab:'sum', range:'today', gran:'hour',
+const ug = {built:false, tab:'sum', range:'24h', gran:'hour',
   page:1, per:20, search:'', status:'all', model:'all', ep:'all', key:'all', node:'all',
-  tRange:'24h', tFrom:null, tTo:null, expanded:{}};
+  tRange:'24h', tFrom:null, tTo:null, expanded:{},
+  distModelTab:'tok', distKeyTab:'group', distEpTab:'tok', distExpand:{}};
 function fmtDTLocal(d){
   return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());
 }
@@ -984,7 +985,8 @@ function buildUsage(){
   '<div id="ugPanelSum">'+
     '<div class="toolbar">'+
       '<div class="tb-item"><label>时间范围</label><div class="seg" id="ugRangeSeg">'+
-        '<button data-r="today" class="on">今日</button><button data-r="7d">7天</button><button data-r="30d">30天</button>'+
+        '<button data-r="1h">近1小时</button><button data-r="today">今天</button>'+
+        '<button data-r="24h" class="on">近24小时</button><button data-r="7d">近7天</button>'+
       '</div></div>'+
       '<div class="tb-item"><label>粒度</label><div class="seg" id="ugGranSeg">'+
         '<button data-g="hour" class="on">按小时</button><button data-g="day">按天</button>'+
@@ -992,11 +994,41 @@ function buildUsage(){
       '<div class="tb-right"><button class="btn" id="ugRefresh1">⟳ 刷新</button></div>'+
     '</div>'+
     '<div class="kpi-row section-gap" style="grid-template-columns:repeat(5,1fr);" id="ugKpis"></div>'+
-    '<div class="panel section-gap"><h3>请求量与 Token 趋势<span class="tag" id="ugTrendTag"></span></h3><div id="chUgTrend" class="chart h260"></div></div>'+
-    '<div class="three-col">'+
-      '<div class="panel"><h3>分布 · 按模型</h3><table class="tbl"><thead><tr><th>模型</th><th class="num">请求</th><th class="num">Token</th><th class="num">占比</th></tr></thead><tbody id="ugDistModel"></tbody></table></div>'+
-      '<div class="panel"><h3>分布 · 按 Key</h3><table class="tbl"><thead><tr><th>Key / 用户</th><th class="num">请求</th><th class="num">Token</th><th class="num">占比</th></tr></thead><tbody id="ugDistKey"></tbody></table></div>'+
-      '<div class="panel"><h3>分布 · 按节点</h3><table class="tbl"><thead><tr><th>节点</th><th class="num">请求</th><th class="num">Token</th><th class="num">占比</th></tr></thead><tbody id="ugDistNode"></tbody></table></div>'+
+    /* 2×2 分布仪表盘网格（Sub2API Usage Records 结构，无私有网关计费列） */
+    '<div class="grid" style="grid-template-columns:1fr 1fr;">'+
+      /* 1 · 模型分布 */
+      '<div class="panel"><h3>模型分布<span class="tag">donut + 明细</span></h3>'+
+        '<div class="tabs" id="ugModelTabs" style="margin-bottom:8px;">'+
+          '<button data-m="tok" class="on">按 Tokens</button><button data-m="req">按请求数</button></div>'+
+        '<div style="display:grid;grid-template-columns:190px 1fr;gap:8px;align-items:start;">'+
+          '<div id="chDistModel" class="chart" style="height:206px"></div>'+
+          '<table class="tbl"><thead><tr><th style="width:20px"></th><th>模型</th><th class="num">请求数</th>'+
+          '<th class="num">Tokens</th><th class="num">读</th><th class="num">写</th><th class="num">缓存</th></tr></thead>'+
+          '<tbody id="ugDistModelBody"></tbody></table>'+
+        '</div></div>'+
+      /* 2 · 分组/Key 分布 */
+      '<div class="panel"><h3>分组 / Key 分布<span class="tag">donut + 明细</span></h3>'+
+        '<div class="tabs" id="ugKeyTabs" style="margin-bottom:8px;">'+
+          '<button data-k="group" class="on">按分组</button><button data-k="key">按 Key</button></div>'+
+        '<div style="display:grid;grid-template-columns:190px 1fr;gap:8px;align-items:start;">'+
+          '<div id="chDistKey" class="chart" style="height:206px"></div>'+
+          '<table class="tbl"><thead><tr><th id="ugKeyTh">分组</th><th class="num">请求数</th>'+
+          '<th class="num">Tokens</th><th class="num">读</th><th class="num">写</th><th class="num">缓存</th></tr></thead>'+
+          '<tbody id="ugDistKeyBody"></tbody></table>'+
+        '</div></div>'+
+      /* 3 · 端点分布 */
+      '<div class="panel"><h3>端点分布<span class="tag">donut + 明细</span></h3>'+
+        '<div class="tabs" id="ugEpTabs" style="margin-bottom:8px;">'+
+          '<button data-e="tok" class="on">按 Tokens</button><button data-e="req">按请求数</button></div>'+
+        '<div style="display:grid;grid-template-columns:190px 1fr;gap:8px;align-items:start;">'+
+          '<div id="chDistEp" class="chart" style="height:206px"></div>'+
+          '<table class="tbl"><thead><tr><th>端点</th><th class="num">请求数</th>'+
+          '<th class="num">Tokens</th><th class="num">读</th><th class="num">写</th><th class="num">缓存</th></tr></thead>'+
+          '<tbody id="ugDistEpBody"></tbody></table>'+
+        '</div></div>'+
+      /* 4 · Token 用量趋势 */
+      '<div class="panel"><h3>Token 用量趋势<span class="tag" id="ugTrendTag"></span></h3>'+
+        '<div id="chUgTrend" class="chart" style="height:262px"></div></div>'+
     '</div>'+
   '</div>'+
   /* ---- 明细面板 ---- */
@@ -1060,6 +1092,31 @@ function buildUsage(){
     updateUsageSummary();
   });
   document.getElementById('ugRefresh1').addEventListener('click', function(){ updateUsageSummary(); toast('用量汇总已刷新'); });
+  /* 分布仪表盘 Tab 切换与模型行展开 */
+  document.getElementById('ugModelTabs').addEventListener('click', function(e){
+    const b=e.target.closest('button'); if(!b) return;
+    ug.distModelTab=b.dataset.m;
+    this.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b);});
+    renderDistModel();
+  });
+  document.getElementById('ugKeyTabs').addEventListener('click', function(e){
+    const b=e.target.closest('button'); if(!b) return;
+    ug.distKeyTab=b.dataset.k;
+    this.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b);});
+    renderDistKey();
+  });
+  document.getElementById('ugEpTabs').addEventListener('click', function(e){
+    const b=e.target.closest('button'); if(!b) return;
+    ug.distEpTab=b.dataset.e;
+    this.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b);});
+    renderDistEp();
+  });
+  document.getElementById('ugDistModelBody').addEventListener('click', function(e){
+    const tr=e.target.closest('tr[data-dx]'); if(!tr) return;
+    const k=tr.dataset.dx;
+    ug.distExpand[k]=!ug.distExpand[k];
+    renderDistModel();
+  });
   document.getElementById('ugRefresh2').addEventListener('click', function(){
     genRecords(); ug.page=1; ug.expanded={};
     document.getElementById('ugTabRec').innerHTML='请求明细 <span class="mono small muted">('+RECS.length+')</span>';
@@ -1135,94 +1192,211 @@ function switchUgTab(t){
   document.getElementById('ugPanelRec').style.display = t==='rec' ? '' : 'none';
   if(t==='sum') resizeVisibleCharts();
 }
-/* ---- 汇总数据 ---- */
-function rangeFactor(){ return ug.range==='today' ? 1 : (ug.range==='7d' ? 6.4 : 27.8); }
+/* ---- 汇总数据：全部从同一批 mock 明细（RECS）聚合，保证数字自洽 ---- */
+const DIST_COLORS = {
+  model:{'qwen3-32b-instruct':'#22d3ee','deepseek-v3.1':'#34d399','qwen3-coder-30b':'#a78bfa','glm-4.5-air':'#fbbf24'},
+  group:{'研发':'#22d3ee','数据分析':'#fbbf24','default':'#6b7280'},
+  key:{'3f2a':'#22d3ee','9c1b':'#34d399','77e0':'#fbbf24','key':'#a78bfa'},
+  ep:{'/v1/chat/completions':'#22d3ee','/v1/completions':'#34d399','/v1/embeddings':'#a78bfa'}
+};
+const RANGE_LABEL = {'1h':'近1小时','today':'今天','24h':'近24小时','7d':'近7天'};
+function ugRangeFrom(){
+  const now = new Date();
+  if(ug.range==='1h') return new Date(now.getTime()-3600000);
+  if(ug.range==='today'){ const d=new Date(now); d.setHours(0,0,0,0); return d; }
+  if(ug.range==='24h') return new Date(now.getTime()-86400000);
+  return new Date(now.getTime()-7*86400000);
+}
+function ugScopedRecs(){
+  const from = ugRangeFrom();
+  return RECS.filter(function(r){ return r.t>=from; });
+}
+function aggBy(recs, keyFn){
+  const m = {};
+  recs.forEach(function(r){
+    const k = keyFn(r);
+    if(!m[k]) m[k] = {req:0, inTok:0, outTok:0, cacheTok:0};
+    const o = m[k]; o.req++; o.inTok+=r.inTok; o.outTok+=r.outTok; o.cacheTok+=r.cacheTok;
+  });
+  return m;
+}
+function donutOption(items, centerLabel){
+  const total = items.reduce(function(a,x){return a+x.value;},0);
+  return {
+    backgroundColor:'transparent',
+    tooltip:{trigger:'item', backgroundColor:'#151b26', borderColor:'#263142',
+      textStyle:{color:'#d1d5db',fontSize:11,fontFamily:'ui-monospace,Menlo,monospace'},
+      formatter:function(p){ return esc(p.name)+'<br/>'+fmt(p.value)+'（'+p.percent+'%）'; }},
+    title:{text: total ? fmtK(total) : '0', subtext:centerLabel, left:'center', top:'38%',
+      textStyle:{color:'#f3f4f6',fontSize:16,fontFamily:'ui-monospace,Menlo,monospace'},
+      subtextStyle:{color:'#6b7280',fontSize:9}},
+    series:[{type:'pie', radius:['56%','80%'], center:['50%','50%'],
+      label:{show:false}, labelLine:{show:false},
+      itemStyle:{borderColor:'#111827', borderWidth:2},
+      emphasis:{scale:true, scaleSize:4},
+      data:items}]
+  };
+}
 function updateUsageSummary(){
-  const f = rangeFactor();
-  const req = Math.round(TODAY.requests * f);
-  const inT = Math.round(TODAY.inTok * f), outT = Math.round(TODAY.outTok * f), cacheT = Math.round(TODAY.cacheTok * f);
-  const okRecs = RECS.filter(function(r){return !r.fail;});
-  const avgTtft = Math.round(okRecs.reduce(function(a,r){return a+(r.ttft||0);},0) / okRecs.length);
+  const recs = ugScopedRecs();
+  const ok = recs.filter(function(r){return !r.fail;});
+  const inT = recs.reduce(function(a,r){return a+r.inTok;},0);
+  const outT = recs.reduce(function(a,r){return a+r.outTok;},0);
+  const cacheT = recs.reduce(function(a,r){return a+r.cacheTok;},0);
+  const avgTtft = ok.length ? Math.round(ok.reduce(function(a,r){return a+(r.ttft||0);},0)/ok.length) : null;
+  const sr = recs.length ? ok.length/recs.length*100 : null;
   const kpis = [
-    {label:'总请求', val:fmt(req), unit:'次', sub:'范围 · '+(ug.range==='today'?'今日':ug.range), color:'#60a5fa'},
-    {label:'总 Token', val:fmtK(inT+outT), unit:'tok', sub:'入 '+fmtK(inT)+' / 出 '+fmtK(outT), color:'#22d3ee'},
-    {label:'成功率', val:((TODAY.requests-TODAY.fail)/TODAY.requests*100).toFixed(1), unit:'%', sub:'失败 '+fmt(Math.round(TODAY.fail*f))+' 次', color:'#34d399'},
-    {label:'平均首字延迟', val:fmt(avgTtft), unit:'ms', sub:'成功请求 · 近 7 天样本', color:'#fbbf24'},
-    {label:'缓存读取 Token', val:fmtK(cacheT), unit:'tok', sub:'占输入 '+(cacheT/inT*100).toFixed(0)+'%', color:'#a78bfa'}
+    {label:'总请求', val:fmt(recs.length), unit:'次', sub:'范围 · '+RANGE_LABEL[ug.range], color:'#60a5fa'},
+    {label:'总 Token', val:fmtK(inT+outT), unit:'tok', sub:'读 '+fmtK(inT)+' / 写 '+fmtK(outT), color:'#22d3ee'},
+    {label:'成功率', val: sr===null?'—':sr.toFixed(1), unit: sr===null?'':'%',
+     sub:'失败 '+fmt(recs.length-ok.length)+' 次', color:'#34d399'},
+    {label:'平均首字延迟', val: avgTtft===null?'—':fmt(avgTtft), unit: avgTtft===null?'':'ms',
+     sub:'成功请求 TTFT', color:'#fbbf24'},
+    {label:'缓存读取 Token', val:fmtK(cacheT), unit:'tok',
+     sub:'命中率 '+(inT? (cacheT/inT*100).toFixed(0) : '0')+'%（占输入）', color:'#a78bfa'}
   ];
   document.getElementById('ugKpis').innerHTML = kpis.map(function(k){
     return '<div class="kpi"><div class="k-label"><i class="dot" style="background:'+k.color+';box-shadow:0 0 6px '+k.color+'"></i>'+k.label+'</div>'+
       '<div class="k-val">'+k.val+'<span class="unit">'+k.unit+'</span></div><div class="k-sub">'+k.sub+'</div></div>';
   }).join('');
+  renderDistModel();
+  renderDistKey();
+  renderDistEp();
   updateUgTrend();
-  updateUgDist(f);
 }
+/* 1 · 模型分布（行可展开按节点拆分） */
+function renderDistModel(){
+  const recs = ugScopedRecs();
+  const m = aggBy(recs, function(r){return r.model;});
+  const byTok = ug.distModelTab==='tok';
+  const val = function(k){ return byTok ? m[k].inTok+m[k].outTok : m[k].req; };
+  const keys = Object.keys(m).sort(function(a,b){return val(b)-val(a);});
+  const ch = getChart('chDistModel');
+  if(ch) ch.setOption(donutOption(keys.map(function(k){
+    return {name:k, value:val(k), itemStyle:{color:DIST_COLORS.model[k]}};
+  }), byTok?'Tokens':'请求'), {notMerge:true});
+  const body = document.getElementById('ugDistModelBody');
+  body.innerHTML = keys.map(function(k){
+    const o = m[k], exp = ug.distExpand['m:'+k];
+    let html = '<tr data-dx="m:'+k+'" style="cursor:pointer">'+
+      '<td class="muted small">'+(exp?'▾':'▸')+'</td>'+
+      '<td class="mono small"><i class="dot" style="background:'+DIST_COLORS.model[k]+';box-shadow:0 0 5px '+DIST_COLORS.model[k]+'"></i> '+k+'</td>'+
+      '<td class="num">'+fmt(o.req)+'</td>'+
+      '<td class="num c-cyan">'+fmtK(o.inTok+o.outTok)+'</td>'+
+      '<td class="num">'+fmtK(o.inTok)+'</td>'+
+      '<td class="num">'+fmtK(o.outTok)+'</td>'+
+      '<td class="num">'+(o.cacheTok?fmtK(o.cacheTok):'<span class="muted">—</span>')+'</td></tr>';
+    if(exp){
+      const byNode = aggBy(recs.filter(function(r){return r.model===k;}), function(r){return r.node.id;});
+      html += Object.keys(byNode).map(function(nid){
+        const n = NODES.find(function(x){return x.id===nid;});
+        const no = byNode[nid];
+        return '<tr style="background:#0f1520;">'+
+          '<td></td><td class="mono small" style="color:'+n.color+';padding-left:22px;">└ '+n.name+'</td>'+
+          '<td class="num muted">'+fmt(no.req)+'</td>'+
+          '<td class="num muted">'+fmtK(no.inTok+no.outTok)+'</td>'+
+          '<td class="num muted">'+fmtK(no.inTok)+'</td>'+
+          '<td class="num muted">'+fmtK(no.outTok)+'</td>'+
+          '<td class="num muted">'+(no.cacheTok?fmtK(no.cacheTok):'—')+'</td></tr>';
+      }).join('');
+    }
+    return html;
+  }).join('');
+}
+/* 2 · 分组 / Key 分布 */
+function renderDistKey(){
+  const recs = ugScopedRecs();
+  const byGroup = ug.distKeyTab==='group';
+  const m = aggBy(recs, byGroup ? function(r){return r.key.group;} : function(r){return r.key.last4;});
+  const val = function(k){ return m[k].inTok+m[k].outTok; };
+  const keys = Object.keys(m).sort(function(a,b){return val(b)-val(a);});
+  document.getElementById('ugKeyTh').textContent = byGroup ? '分组' : 'Key / 用户';
+  const ch = getChart('chDistKey');
+  if(ch) ch.setOption(donutOption(keys.map(function(k){
+    const label = byGroup ? k : (function(){ const kk=KEYS.find(function(x){return x.last4===k;}); return kk.owner+' '+kk.mask; })();
+    const color = (byGroup ? DIST_COLORS.group[k] : DIST_COLORS.key[k]) || '#60a5fa';
+    return {name:label, value:val(k), itemStyle:{color:color}};
+  }), 'Tokens'), {notMerge:true});
+  document.getElementById('ugDistKeyBody').innerHTML = keys.map(function(k){
+    const o = m[k];
+    const color = (byGroup ? DIST_COLORS.group[k] : DIST_COLORS.key[k]) || '#60a5fa';
+    const label = byGroup
+      ? '<span class="badge gray">'+k+'</span>'
+      : (function(){ const kk=KEYS.find(function(x){return x.last4===k;});
+          return '<span class="mono small">'+kk.mask+'</span> <span class="small muted">'+kk.owner+'</span>'; })();
+    return '<tr><td><i class="dot" style="background:'+color+';box-shadow:0 0 5px '+color+'"></i> '+label+'</td>'+
+      '<td class="num">'+fmt(o.req)+'</td>'+
+      '<td class="num c-cyan">'+fmtK(o.inTok+o.outTok)+'</td>'+
+      '<td class="num">'+fmtK(o.inTok)+'</td>'+
+      '<td class="num">'+fmtK(o.outTok)+'</td>'+
+      '<td class="num">'+(o.cacheTok?fmtK(o.cacheTok):'<span class="muted">—</span>')+'</td></tr>';
+  }).join('');
+}
+/* 3 · 端点分布 */
+function renderDistEp(){
+  const recs = ugScopedRecs();
+  const m = aggBy(recs, function(r){return r.ep;});
+  const byTok = ug.distEpTab==='tok';
+  const val = function(k){ return byTok ? m[k].inTok+m[k].outTok : m[k].req; };
+  const keys = Object.keys(m).sort(function(a,b){return val(b)-val(a);});
+  const ch = getChart('chDistEp');
+  if(ch) ch.setOption(donutOption(keys.map(function(k){
+    return {name:k, value:val(k), itemStyle:{color:DIST_COLORS.ep[k]}};
+  }), byTok?'Tokens':'请求'), {notMerge:true});
+  document.getElementById('ugDistEpBody').innerHTML = keys.map(function(k){
+    const o = m[k];
+    return '<tr><td class="mono small"><i class="dot" style="background:'+DIST_COLORS.ep[k]+';box-shadow:0 0 5px '+DIST_COLORS.ep[k]+'"></i> '+k+'</td>'+
+      '<td class="num">'+fmt(o.req)+'</td>'+
+      '<td class="num c-cyan">'+fmtK(o.inTok+o.outTok)+'</td>'+
+      '<td class="num">'+fmtK(o.inTok)+'</td>'+
+      '<td class="num">'+fmtK(o.outTok)+'</td>'+
+      '<td class="num">'+(o.cacheTok?fmtK(o.cacheTok):'<span class="muted">—</span>')+'</td></tr>';
+  }).join('');
+}
+/* 4 · Token 用量趋势：输入/输出/缓存读取（左轴）+ 缓存命中率虚线（右轴 %） */
 function updateUgTrend(){
   const ch = getChart('chUgTrend'); if(!ch) return;
-  let labels, reqData, tokData;
-  if(ug.gran==='hour'){
-    labels=[]; reqData=[]; tokData=[];
-    const now = new Date(); now.setMinutes(0,0,0);
-    for(let i=23;i>=0;i--){
-      const h = new Date(now.getTime()-i*3600000);
-      labels.push(pad(h.getHours())+':00');
-      const inRange = RECS.filter(function(r){ return r.t>=h && r.t<new Date(h.getTime()+3600000); });
-      reqData.push(inRange.length * (ug.range==='today'?1:7));
-      tokData.push(Math.round(inRange.reduce(function(a,r){return a+r.inTok+r.outTok;},0)/100) * (ug.range==='today'?1:7));
-    }
-    document.getElementById('ugTrendTag').textContent = '粒度 · 小时';
-  } else {
-    labels=[]; reqData=[]; tokData=[];
-    const days = ug.range==='30d' ? 30 : 14;
-    for(let i=days-1;i>=0;i--){
-      const d = new Date(Date.now()-i*86400000);
-      labels.push(pad(d.getMonth()+1)+'-'+pad(d.getDate()));
-      reqData.push(i===0 ? TODAY.requests : rndi(10500,15200));
-      tokData.push(i===0 ? Math.round((TODAY.inTok+TODAY.outTok)/100) : rndi(380,560));
-    }
-    document.getElementById('ugTrendTag').textContent = '粒度 · 天（Token 单位 ×100）';
+  const recs = ugScopedRecs();
+  const from = ugRangeFrom(), now = new Date();
+  const byHour = ug.gran==='hour';
+  let step = byHour ? 3600000 : 86400000;
+  if(ug.range==='1h' && byHour) step = 300000; /* 近1小时 → 5min×12 */
+  const t0 = Math.floor(from.getTime()/step)*step;
+  const n = Math.max(1, Math.ceil((now.getTime()-t0)/step));
+  const labels=[], inD=[], outD=[], cacheD=[], hitD=[];
+  for(let i=0;i<n;i++){
+    const b0 = new Date(t0+i*step), b1 = new Date(t0+(i+1)*step);
+    labels.push(byHour ? fmtHM(b0) : pad(b0.getMonth()+1)+'-'+pad(b0.getDate()));
+    let a=0,b=0,c=0;
+    recs.forEach(function(r){ if(r.t>=b0 && r.t<b1){ a+=r.inTok; b+=r.outTok; c+=r.cacheTok; } });
+    inD.push(a); outD.push(b); cacheD.push(c);
+    hitD.push(a ? Math.round(c/a*1000)/10 : 0);
   }
+  document.getElementById('ugTrendTag').textContent = '粒度 · '+(byHour?'小时':'天')+' · '+RANGE_LABEL[ug.range];
   ch.setOption({
     backgroundColor:'transparent', tooltip:baseTooltip(),
-    legend:{textStyle:{color:'#9ca3af',fontSize:10.5}, top:0, icon:'roundRect', itemWidth:10, itemHeight:3},
-    grid:{left:44,right:52,top:26,bottom:24},
-    xAxis:Object.assign({type:'category',data:labels},AXIS_STYLE),
+    legend:{textStyle:{color:'#9ca3af',fontSize:10}, top:0, icon:'roundRect', itemWidth:10, itemHeight:3},
+    grid:{left:46,right:46,top:28,bottom:24},
+    xAxis:Object.assign({type:'category',boundaryGap:false,data:labels},AXIS_STYLE),
     yAxis:[
-      Object.assign({type:'value',name:'请求',nameTextStyle:{color:'#6b7280',fontSize:10},splitLine:{lineStyle:{color:'#151b26'}}},AXIS_STYLE),
-      Object.assign({type:'value',name:'Token×100',nameTextStyle:{color:'#6b7280',fontSize:10},splitLine:{show:false}},AXIS_STYLE)
+      Object.assign({type:'value',name:'Token',nameTextStyle:{color:'#6b7280',fontSize:10},
+        axisLabel:{color:'#6b7280',fontSize:10,fontFamily:'ui-monospace,Menlo,monospace',
+          formatter:function(v){return fmtK(v);}},
+        splitLine:{lineStyle:{color:'#151b26'}}},{axisLine:{lineStyle:{color:'#1f2937'}}}),
+      Object.assign({type:'value',name:'命中率 %',max:100,nameTextStyle:{color:'#6b7280',fontSize:10},
+        splitLine:{show:false}},AXIS_STYLE)
     ],
     series:[
-      {name:'请求量',type:'bar',barWidth:'55%',itemStyle:{color:'#164e63',borderRadius:[2,2,0,0]},
-       emphasis:{itemStyle:{color:'#22d3ee'}},data:reqData},
-      {name:'Token（×100）',type:'line',yAxisIndex:1,smooth:true,symbol:'none',
-       lineStyle:{width:1.6,color:'#34d399'},itemStyle:{color:'#34d399'},data:tokData}
+      {name:'输入 Token',type:'line',stack:'tk',smooth:true,symbol:'none',data:inD,
+       lineStyle:{width:1.3,color:'#a78bfa'},itemStyle:{color:'#a78bfa'},areaStyle:{color:'#a78bfa',opacity:0.14}},
+      {name:'输出 Token',type:'line',stack:'tk',smooth:true,symbol:'none',data:outD,
+       lineStyle:{width:1.3,color:'#22d3ee'},itemStyle:{color:'#22d3ee'},areaStyle:{color:'#22d3ee',opacity:0.14}},
+      {name:'缓存读取',type:'line',stack:'tk',smooth:true,symbol:'none',data:cacheD,
+       lineStyle:{width:1.3,color:'#fbbf24'},itemStyle:{color:'#fbbf24'},areaStyle:{color:'#fbbf24',opacity:0.12}},
+      {name:'缓存命中率',type:'line',yAxisIndex:1,smooth:true,symbol:'none',data:hitD,
+       lineStyle:{width:1.4,color:'#34d399',type:'dashed'},itemStyle:{color:'#34d399'}}
     ]
   },{notMerge:true});
-}
-function updateUgDist(f){
-  const mk = function(keyFn, labelFn){
-    const m = {};
-    RECS.forEach(function(r){
-      const k = keyFn(r);
-      if(!m[k]) m[k]={req:0,tok:0};
-      m[k].req++; m[k].tok += r.inTok + r.outTok;
-    });
-    const total = Object.keys(m).reduce(function(a,k){return a+m[k].req;},0);
-    return Object.keys(m).sort(function(a,b){return m[b].req-m[a].req;}).map(function(k){
-      const pct = (m[k].req/total*100).toFixed(1);
-      return '<tr><td>'+labelFn(k)+'</td><td class="num">'+fmt(m[k].req*f)+'</td>'+
-        '<td class="num">'+fmtK(m[k].tok*f)+'</td>'+
-        '<td class="num"><span class="c-cyan">'+pct+'%</span>'+pctBar(parseFloat(pct),'var(--cyan)')+'</td></tr>';
-    }).join('');
-  };
-  document.getElementById('ugDistModel').innerHTML = mk(function(r){return r.model;},
-    function(k){return '<span class="mono small">'+k+'</span>';});
-  document.getElementById('ugDistKey').innerHTML = mk(function(r){return r.key.last4;},
-    function(k){const kk=KEYS.find(function(x){return x.last4===k;});
-      return '<span class="mono small">'+kk.mask+'</span> <span class="small muted">'+kk.owner+'</span>';});
-  document.getElementById('ugDistNode').innerHTML = mk(function(r){return r.node.id;},
-    function(k){const n=NODES.find(function(x){return x.id===k;});
-      return '<span class="mono small" style="color:'+n.color+'">'+n.name+'</span>';});
 }
 /* ---- 明细表 ---- */
 function filteredRecs(){

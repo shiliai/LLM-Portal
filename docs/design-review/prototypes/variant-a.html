@@ -596,12 +596,13 @@ function npUpdate(){
 /* ================= 请求与用量页 ================= */
 const ERRORS = ['context length exceeded','upstream timeout','model overloaded'];
 const req = { tab:'sum', q:'', status:'all', model:'all', ep:'all', key:'all', node:'all',
-  range:'24h', tStart:'', tEnd:'', page:1, per:20, grain:'hour', chart:null };
+  range:'24h', tStart:'', tEnd:'', page:1, per:20, grain:'hour',
+  sumRange:'24h', sumTab:{model:'tok', gk:'group', ep:'tok'}, sumCharts:{} };
 let REQ_ROWS = [];
 function genRequests(){
   REQ_ROWS = [];
   const now = Date.now();
-  for(let i=0;i<168;i++){
+  for(let i=0;i<360;i++){
     const key = pick(KEYS);
     const model = pick(MODELS);
     const node = NODES.find(n=>n.id===MODEL_NODE[model]);
@@ -645,62 +646,197 @@ function reqTab(t){ req.tab=t; document.querySelectorAll('#page .tabs button').f
   if(t==='sum') reqSumRender(); else reqListRender(); }
 function reqRegen(){ genRequests(); reqTab(req.tab); toast('明细数据已刷新'); }
 
+/* ------- 汇总区：KPI + 时间范围/粒度 + 2x2 分布仪表盘 ------- */
+const SUM_COLORS = ['#4f46e5','#0284c7','#d97706','#16a34a','#db2777','#7c3aed','#0891b2'];
+function segActivate(btn){ if(btn && btn.parentElement) btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.toggle('on', b===btn)); }
+function sumBounds(){
+  const now = Date.now();
+  if(req.sumRange==='today'){ const d=new Date(); d.setHours(0,0,0,0); return [d.getTime(), now]; }
+  const back = {'1h':1,'24h':24,'7d':168}[req.sumRange]||24;
+  return [now-back*3600e3, now];
+}
+function sumFiltered(){ const [s,e]=sumBounds(); return REQ_ROWS.filter(r=>r.t.getTime()>=s && r.t.getTime()<=e); }
+function aggBy(rows, keyFn){
+  const m={};
+  rows.forEach(r=>{ const k=keyFn(r); const o=m[k]=m[k]||{req:0,inTok:0,outTok:0,cache:0};
+    o.req++; o.inTok+=r.inTok; o.outTok+=r.outTok; o.cache+=r.cacheTok; });
+  return m;
+}
+function sumChart(id){ const el=document.getElementById(id); if(!el) return null;
+  if(!req.sumCharts[id] || echarts.getInstanceByDom(el)!==req.sumCharts[id]) req.sumCharts[id]=echarts.init(el);
+  return req.sumCharts[id]; }
+
 function reqSumRender(){
   const el = document.getElementById('reqBody');
-  const ok = REQ_ROWS.filter(r=>r.ok), fail = REQ_ROWS.filter(r=>!r.ok);
-  const inT = REQ_ROWS.reduce((a,r)=>a+r.inTok,0), outT = REQ_ROWS.reduce((a,r)=>a+r.outTok,0), cT = REQ_ROWS.reduce((a,r)=>a+r.cacheTok,0);
-  const avgTtft = ok.length? Math.round(ok.reduce((a,r)=>a+r.ttft,0)/ok.length):0;
   el.innerHTML = `
-  <div class="kpi-row" style="grid-template-columns:repeat(5,1fr)">
-    ${[['总请求',fmt(REQ_ROWS.length),`失败 ${fail.length} 次 · 成功率 ${(ok.length/REQ_ROWS.length*100).toFixed(1)}%`,'#4f46e5','#eef2ff','<path d="M3 17l5-6 4 3 6-8 3 4"/>'],
-       ['输入 Token',fmtTok(inT),'读 (含缓存命中)','#0891b2','#ecfeff','<path d="M12 19V5M5 12l7-7 7 7"/>'],
-       ['输出 Token',fmtTok(outT),'写 · 生成内容','#d97706','#fffbeb','<path d="M12 5v14M19 12l-7 7-7-7"/>'],
-       ['缓存读取 Token',fmtTok(cT),`节省 ${pct(cT/Math.max(1,inT))} 输入`,'#db2777','#fdf2f8','<path d="M4 7a8 3 0 0016 0A8 3 0 004 7z"/><path d="M4 7v10a8 3 0 0016 0V7"/>'],
-       ['平均首字延迟',avgTtft+' ms','TTFT · 成功请求','#16a34a','#f0fdf4','<path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/>']
-      ].map(k=>`<div class="kpi"><div class="kpi-top"><div class="kpi-chip" style="background:${k[4]};color:${k[3]}"><svg viewBox="0 0 24 24" stroke="currentColor">${k[5]}</svg></div><div class="kpi-label">${k[0]}</div></div>
-      <div class="kpi-value num">${k[1]}</div><div class="kpi-foot num">${k[2]}</div></div>`).join('')}
-  </div>
+  <div class="kpi-row" style="grid-template-columns:repeat(5,1fr)" id="sumKpis"></div>
   <div class="toolbar">
-    <div class="group"><span class="glabel">粒度</span>${segHtml([{v:'hour',t:'按小时'},{v:'day',t:'按天'}], req.grain, "reqPickGrain(this.dataset.v)")}</div>
-    <span class="muted">统计窗口：近 7 天（明细样本 168 条，已含 ~4% 失败）</span>
+    <div class="group"><span class="glabel">时间范围</span>${segHtml(RANGE_OPTS.slice(0,4), req.sumRange, "sumPickRange(this.dataset.v, this)")}</div>
+    <div class="sep"></div>
+    <div class="group"><span class="glabel">粒度</span>${segHtml([{v:'hour',t:'按小时'},{v:'day',t:'按天'}], req.grain, "sumPickGrain(this.dataset.v, this)")}</div>
+    <span class="muted">分布与趋势由明细样本（${REQ_ROWS.length} 条，近 7 天）实时聚合，随筛选联动</span>
   </div>
-  <div class="card card-pad section"><div class="card-title">请求量与 Token 趋势<span class="sub">双轴 · 请求数 / Token</span></div><div class="chart" id="reqTrendChart"></div></div>
-  <div class="grid-3" id="reqDistTables"></div>`;
-  reqTrendChartUpdate();
-  const dist = (dim, keyFn)=>{ const m={}; REQ_ROWS.forEach(r=>{ const k=keyFn(r); m[k]=m[k]||{req:0,inTok:0,outTok:0,cache:0}; m[k].req++; m[k].inTok+=r.inTok; m[k].outTok+=r.outTok; m[k].cache+=r.cacheTok; });
-    return Object.entries(m).sort((a,b)=>b[1].req-a[1].req); };
-  const dHtml = (title, rows)=>`<div class="card"><div class="card-title" style="padding:12px 16px 0">${title}</div>
-    <div class="tbl-wrap"><table><thead><tr><th>${title.replace('按','')}</th><th>请求数</th><th>读 Token</th><th>写 Token</th><th>缓存</th><th>占比</th></tr></thead><tbody>
-    ${rows.map(([k,v])=>`<tr><td>${k}</td><td class="num">${fmt(v.req)}</td><td class="num">${fmtTok(v.inTok)}</td><td class="num">${fmtTok(v.outTok)}</td><td class="num">${fmtTok(v.cache)}</td>
-      <td><div class="bar-cell"><div class="bar"><i style="width:${(v.req/REQ_ROWS.length*100).toFixed(1)}%"></i></div><span class="v num">${(v.req/REQ_ROWS.length*100).toFixed(1)}%</span></div></td></tr>`).join('')}
-    </tbody></table></div></div>`;
-  document.getElementById('reqDistTables').innerHTML =
-    dHtml('按模型', dist('m',r=>r.model)) + dHtml('按 Key / 用户', dist('k',r=>`${r.owner} (${r.key})`)) + dHtml('按节点', dist('n',r=>r.node));
+  <div class="grid-2">
+    <div class="card card-pad">
+      <div class="card-title">模型分布<span class="sub" id="sumTabModel">${segHtml([{v:'tok',t:'按 Tokens'},{v:'req',t:'按请求数'}], req.sumTab.model, "sumPickTab('model',this.dataset.v,this)")}</span></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <div id="sumChartModel" style="width:186px;height:216px;flex:none"></div>
+        <div class="tbl-wrap" style="flex:1;min-width:0" id="sumTblModel"></div>
+      </div>
+    </div>
+    <div class="card card-pad">
+      <div class="card-title">分组 / Key 分布<span class="sub" id="sumTabGk">${segHtml([{v:'group',t:'按分组'},{v:'key',t:'按 Key'}], req.sumTab.gk, "sumPickTab('gk',this.dataset.v,this)")}</span></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <div id="sumChartGk" style="width:186px;height:216px;flex:none"></div>
+        <div class="tbl-wrap" style="flex:1;min-width:0" id="sumTblGk"></div>
+      </div>
+    </div>
+    <div class="card card-pad">
+      <div class="card-title">端点分布<span class="sub" id="sumTabEp">${segHtml([{v:'tok',t:'按 Tokens'},{v:'req',t:'按请求数'}], req.sumTab.ep, "sumPickTab('ep',this.dataset.v,this)")}</span></div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <div id="sumChartEp" style="width:186px;height:216px;flex:none"></div>
+        <div class="tbl-wrap" style="flex:1;min-width:0" id="sumTblEp"></div>
+      </div>
+    </div>
+    <div class="card card-pad">
+      <div class="card-title">Token 用量趋势<span class="sub">输入 / 输出 / 缓存读取（左轴） · 缓存命中率（右轴 %）</span></div>
+      <div class="chart" id="sumChartTrend" style="height:216px"></div>
+    </div>
+  </div>`;
+  req.sumCharts = {};
+  sumUpdate();
 }
-function reqPickGrain(v){ req.grain=v; reqTrendChartUpdate(); }
-function reqTrendChartUpdate(){
-  if(!req.chart) req.chart = echarts.init(document.getElementById('reqTrendChart'));
-  const buckets = req.grain==='hour'? 12 : 7;
-  const labels=[], reqs=[], toks=[];
-  for(let i=buckets-1;i>=0;i--){
-    labels.push(req.grain==='hour'? `${(new Date().getHours()-i+24)%24}:00` : `${['周日','周一','周二','周三','周四','周五','周六'][(new Date().getDay()-i+70)%7]}`);
-    const base = 8+Math.sin((buckets-i)/buckets*Math.PI)*22;
-    reqs.push(Math.round(base*rr(0.7,1.3)));
-    toks.push(Math.round(base*rr(0.7,1.3)*rr(2.6,3.4)));
+function sumPickRange(v,btn){ req.sumRange=v; segActivate(btn); sumUpdate(); }
+function sumPickGrain(v,btn){ req.grain=v; segActivate(btn); sumTrendUpdate(); }
+function sumPickTab(panel,v,btn){ req.sumTab[panel]=v; segActivate(btn); sumPanelUpdate(panel); }
+function sumToggle(id){
+  const sub = document.getElementById('sub_'+id), car = document.getElementById('car_'+id);
+  if(!sub) return;
+  const open = sub.style.display==='none';
+  sub.style.display = open?'':'none';
+  if(car) car.style.transform = open?'rotate(90deg)':'';
+}
+
+function sumUpdate(){
+  const rows = sumFiltered();
+  /* KPI */
+  const ok = rows.filter(r=>r.ok);
+  const inT = rows.reduce((a,r)=>a+r.inTok,0), outT = rows.reduce((a,r)=>a+r.outTok,0), cT = rows.reduce((a,r)=>a+r.cacheTok,0);
+  const avgTtft = ok.length? Math.round(ok.reduce((a,r)=>a+r.ttft,0)/ok.length):0;
+  const rangeName = {'1h':'近1小时','today':'今天','24h':'近24小时','7d':'近7天'}[req.sumRange];
+  document.getElementById('sumKpis').innerHTML =
+    [['总请求',fmt(rows.length),`失败 ${rows.length-ok.length} 次 · 成功率 ${rows.length?(ok.length/rows.length*100).toFixed(1):'—'}%`,'#4f46e5','#eef2ff','<path d="M3 17l5-6 4 3 6-8 3 4"/>'],
+     ['输入 Token',fmtTok(inT),'读 (含缓存命中)','#0891b2','#ecfeff','<path d="M12 19V5M5 12l7-7 7 7"/>'],
+     ['输出 Token',fmtTok(outT),'写 · 生成内容','#d97706','#fffbeb','<path d="M12 5v14M19 12l-7 7-7-7"/>'],
+     ['缓存读取 Token',fmtTok(cT),`占读 ${pct(cT/Math.max(1,inT))}`,'#db2777','#fdf2f8','<path d="M4 7a8 3 0 0016 0A8 3 0 004 7z"/><path d="M4 7v10a8 3 0 0016 0V7"/>'],
+     ['平均首字延迟',ok.length?avgTtft+' ms':'—','TTFT · '+rangeName,'#16a34a','#f0fdf4','<path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/>']
+    ].map(k=>`<div class="kpi"><div class="kpi-top"><div class="kpi-chip" style="background:${k[4]};color:${k[3]}"><svg viewBox="0 0 24 24" stroke="currentColor">${k[5]}</svg></div><div class="kpi-label">${k[0]}</div></div>
+      <div class="kpi-value num">${k[1]}</div><div class="kpi-foot num">${k[2]}</div></div>`).join('');
+  sumPanelUpdate('model'); sumPanelUpdate('gk'); sumPanelUpdate('ep'); sumTrendUpdate();
+}
+
+function donutOpt(entries, metric){
+  const data = entries.map(([k,v])=>({name:k.length>20?k.slice(0,19)+'…':k, value:Math.round(metric==='tok'? v.inTok+v.outTok : v.req)}));
+  return {
+    tooltip:{trigger:'item', formatter:p=>`${p.name}<br>${fmt(p.value)} ${metric==='tok'?'Tokens':'次'} · ${p.percent}%`},
+    color: SUM_COLORS,
+    series:[{type:'pie', radius:['50%','74%'], center:['50%','50%'], avoidLabelOverlap:true,
+      label:{show:false}, emphasis:{label:{show:true, fontSize:11, color:'#0f172a', formatter:'{b}\n{d}%'}},
+      itemStyle:{borderColor:'#fff', borderWidth:2, borderRadius:4},
+      data}]
+  };
+}
+function sumTableHtml(entries, opt){
+  const sortKey = opt.metric==='tok'? (v=>v.inTok+v.outTok) : (v=>v.req);
+  entries = entries.slice().sort((a,b)=>sortKey(b[1])-sortKey(a[1]));
+  const tot = entries.reduce((a,[,v])=>a+sortKey(v),0)||1;
+  let body = entries.map(([k,v],i)=>{
+    const tok = v.inTok+v.outTok;
+    let main = `<td class="mono" style="font-size:11.5px"><b>${k}</b></td>
+      <td class="num" style="text-align:right">${fmt(v.req)}</td>
+      <td class="num" style="text-align:right">${fmtTok(tok)}</td>
+      <td class="num" style="text-align:right">${fmtTok(v.inTok)}</td>
+      <td class="num" style="text-align:right">${v.outTok?fmtTok(v.outTok):'—'}</td>
+      <td class="num" style="text-align:right">${v.cache?fmtTok(v.cache):'—'}</td>
+      <td><div class="bar-cell"><div class="bar" style="width:56px"><i style="width:${(sortKey(v)/tot*100).toFixed(1)}%"></i></div><span class="v num" style="font-size:10.5px">${(sortKey(v)/tot*100).toFixed(0)}%</span></div></td>`;
+    if(opt.expand){
+      const id = opt.prefix+'_'+i;
+      main = `<td style="width:20px;padding-right:0"><span id="car_${id}" style="display:inline-block;transition:transform .15s;color:#94a3b8;font-size:13px">›</span></td>` + main;
+      const subs = Object.entries(opt.childFn(k)).sort((a,b)=>(b[1].inTok+b[1].outTok)-(a[1].inTok+a[1].outTok));
+      const subRows = subs.map(([sk,sv])=>`<tr style="background:#f8fafc">
+        <td></td><td style="font-size:11px;color:var(--text2);padding-left:8px">└ ${sk.length>22?sk.slice(0,21)+'…':sk}</td>
+        <td class="num" style="text-align:right;font-size:11px">${fmt(sv.req)}</td>
+        <td class="num" style="text-align:right;font-size:11px">${fmtTok(sv.inTok+sv.outTok)}</td>
+        <td class="num" style="text-align:right;font-size:11px">${fmtTok(sv.inTok)}</td>
+        <td class="num" style="text-align:right;font-size:11px">${sv.outTok?fmtTok(sv.outTok):'—'}</td>
+        <td class="num" style="text-align:right;font-size:11px">${sv.cache?fmtTok(sv.cache):'—'}</td><td></td></tr>`).join('');
+      return `<tr style="cursor:pointer" onclick="sumToggle('${id}')">${main}</tr>
+        <tbody id="sub_${id}" style="display:none">${subRows}</tbody>`;
+    }
+    return `<tr>${main}</tr>`;
+  }).join('');
+  const caret = opt.expand?'<th style="width:20px"></th>':'';
+  return `<table><thead><tr>${caret}<th>${opt.nameCol}</th><th style="text-align:right">请求数</th><th style="text-align:right">Tokens</th><th style="text-align:right">读</th><th style="text-align:right">写</th><th style="text-align:right">缓存</th><th>占比</th></tr></thead>
+  <tbody>${body}</tbody></table>`;
+}
+function sumPanelUpdate(panel){
+  const rows = sumFiltered();
+  if(panel==='model'){
+    const metric = req.sumTab.model;
+    const m = aggBy(rows, r=>r.model);
+    const entries = Object.entries(m);
+    const ch = sumChart('sumChartModel'); if(ch) ch.setOption(donutOpt(entries, metric), true);
+    document.getElementById('sumTblModel').innerHTML = sumTableHtml(entries, {
+      metric, nameCol:'模型', expand:true, prefix:'m',
+      childFn:k=>aggBy(rows.filter(r=>r.model===k), r=>r.node)
+    });
+  } else if(panel==='gk'){
+    const byKey = req.sumTab.gk==='key';
+    const m = aggBy(rows, byKey? (r=>`${r.owner} · ${r.key}`) : (r=>r.group));
+    const entries = Object.entries(m);
+    const ch = sumChart('sumChartGk'); if(ch) ch.setOption(donutOpt(entries, 'tok'), true);
+    document.getElementById('sumTblGk').innerHTML = sumTableHtml(entries, {metric:'tok', nameCol: byKey?'Key / 用户':'分组'});
+  } else if(panel==='ep'){
+    const metric = req.sumTab.ep;
+    const m = aggBy(rows, r=>r.ep);
+    const entries = Object.entries(m);
+    const ch = sumChart('sumChartEp'); if(ch) ch.setOption(donutOpt(entries, metric), true);
+    document.getElementById('sumTblEp').innerHTML = sumTableHtml(entries, {metric, nameCol:'端点'});
   }
-  req.chart.setOption({
-    grid:{left:44,right:52,top:30,bottom:26},
+}
+function sumTrendUpdate(){
+  const ch = sumChart('sumChartTrend'); if(!ch) return;
+  const rows = sumFiltered();
+  const [s,e] = sumBounds();
+  let n;
+  if(req.grain==='hour') n = req.sumRange==='1h'?12 : req.sumRange==='7d'?28 : 24;
+  else n = req.sumRange==='7d'?7 : req.sumRange==='24h'?2 : 1;
+  const step = (e-s)/n;
+  const bins = Array.from({length:n},()=>({i:0,o:0,c:0}));
+  rows.forEach(r=>{ let i=Math.floor((r.t.getTime()-s)/step); if(i<0)i=0; if(i>=n)i=n-1;
+    bins[i].i+=r.inTok; bins[i].o+=r.outTok; bins[i].c+=r.cacheTok; });
+  const labels = Array.from({length:n},(_,i)=>{
+    const d = new Date(s+i*step);
+    if(req.grain==='day') return `${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+    return step<3600e3? `${pad(d.getHours())}:${pad(d.getMinutes())}` : `${pad(d.getHours())}:00`;
+  });
+  const hit = bins.map(b=> b.i? +(b.c/b.i*100).toFixed(1) : 0);
+  ch.setOption({
+    grid:{left:52,right:44,top:28,bottom:22},
     tooltip:{trigger:'axis'},
-    legend:{top:0,right:0,itemWidth:14,itemHeight:8,textStyle:{fontSize:11}},
-    xAxis:{type:'category',data:labels,axisLabel:{color:'#94a3b8',fontSize:10.5},axisLine:{lineStyle:{color:'#e2e8f0'}}},
-    yAxis:[{type:'value',name:'请求数',nameTextStyle:{fontSize:10,color:'#94a3b8'},splitLine:{lineStyle:{color:'#f1f5f9'}},axisLabel:{color:'#94a3b8',fontSize:10}},
-           {type:'value',name:'K Token',nameTextStyle:{fontSize:10,color:'#94a3b8'},splitLine:{show:false},axisLabel:{color:'#94a3b8',fontSize:10}}],
+    legend:{top:0,right:0,itemWidth:14,itemHeight:8,textStyle:{fontSize:10.5}},
+    xAxis:{type:'category',data:labels,boundaryGap:false,axisLabel:{color:'#94a3b8',fontSize:10},axisLine:{lineStyle:{color:'#e2e8f0'}}},
+    yAxis:[{type:'value',splitLine:{lineStyle:{color:'#f1f5f9'}},axisLabel:{color:'#94a3b8',fontSize:10,formatter:v=>v>=1000?(v/1000)+'K':v}},
+           {type:'value',max:100,splitLine:{show:false},axisLabel:{color:'#94a3b8',fontSize:10,formatter:'{value}%'}}],
     series:[
-      {name:'请求数',type:'bar',data:reqs,barWidth:16,itemStyle:{color:'#4f46e5',borderRadius:[3,3,0,0]}},
-      {name:'Token (K)',type:'line',yAxisIndex:1,smooth:true,symbol:'circle',symbolSize:5,data:toks,lineStyle:{width:2,color:'#d97706'},itemStyle:{color:'#d97706'}}
+      {name:'输入 Token',type:'line',smooth:true,symbol:'none',stack:'tk',data:bins.map(b=>b.i),lineStyle:{width:1.4,color:'#0891b2'},areaStyle:{opacity:.22,color:'#0891b2'}},
+      {name:'输出 Token',type:'line',smooth:true,symbol:'none',stack:'tk',data:bins.map(b=>b.o),lineStyle:{width:1.4,color:'#d97706'},areaStyle:{opacity:.22,color:'#d97706'}},
+      {name:'缓存读取 Token',type:'line',smooth:true,symbol:'none',stack:'tk',data:bins.map(b=>b.c),lineStyle:{width:1.4,color:'#db2777'},areaStyle:{opacity:.22,color:'#db2777'}},
+      {name:'缓存命中率',type:'line',smooth:true,symbol:'none',yAxisIndex:1,data:hit,lineStyle:{width:1.5,type:'dashed',color:'#4f46e5'},itemStyle:{color:'#4f46e5'}}
     ]
   }, true);
 }
+
 function reqRangeBounds(){
   const now = Date.now();
   if(req.range==='custom'){
@@ -1161,7 +1297,7 @@ function route(){
   if(window.echarts){
     document.querySelectorAll('#page [id]').forEach(el=>{ const inst = echarts.getInstanceByDom(el); if(inst) inst.dispose(); });
   }
-  ov.charts = {}; np.charts = {}; req.chart = null;
+  ov.charts = {}; np.charts = {}; req.sumCharts = {};
   currentPage = page;
   document.querySelectorAll('.nav-item').forEach(el=>el.classList.toggle('active', el.dataset.page===page));
   PAGES[page].r();
