@@ -1,0 +1,17 @@
+services:
+  vmagent:
+    image: victoriametrics/vmagent:v1.127.0
+    container_name: private-llm-node-vmagent
+    restart: unless-stopped
+    command:
+      - -promscrape.config=/etc/vmagent/prometheus.yml
+      - -remoteWrite.url=${VM_REMOTE_WRITE_URL:?set VM_REMOTE_WRITE_URL}
+      - -remoteWrite.tmpDataPath=/vmagent-data
+      - -remoteWrite.maxDiskUsagePerURL=2GB
+    volumes:
+      - ./prometheus.yml:/etc/vmagent/prometheus.yml:ro
+      - vmagent-data:/vmagent-data
+    network_mode: host
+
+volumes:
+  vmagent-data:

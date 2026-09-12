@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 15s
+  external_labels:
+    site: ${SITE_NAME}
+    instance: ${NODE_INSTANCE}
+scrape_configs:
+  - job_name: llm
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:${LLM_METRICS_PORT}"]
