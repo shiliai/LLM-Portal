@@ -844,6 +844,10 @@ async def site_metrics(site: dict, deps: list[dict]) -> dict:
                 "vllm:num_requests_running": "requests_running",
                 "vllm:num_requests_waiting": "requests_waiting",
                 "vllm:gpu_utilization": "gpu_util_pct",
+                "llamacpp:predicted_tokens_seconds": "output_tok_s",
+                "llamacpp:prompt_tokens_seconds": "input_tok_s",
+                "llamacpp:requests_processing": "requests_running",
+                "llamacpp:requests_deferred": "requests_waiting",
             }
             out = {dst: vals[src] for src, dst in aliases.items() if src in vals}
             if out:
