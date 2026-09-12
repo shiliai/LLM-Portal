@@ -606,6 +606,12 @@ def logs_since(logs: list[dict], days: float) -> list[dict]:
     return out
 
 
+def valid_usage_row(row: dict) -> bool:
+    """Match usage view filtering so dashboard totals use billed callers only."""
+    ak = str(row.get("api_key") or "")
+    return ak == "litellm_proxy_master_key" or (len(ak) == 64 and all(c in "0123456789abcdef" for c in ak))
+
+
 # 展示时区固定 Asia/Shanghai(+08)：LiteLLM 日志时间为 UTC；容器无 tzdata，用固定偏移零依赖
 _CST = timezone(timedelta(hours=8))
 
@@ -930,7 +936,7 @@ async def api_overview(request: Request) -> Response:
     logs, deps, sites, hs = await fetch_logs(), await litellm_deployments(), await onboard_sites(), wg_handshakes()
     health = await direct_health(sites)
     metrics = await asyncio.gather(*(site_metrics(s, deps) for s in sites), return_exceptions=True)
-    today = logs_since(logs, 1)
+    today = [r for r in logs_since(logs, 1) if valid_usage_row(r)]
     ok_rows = [r for r in today if r.get("status") != "failure"]
     totals = {
         "requests": len(today),
