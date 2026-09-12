@@ -170,7 +170,8 @@
   }
   function loadDashboard() {
     var epoch=++window.__dashEpoch;
-    Promise.all([window.pfApi('GET','/overview'), window.pfApi('GET','/usage'+queryString())]).then(function (pair) {
+    var timeout = new Promise(function (_, reject) { setTimeout(function () { reject({error:'数据加载超过 8 秒，请检查节点采集或点击重试'}) }, 8000); });
+    Promise.race([Promise.all([window.pfApi('GET','/overview'), window.pfApi('GET','/usage'+queryString())]), timeout]).then(function (pair) {
       if(epoch!==window.__dashEpoch)return; var d=pair[0], usage=pair[1], t=usage.totals;
       fillFilters(d, usage); renderTrend(usage.hourly||[]); document.getElementById('dash-window').textContent='窗口：'+(document.getElementById('dash-days').value==='1'?'今天':'最近 '+document.getElementById('dash-days').value+' 天'); document.getElementById('dash-updated').textContent='最近更新 '+new Date().toLocaleTimeString('zh-CN');
       document.getElementById('stat-req').textContent = fmtN(t.requests);
@@ -229,7 +230,16 @@
           '<td class="pf-desc">' + esc(e.detail) + '</td>' +
         '</tr>';
       }).join('') || '<tr><td colspan="4" class="pf-desc" style="padding:10px">今日无已入账错误</td></tr>';
-    }).catch(function (e) { window.pfErr(e.error || '加载失败'); });
+    }).catch(function (e) {
+      if (epoch !== window.__dashEpoch) return;
+      document.getElementById('dash-updated').textContent = e.error || '加载失败';
+      document.getElementById('stat-req').textContent = '—';
+      document.getElementById('stat-token').textContent = '—';
+      document.getElementById('stat-sites').textContent = '—';
+      document.getElementById('stat-deps').textContent = '—';
+      document.getElementById('dash-trend').innerHTML = '<div class="pf-desc" style="padding:60px 0;text-align:center">暂无趋势数据或数据源响应超时</div>';
+      window.pfErr(e.error || '加载失败');
+    });
   }
   window.pfReady.then(function () {
     ['dash-days','dash-node','dash-model','dash-key'].forEach(function(id){ document.getElementById(id).addEventListener('change', loadDashboard); });
