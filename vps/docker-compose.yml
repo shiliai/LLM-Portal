@@ -138,6 +138,8 @@ services:
     environment:
       LITELLM_BASE: http://litellm:4000
       ONBOARDD_URL: http://private-llm-onboardd:8100
+      PORTAL_VERSION: ${PORTAL_VERSION:-dev}
+      PORTAL_BUILD: ${PORTAL_BUILD:-unknown}
       MCP_HUB_URL: http://private-llm-mcp-hub:8200
       MCP_HUB_READY_TIMEOUT: ${MCP_HUB_READY_TIMEOUT:-45}
       MCP_HUB_READY_POLL_INTERVAL: ${MCP_HUB_READY_POLL_INTERVAL:-0.5}
