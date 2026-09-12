@@ -89,6 +89,7 @@ from urllib.parse import urlsplit, urlunsplit
 LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://127.0.0.1:4000")
 ONBOARD_URL = os.environ.get("ONBOARDD_URL", "http://127.0.0.1:8100")
 MCP_HUB_URL = os.environ.get("MCP_HUB_URL", "http://127.0.0.1:8200")
+VM_URL = os.environ.get("VM_URL", "http://127.0.0.1:8428")
 LITELLM_MASTER_KEY = os.environ["LITELLM_MASTER_KEY"]
 ONBOARD_ADMIN_TOKEN = os.environ["ONBOARD_ADMIN_TOKEN"]
 # 管理员网页登录凭据（console.env，deploy.sh 从 vps/.env 生成）：邮箱 + 密码 + 可选 TOTP。
@@ -981,6 +982,24 @@ async def api_overview(request: Request) -> Response:
                          "deployments": {"healthy": healthy_deps, "total": len(dep_rows), "rows": dep_rows},
                          "recent_errors": recent_errors,
                          "note": "近期错误仅覆盖已入账请求（鉴权失败不产生日志行）"})
+
+
+async def api_metrics_query(request: Request) -> Response:
+    sess = await require(request)
+    if isinstance(sess, Response):
+        return sess
+    query = request.query_params.get("query", "").strip()
+    if not query or len(query) > 500 or any(x in query for x in ("{", "}", ";")):
+        return jerr("invalid query", 400)
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            r = await client.get(VM_URL.rstrip("/") + "/api/v1/query", params={"query": query})
+        if r.status_code != 200:
+            return jerr("metrics unavailable", 502)
+        body = r.json()
+        return JSONResponse({"status": body.get("status"), "data": body.get("data", {})})
+    except (httpx.HTTPError, ValueError):
+        return jerr("metrics unavailable", 502)
 
 
 async def api_usage(request: Request) -> Response:
@@ -2723,6 +2742,7 @@ api_routes = [
     Route("/console/api/logout", api_logout, methods=["POST"]),
     Route("/console/api/me", api_me, methods=["GET"]),
     Route("/console/api/overview", api_overview, methods=["GET"]),
+    Route("/console/api/metrics/query", api_metrics_query, methods=["GET"]),
     Route("/console/api/usage", api_usage, methods=["GET"]),
     Route("/console/api/usage/logs", api_usage_logs, methods=["GET"]),
     Route("/console/api/sites", api_sites, methods=["GET"]),

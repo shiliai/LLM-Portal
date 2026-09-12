@@ -60,7 +60,7 @@ body[data-page="dashboard"] .pf-card-title{color:#edf3fb}
 
   <div class="pf-grid main-side" style="margin-top:14px">
     <div class="pf-card">
-      <div class="pf-card-head"><div class="pf-card-title">实时输出 Token <span class="pf-chip ok">LIVE</span></div><div class="pf-card-extra">最近 60 秒</div></div>
+      <div class="pf-card-head"><div class="pf-card-title">实时输出 Token <span class="pf-chip ok">LIVE</span></div><div class="pf-card-extra" id="metric-query-status">最近 60 秒</div></div>
       <svg viewBox="0 0 800 140" width="100%" height="140" preserveAspectRatio="none"><defs><linearGradient id="tok" x1="0" x2="0" y1="0" y2="1"><stop stop-color="#42e48a" stop-opacity=".35"/><stop offset="1" stop-color="#42e48a" stop-opacity="0"/></linearGradient></defs><path d="M0 112 L40 108 80 111 120 92 160 100 200 74 240 84 280 64 320 75 360 56 400 68 440 42 480 54 520 38 560 51 600 28 640 44 680 24 720 35 800 12 L800 140 0 140Z" fill="url(#tok)"/><path d="M0 112 L40 108 80 111 120 92 160 100 200 74 240 84 280 64 320 75 360 56 400 68 440 42 480 54 520 38 560 51 600 28 640 44 680 24 720 35 800 12" fill="none" stroke="#42e48a" stroke-width="3"/></svg>
     </div>
     <div class="pf-card"><div class="pf-card-head"><div class="pf-card-title">请求状态</div><div class="pf-card-extra">容量概览</div></div><div class="pf-grid cols-2"><div class="pf-stat"><div class="pf-stat-label">活动请求</div><div class="pf-stat-value">—</div></div><div class="pf-stat"><div class="pf-stat-label">排队请求</div><div class="pf-stat-value">—</div></div></div></div>
@@ -166,6 +166,10 @@ body[data-page="dashboard"] .pf-card-title{color:#edf3fb}
   }
 
   window.pfReady.then(function () {
+    window.pfApi('GET', '/metrics/query?query=sum(rate(llamacpp:tokens_predicted_total[1m]))').then(function (q) {
+      var r = q && q.data && q.data.result && q.data.result[0];
+      if (r && r.value) document.getElementById('metric-query-status').textContent = '实时 · ' + Number(r.value[1]).toFixed(1) + ' tok/s';
+    }).catch(function () {});
     window.pfApi('GET', '/overview').then(function (d) {
       var t = d.totals;
       document.getElementById('stat-req').textContent = fmtN(t.requests);
