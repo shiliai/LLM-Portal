@@ -18,7 +18,8 @@
     <select class="pf-select" id="dash-node"><option value="">全部节点</option></select>
     <select class="pf-select" id="dash-model"><option value="">全部模型</option></select>
     <select class="pf-select" id="dash-key"><option value="">全部 Key</option></select>
-    <label class="pf-switch" title="每 15 秒自动更新"><input type="checkbox" id="dash-auto" checked><span></span></label><span class="pf-desc">自动更新</span>
+    <label class="pf-switch" title="按所选间隔自动更新"><input type="checkbox" id="dash-auto" checked><span></span></label><span class="pf-desc">自动更新</span>
+    <select class="pf-select" id="dash-interval" title="刷新间隔"><option value="10" selected>每 10 秒</option><option value="15">每 15 秒</option><option value="30">每 30 秒</option><option value="60">每 1 分钟</option></select>
     <span class="pf-desc" id="dash-updated" style="margin-left:auto">等待数据…</span>
   </div>
 
@@ -233,8 +234,10 @@
   window.pfReady.then(function () {
     ['dash-days','dash-node','dash-model','dash-key'].forEach(function(id){ document.getElementById(id).addEventListener('change', loadDashboard); });
     var timer=null;
-    document.getElementById('dash-auto').addEventListener('change', function(){ if(timer)clearInterval(timer); timer=this.checked?setInterval(loadDashboard,15000):null; });
-    timer=setInterval(loadDashboard,15000);
+    function schedule(){ if(timer)clearInterval(timer); timer=document.getElementById('dash-auto').checked?setInterval(loadDashboard,Number(document.getElementById('dash-interval').value||10)*1000):null; }
+    document.getElementById('dash-auto').addEventListener('change', schedule);
+    document.getElementById('dash-interval').addEventListener('change', schedule);
+    schedule();
     loadDashboard();
   });
 })();

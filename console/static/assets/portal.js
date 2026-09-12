@@ -35,6 +35,8 @@
   var NAV = [
     { key: 'dashboard', title: '仪表盘', file: 'index.html', admin: true,
       icon: icon('<rect x="1.8" y="1.8" width="5.2" height="5.2" rx="1"/><rect x="9" y="1.8" width="5.2" height="5.2" rx="1"/><rect x="1.8" y="9" width="5.2" height="5.2" rx="1"/><rect x="9" y="9" width="5.2" height="5.2" rx="1"/>') },
+    { key: 'nodes', title: '节点性能', file: 'nodes.html', admin: true,
+      icon: icon('<circle cx="4" cy="4" r="2.2"/><circle cx="12" cy="4" r="2.2"/><circle cx="8" cy="12" r="2.2"/><path d="M5.8 5.3 7 10M10.2 5.3 9 10M6.2 4h3.6"/>') },
     { key: 'sites', title: '站点与公钥', file: 'sites.html', admin: true,
       icon: icon('<circle cx="4.6" cy="4.6" r="2.4"/><circle cx="11.4" cy="11.4" r="2.4"/><path d="M6.4 6.4l3.2 3.2"/><path d="M2.4 11.4h2.8M11.4 1.8v2.8"/>') },
     { key: 'groups', title: '分组', file: 'groups.html', admin: true,
