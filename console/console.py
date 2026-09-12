@@ -871,6 +871,38 @@ async def site_metrics(site: dict, deps: list[dict]) -> dict:
                 return out
         except (httpx.HTTPError, ValueError):
             pass
+    # Direct node access is useful for low-latency values, but the central
+    # VictoriaMetrics store is the authoritative fallback for nodes whose
+    # model endpoint is not reachable from consoled (for example gb10).
+    site_label = str(site.get("name") or "").strip() + "-llm"
+    if site_label and VM_URL:
+        aliases = {
+            "generation_tokens_per_second": "output_tok_s",
+            "vllm:gpu_cache_usage_perc": "kv_cache_pct",
+            "vllm:kv_cache_usage_perc": "kv_cache_pct",
+            "vllm:num_requests_running": "requests_running",
+            "vllm:num_requests_waiting": "requests_waiting",
+            "vllm:gpu_utilization": "gpu_util_pct",
+            "llamacpp:predicted_tokens_seconds": "output_tok_s",
+            "llamacpp:prompt_tokens_seconds": "input_tok_s",
+            "llamacpp:requests_processing": "requests_running",
+            "llamacpp:requests_deferred": "requests_waiting",
+        }
+        out = {}
+        try:
+            async with httpx.AsyncClient(timeout=3) as client:
+                for metric, dst in aliases.items():
+                    r = await client.get(VM_URL.rstrip("/") + "/api/v1/query",
+                                         params={"query": metric + '{site="' + site_label + '"}'})
+                    if r.status_code != 200:
+                        continue
+                    result = (r.json().get("data") or {}).get("result") or []
+                    if result:
+                        out[dst] = float(result[0].get("value", [0, 0])[1])
+            if out:
+                return out
+        except (httpx.HTTPError, ValueError, TypeError, KeyError):
+            pass
     return {}
 
 
