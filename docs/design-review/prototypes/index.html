@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>统一可观测性原型 · 设计评审入口（issue #106）</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+         background: #f1f5f9; color: #0f172a; min-height: 100vh; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 56px 24px 80px; }
+  .tag { display: inline-block; font-size: 12px; color: #4f46e5; background: #eef2ff;
+         border: 1px solid #c7d2fe; border-radius: 999px; padding: 3px 12px; margin-bottom: 14px; }
+  h1 { font-size: 30px; margin-bottom: 10px; }
+  .sub { color: #64748b; font-size: 14px; margin-bottom: 36px; line-height: 1.8; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 14px;
+          padding: 28px; display: flex; flex-direction: column; transition: .15s; }
+  .card:hover { box-shadow: 0 10px 30px rgba(15,23,42,.08); transform: translateY(-2px); }
+  .card h2 { font-size: 20px; margin-bottom: 4px; }
+  .card .en { font-size: 12px; color: #94a3b8; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 14px; }
+  .swatches { display: flex; gap: 6px; margin-bottom: 16px; }
+  .sw { width: 22px; height: 22px; border-radius: 6px; border: 1px solid rgba(0,0,0,.08); }
+  .card ul { list-style: none; margin-bottom: 22px; flex: 1; }
+  .card li { font-size: 13.5px; color: #475569; padding: 5px 0 5px 20px; position: relative; line-height: 1.6; }
+  .card li::before { content: "·"; position: absolute; left: 6px; color: #4f46e5; font-weight: 700; }
+  a.btn { display: block; text-align: center; text-decoration: none; font-size: 14px; font-weight: 600;
+          padding: 12px; border-radius: 10px; }
+  .a .btn { background: #4f46e5; color: #fff; }
+  .b .btn { background: #0d1117; color: #22d3ee; border: 1px solid #1f2937; }
+  .meta { margin-top: 40px; font-size: 13px; color: #64748b; line-height: 2; border-top: 1px solid #e2e8f0; padding-top: 20px; }
+  .meta code { background: #e2e8f0; border-radius: 4px; padding: 1px 6px; font-size: 12px; }
+  .meta a { color: #4f46e5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <span class="tag">issue #106 · PR #104 · 设计评审</span>
+  <h1>统一可观测性原型 · 两版方案</h1>
+  <p class="sub">
+    同一套数据故事与功能规格（<a href="./SPEC.md">SPEC.md</a>），两种视觉与交互方向。
+    均为完整单文件高保真原型：12 个导航页面、自动刷新（默认 10s）、组合筛选、请求明细、缺失指标显示 <code>—</code>。
+    评审后择优进入生产实施。
+  </p>
+  <div class="grid">
+    <div class="card a">
+      <h2>方案 A · 经典企业后台</h2>
+      <div class="en">Classic Admin Console</div>
+      <div class="swatches">
+        <span class="sw" style="background:#0f172a"></span>
+        <span class="sw" style="background:#f1f5f9"></span>
+        <span class="sw" style="background:#ffffff"></span>
+        <span class="sw" style="background:#4f46e5"></span>
+      </div>
+      <ul>
+        <li>深色侧栏 + 浅色内容区，Sub2API 式信息密度</li>
+        <li>白色 KPI 卡片 + 浅色图标 chip，层级清晰</li>
+        <li>靛蓝强调色，克制专业，适合日常管理操作</li>
+        <li>表格紧凑、pill 状态徽章、失败行展开</li>
+      </ul>
+      <a class="btn" href="./variant-a.html">打开方案 A →</a>
+    </div>
+    <div class="card b">
+      <h2>方案 B · 深色监控指挥中心</h2>
+      <div class="en">Dark Mission Control</div>
+      <div class="swatches">
+        <span class="sw" style="background:#0a0e14"></span>
+        <span class="sw" style="background:#111827"></span>
+        <span class="sw" style="background:#22d3ee"></span>
+        <span class="sw" style="background:#34d399"></span>
+      </div>
+      <ul>
+        <li>全深色面板，Grafana 式遥测气质</li>
+        <li>青色遥测强调色 + 等宽数字 + 状态点光晕</li>
+        <li>高密度网格布局，sparkline 无处不在</li>
+        <li>顶部全局状态条，适合监控值守场景</li>
+      </ul>
+      <a class="btn" href="./variant-b.html">打开方案 B →</a>
+    </div>
+  </div>
+  <div class="meta">
+    数据故事：VPS 网关 + 三个真实节点（<code>gb10-llm</code> / <code>dell-shili-7960-llm</code> /
+    <code>m2s2NasUbuntuVM-shili-dev-llm</code>），经 WireGuard 连接；旧版 exporter 节点缺失指标以 <code>—</code> 呈现。<br>
+    评审关注：① 总览筛选与自动刷新手感 ② 信息密度与可读性 ③ 节点性能页指标组织 ④ 请求与用量明细效率 ⑤ 哪套视觉体系承载全部管理页更合适。
+  </div>
+</div>
+</body>
+</html>
