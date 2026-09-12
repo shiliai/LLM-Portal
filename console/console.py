@@ -1063,6 +1063,13 @@ async def api_usage(request: Request) -> Response:
     node_filter = request.query_params.get("node", "").strip().lower()[:120]
     model_filter = request.query_params.get("model", "").strip()[:200]
     key_filter = request.query_params.get("key", "").strip().lower()[:200]
+    node_models: dict[str, str] = {}
+    if node_filter:
+        for dep in await litellm_deployments():
+            params = dep.get("litellm_params") or {}
+            base = str(params.get("api_base") or "").lower()
+            if node_filter in base:
+                node_models[str(dep.get("model_name") or "")] = node_filter
 
     def ak_valid(ak: str) -> bool:
         # 只统计真实调用方：sha256 哈希（用户密钥）或 master 标识；失败鉴权的脏行（nope/invalid/None…）不入表
@@ -1083,7 +1090,7 @@ async def api_usage(request: Request) -> Response:
             continue
         if key_filter and key_filter not in alias and key_filter not in key_suffix and key_filter not in ak.lower():
             continue
-        if node_filter and node_filter not in api_base and node_filter not in str(r.get("model_id") or "").lower():
+        if node_filter and node_filter not in api_base and node_filter not in str(r.get("model_id") or "").lower() and model not in node_models:
             continue
         filtered_logs.append(r)
     for r in filtered_logs:
