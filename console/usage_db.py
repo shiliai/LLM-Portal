@@ -10,8 +10,13 @@ _CST = timezone(timedelta(hours=8))
 def window(days: int, now: Optional[datetime] = None):
     now = (now or datetime.now(timezone.utc)).astimezone(_CST)
     start_day = now.date() - timedelta(days=days - 1)
-    start = datetime.combine(start_day, datetime.min.time(), _CST).astimezone(timezone.utc).replace(tzinfo=None)
-    return start, now.astimezone(timezone.utc).replace(tzinfo=None)
+    # LiteLLM_SpendLogs.startTime is timestamp without time zone and the
+    # deployment writes Shanghai local wall-clock values.  Keep boundaries
+    # naive in the same wall-clock domain; converting to UTC would exclude
+    # the first eight hours of every calendar day.
+    start = datetime.combine(start_day, datetime.min.time())
+    end = now.replace(tzinfo=None)
+    return start, end
 
 def encode_cursor(start, request_id):
     return base64.urlsafe_b64encode(json.dumps([start.isoformat(), request_id]).encode()).decode().rstrip("=")
