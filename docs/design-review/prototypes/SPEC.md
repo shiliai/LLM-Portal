@@ -12,18 +12,19 @@
 
 ## 数据故事（两版必须一致）
 
-真实链路：一台 VPS 网关 + 三个真实推理节点，经 WireGuard（10.77.0.0/24）连接。
+真实链路：一台 VPS 网关 + 四个真实推理节点，经 WireGuard（10.77.0.0/24）连接。
 
 | 节点 | 运行时 | 地址 | 硬件 | 部署模型 |
 |---|---|---|---|---|
-| `gb10-llm` | llama.cpp b6345 | http://10.77.0.11:8080 | NVIDIA GB10 (Grace Blackwell, 128GB 统一内存) | qwen3-32b-instruct |
+| `gb10-dgx-a-llm` | llama.cpp b6345 | http://10.77.0.11:8080 | NVIDIA GB10 / DGX A (Grace Blackwell, 128GB 统一内存) | qwen3-32b-instruct |
+| `gb10-dgx-b-llm` | llama.cpp b6345 | http://10.77.0.14:8080 | NVIDIA GB10 / DGX B (Grace Blackwell, 128GB 统一内存) | qwen3-32b-instruct |
 | `dell-shili-7960-llm` | llama.cpp b6345 | http://10.77.0.12:8080 | Dell Precision 7960 (RTX 6000 Ada 48GB) | deepseek-v3.1, qwen3-coder-30b |
 | `m2s2NasUbuntuVM-shili-dev-llm` | llama.cpp b6180 | http://10.77.0.13:8080 | Mac NAS 上的 Ubuntu VM (M 系列, 32GB) | glm-4.5-air |
 
 **指标覆盖差异（必须体现）**：`m2s2NasUbuntuVM-shili-dev-llm` 的 exporter 较旧，
 **没有** KV Cache 命中率、MTP/TAR 推测解码指标 → 这些位置显示 `—`（绝不能显示 0）。
 `dell-shili-7960-llm` 支持 MTP（deepseek-v3.1 的推测解码，接受率约 62%）。
-`gb10-llm` 是统一内存架构（GPU 与内存共用），内存卡片文案体现"统一内存"。
+两台 `gb10` DGX 都是统一内存架构（GPU 与内存共用），内存卡片文案体现"统一内存"；两台节点各运行一个 node-agent 实例。
 
 用户 Key（mock）：`sk-…3f2a`（张三/研发）、`sk-…9c1b`（李四/研发）、
 `sk-…77e0`（王五/数据分析）、`litellm_proxy_master_key`（管理员 master key）。
@@ -43,7 +44,7 @@
 
 顶部筛选工具栏（一行或两行）：
 - 时间窗口：15分钟 / 1小时 / 6小时 / 24小时 / 7天（默认 1小时）
-- 节点：全部节点（默认）/ 三个节点单选
+- 节点：全部节点（默认）/ 四个节点单选
 - 模型：全部模型 / 各模型
 - Key：全部 Key / 各 Key
 - 自动刷新开关（默认开）+ 间隔选择 10s（默认）/15s/30s/60s + "最近更新 HH:MM:SS"
@@ -71,6 +72,7 @@ exporter 覆盖情况（完整/部分）。标题不得出现"综合实时性能
 - MTP/TAR 推测解码接受率（gb10、m2s2 显示 `—`，dell 显示 ~62%）
 - 内存/统一内存：已用 / 可用（GB）
 - GPU 活跃度 %
+- GPU 温度（°C）与功耗（W；exporter 未提供时显示 `—`）
 - 元信息行：运行时版本、节点地址、连接状态、最近采集时间
 - 吞吐与资源趋势图
 

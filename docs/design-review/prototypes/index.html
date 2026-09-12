@@ -37,7 +37,7 @@
   --switch-knob:#6b7280;
   --bar-dim:#164e63;
   --mono:ui-monospace,'SF Mono','Cascadia Mono',Menlo,Consolas,'Liberation Mono',monospace;
-  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+  --sans:Inter,'SF Pro Display','Helvetica Neue','Avenir Next','PingFang SC','Hiragino Sans GB','Microsoft YaHei',ui-sans-serif,sans-serif;
 }
 /* ============ 浅色主题（经典后台气质：浅色侧栏 + 白卡片 + 靛蓝强调） ============ */
 [data-theme="light"]{
@@ -342,7 +342,7 @@ tr.err-row td{background:var(--err-row-bg);}
     <header id="topbar">
       <span id="pageTitle">总览</span>
       <div class="topbar-right">
-        <span class="st"><i class="dot green"></i><span id="tbNodes">3/3 节点在线</span></span>
+        <span class="st"><i class="dot green"></i><span id="tbNodes">4/4 节点在线</span></span>
         <span class="st"><i class="dot cyan"></i>网关正常 · 10.77.0.1</span>
         <span class="st muted">最近更新 <span id="tbClock" class="mono c-cyan">--:--:--</span></span>
         <button class="btn" id="themeToggle" title="切换浅色 / 深色主题（localStorage 持久化，支持 ?theme=light|dark）" style="padding:4px 10px;">☀</button>
@@ -396,7 +396,7 @@ function currentTheme(){ return document.documentElement.getAttribute('data-them
 /* 主题派生静态量（NODES 节点色 / DIST_COLORS / AXIS_STYLE 在首次定义时取的是初始 TC，
    切换主题后由本函数刷新；仅在脚本全量加载后调用，避免 TDZ） */
 function refreshThemeDerived(){
-  NODES[0].color = TC.s.cyan; NODES[1].color = TC.s.green; NODES[2].color = TC.s.violet;
+  [TC.s.cyan,TC.s.blue,TC.s.green,TC.s.violet].forEach(function(color,i){ if(NODES[i]) NODES[i].color = color; });
   DIST_COLORS.model = {'qwen3-32b-instruct':TC.s.cyan,'deepseek-v3.1':TC.s.green,'qwen3-coder-30b':TC.s.violet,'glm-4.5-air':TC.s.amber};
   DIST_COLORS.group = {'研发':TC.s.cyan,'数据分析':TC.s.amber,'default':TC.muted};
   DIST_COLORS.key = {'3f2a':TC.s.cyan,'9c1b':TC.s.green,'77e0':TC.s.amber,'key':TC.s.violet};
@@ -435,20 +435,30 @@ function applyTheme(t, persist){
 })();
 /* =====================================================================
  * 变体 B · 深色监控指挥中心
- * 数据故事：1 VPS 网关 + 3 推理节点，经 WireGuard (10.77.0.0/24) 连接
+ * 数据故事：1 VPS 网关 + 4 推理节点（含 2 台 GB10 / DGX），经 WireGuard (10.77.0.0/24) 连接
  * ===================================================================== */
 
 /* ---------------- 基础数据模型（与 SPEC 严格一致） ---------------- */
 const NODES = [
   {
-    id:'gb10', name:'gb10-llm', runtime:'llama.cpp b6345',
+    id:'gb10a', name:'gb10-dgx-a-llm', runtime:'llama.cpp b6345',
     addr:'http://10.77.0.11:8080', wgIp:'10.77.0.11',
     hw:'NVIDIA GB10 · Grace Blackwell · 128GB 统一内存',
     models:['qwen3-32b-instruct'],
     unified:true, kvHitOk:true, mtpOk:false,
     memTotal:128, cap:8, exporter:'完整',
-    base:{out:45, pre:210, active:3, queued:0, kv:62, kvHit:0.64, gpu:82, mem:88},
+    base:{out:45, pre:210, active:3, queued:0, kv:62, kvHit:0.64, gpu:82, mem:88, temp:64, power:285},
     color:TC.s.cyan
+  },
+  {
+    id:'gb10b', name:'gb10-dgx-b-llm', runtime:'llama.cpp b6345',
+    addr:'http://10.77.0.14:8080', wgIp:'10.77.0.14',
+    hw:'NVIDIA GB10 · Grace Blackwell · 128GB 统一内存',
+    models:['qwen3-32b-instruct'],
+    unified:true, kvHitOk:true, mtpOk:false,
+    memTotal:128, cap:8, exporter:'完整',
+    base:{out:41, pre:196, active:2, queued:1, kv:57, kvHit:0.61, gpu:76, mem:81, temp:61, power:262},
+    color:TC.s.blue
   },
   {
     id:'dell', name:'dell-shili-7960-llm', runtime:'llama.cpp b6345',
@@ -457,7 +467,7 @@ const NODES = [
     models:['deepseek-v3.1','qwen3-coder-30b'],
     unified:false, kvHitOk:true, mtpOk:true,
     memTotal:48, cap:12, exporter:'完整',
-    base:{out:86, pre:520, active:5, queued:1, kv:71, kvHit:0.71, gpu:88, mem:36},
+    base:{out:86, pre:520, active:5, queued:1, kv:71, kvHit:0.71, gpu:88, mem:36, temp:72, power:410},
     color:TC.s.green
   },
   {
@@ -467,16 +477,16 @@ const NODES = [
     models:['glm-4.5-air'],
     unified:false, kvHitOk:false, mtpOk:false,
     memTotal:32, cap:4, exporter:'部分',
-    base:{out:22, pre:95, active:1, queued:0, kv:48, kvHit:null, gpu:64, mem:21},
+    base:{out:22, pre:95, active:1, queued:0, kv:48, kvHit:null, gpu:64, mem:21, temp:null, power:null},
     color:TC.s.violet
   }
 ];
 const MODELS = ['qwen3-32b-instruct','deepseek-v3.1','qwen3-coder-30b','glm-4.5-air'];
-const MODEL_NODE = {
-  'qwen3-32b-instruct':'gb10',
-  'deepseek-v3.1':'dell',
-  'qwen3-coder-30b':'dell',
-  'glm-4.5-air':'m2s2'
+const MODEL_NODES = {
+  'qwen3-32b-instruct':['gb10a','gb10b'],
+  'deepseek-v3.1':['dell'],
+  'qwen3-coder-30b':['dell'],
+  'glm-4.5-air':['m2s2']
 };
 const MODEL_SHARE = { // 模型在其宿主机上的输出占比（mock 权重）
   'qwen3-32b-instruct':1.0,'deepseek-v3.1':0.58,'qwen3-coder-30b':0.42,'glm-4.5-air':1.0
@@ -580,7 +590,7 @@ NODES.forEach(function(n){
     out:b.out, pre:b.pre, active:b.active, queued:b.queued,
     kv:b.kv, kvHit: n.kvHitOk ? b.kvHit : null,
     mtp: n.mtpOk ? 0.62 : null,
-    gpu:b.gpu, mem:b.mem, scrapeAgo: rndi(1,4)
+    gpu:b.gpu, mem:b.mem, temp:b.temp, power:b.power, scrapeAgo: rndi(1,4)
   };
 });
 function tickNodes(){
@@ -595,6 +605,8 @@ function tickNodes(){
     if(s.mtp   !== null) s.mtp   = walk(s.mtp,   0.015, 0.52, 0.71);
     s.gpu    = walk(s.gpu, 3, 35, 98);
     s.mem    = walk(s.mem, 0.8, n.memTotal*0.45, n.memTotal*0.82);
+    if(s.temp!==null) s.temp = walk(s.temp, 1.2, 38, 86);
+    if(s.power!==null) s.power = walk(s.power, 12, 120, 650);
     s.scrapeAgo = rndi(1, 9);
   });
 }
@@ -620,7 +632,7 @@ const WINDOWS = {'15m':{label:'15分钟',sec:900,pts:30},'1h':{label:'1小时',s
 const ov = {
   win:'1h', node:'all', model:'all', key:'all',
   auto:true, interval:10, left:10, lastUpdate:new Date(),
-  series:null  // {labels:[], perNode:{gb10:[],dell:[],m2s2:[]}, cap:[]}
+  series:null  // {labels:[], perNode:{...}, cap:[]}
 };
 function genLabels(winKey){
   const w = WINDOWS[winKey], now = Date.now();
@@ -663,7 +675,7 @@ function ovScale(){
 }
 function ovActiveNodes(){
   if(ov.node !== 'all') return NODES.filter(function(n){return n.id===ov.node;});
-  if(ov.model !== 'all') return NODES.filter(function(n){return n.id===MODEL_NODE[ov.model];});
+  if(ov.model !== 'all') return NODES.filter(function(n){return MODEL_NODES[ov.model].indexOf(n.id)>=0;});
   return NODES;
 }
 /* =====================================================================
@@ -724,7 +736,7 @@ function buildOverview(){
       ov.model = document.getElementById('ovModel').value;
       ov.key = document.getElementById('ovKey').value;
       /* 节点与模型必须保持同一宿主范围，避免显示“节点 A × 模型 B”的伪聚合。 */
-      if(ov.node!=='all' && ov.model!=='all' && MODEL_NODE[ov.model]!==ov.node){
+      if(ov.node!=='all' && ov.model!=='all' && MODEL_NODES[ov.model].indexOf(ov.node)<0){
         if(id==='ovNode'){
           ov.model='all'; document.getElementById('ovModel').value='all';
         }else if(id==='ovModel'){
@@ -844,6 +856,7 @@ function updateOvCap(){
 function updateOvRes(){
   const ch = getChart('chRes'); if(!ch) return;
   const nodes = ovActiveNodes();
+  const nodeLabelMax = nodes.length>3 ? 9 : 14;
   ch.setOption({
     backgroundColor:'transparent',
     tooltip:{trigger:'axis', axisPointer:{type:'shadow'}, backgroundColor:TC.panel2,
@@ -852,7 +865,7 @@ function updateOvRes(){
     grid:{left:40,right:14,top:26,bottom:44},
     xAxis: Object.assign({type:'category', data: nodes.map(function(n){return n.name;}),
       axisLabel:{color:TC.text2,fontSize:10,interval:0,fontFamily:'ui-monospace,Menlo,monospace',
-        formatter:function(v){return v.length>14? v.slice(0,13)+'…' : v;}}},
+        formatter:function(v){return v.length>nodeLabelMax? v.slice(0,nodeLabelMax-1)+'…' : v;}}},
       {axisLine:{lineStyle:{color:TC.border}}, splitLine:{show:false}}),
     yAxis: Object.assign({type:'value', max:100, splitLine:{lineStyle:{color:TC.panel2}}}, AXIS_STYLE),
     series:[
@@ -962,7 +975,7 @@ function renderNodeBlocks(){
         '<span class="small muted mono">最近采集 <span id="ndScrape-'+n.id+'" class="c-cyan">'+n.state.scrapeAgo+'s 前</span></span>'+
         '<span class="small muted" style="margin-left:auto">'+n.hw+'</span>'+
       '</div>'+
-      '<div class="metric-grid" style="grid-template-columns:repeat(7,1fr);" id="nm-'+n.id+'"></div>'+
+      '<div class="metric-grid" style="grid-template-columns:repeat(9,1fr);" id="nm-'+n.id+'"></div>'+
       '<div class="grid" style="grid-template-columns:1fr 1fr;">'+
         '<div><h3 style="font-size:11px;margin:6px 0 4px;">吞吐趋势 · 输出 / Prefill tok/s</h3><div id="chNd-'+n.id+'-tps" class="chart h200"></div></div>'+
         '<div><h3 style="font-size:11px;margin:6px 0 4px;">资源趋势 · KV / GPU / 内存 %</h3><div id="chNd-'+n.id+'-res" class="chart h200"></div></div>'+
@@ -981,6 +994,8 @@ function updateNodeMetric(n){
   const kvHit = s.kvHit===null ? '<span class="muted">—</span>' : (s.kvHit*100).toFixed(1)+'<span class="unit">%</span>';
   const mtp   = s.mtp===null   ? '<span class="muted">—</span>' : (s.mtp*100).toFixed(1)+'<span class="unit">%</span>';
   const memNote = n.unified ? '统一内存（GPU 共享）' : (n.id==='dell' ? '显存 VRAM' : '系统内存');
+  const temp = s.temp===null ? '<span class="muted">—</span>' : s.temp.toFixed(0)+'<span class="unit">°C</span>';
+  const power = s.power===null ? '<span class="muted">—</span>' : s.power.toFixed(0)+'<span class="unit">W</span>';
   el.innerHTML =
     '<div class="metric"><div class="m-label">输出 TOK/S</div><div class="m-val c-cyan">'+s.out.toFixed(1)+'</div>'+
       '<div class="m-sub">'+spark(nd.series[n.id].out.slice(-24),80,16,TC.s.cyan)+'</div></div>'+
@@ -996,7 +1011,11 @@ function updateNodeMetric(n){
       '<div class="m-val">'+s.mem.toFixed(0)+'<span class="unit"> / '+n.memTotal+' GB</span></div>'+
       '<div class="m-sub">'+memNote+'</div>'+pctBar(s.mem/n.memTotal*100,TC.s.violet)+'</div>'+
     '<div class="metric"><div class="m-label">GPU 活跃度</div><div class="m-val c-green">'+s.gpu.toFixed(0)+'<span class="unit">%</span></div>'+
-      '<div class="m-sub">'+(n.unified?'GB10 统一架构':(n.id==='dell'?'RTX 6000 Ada':'Apple M 系列'))+'</div>'+pctBar(s.gpu,'var(--green)')+'</div>';
+      '<div class="m-sub">'+(n.unified?'GB10 统一架构':(n.id==='dell'?'RTX 6000 Ada':'Apple M 系列'))+'</div>'+pctBar(s.gpu,'var(--green)')+'</div>'+
+    '<div class="metric"><div class="m-label">GPU 温度</div><div class="m-val c-amber">'+temp+'</div>'+
+      '<div class="m-sub">芯片结温 · exporter</div></div>'+
+    '<div class="metric"><div class="m-label">GPU 功耗</div><div class="m-val c-amber">'+power+'</div>'+
+      '<div class="m-sub">板卡功耗 · exporter</div></div>';
   const sc = document.getElementById('ndScrape-'+n.id);
   if(sc) sc.textContent = s.scrapeAgo+'s 前';
 }
@@ -1060,7 +1079,7 @@ function genRecords(){
   const now = Date.now();
   for(let i=0;i<360;i++){
     const model = pick(MODELS);
-    const nodeId = MODEL_NODE[model];
+    const nodeId = pick(MODEL_NODES[model]);
     const node = NODES.find(function(n){return n.id===nodeId;});
     const key = pick(KEYS);
     const ep = pick(ENDPOINTS);
@@ -1746,7 +1765,7 @@ function buildDeployments(){
     }).join('')+
   '</div>';
   document.getElementById('depRefresh').addEventListener('click', function(){
-    toast('已向 3 个节点下发模型清单刷新，健康检查通过', '');
+    toast('已向 4 个节点下发模型清单刷新，健康检查通过', '');
   });
   v.querySelectorAll('.link').forEach(function(el){
     el.addEventListener('click', function(){
@@ -1767,10 +1786,10 @@ function buildSites(){
       NODES.map(function(n,i){
         return '<tr><td class="mono small" style="color:'+n.color+'">'+n.name+'</td>'+
           '<td class="mono small">'+n.wgIp+'</td>'+
-          '<td class="small">'+(i===2?'default':'研发')+'</td>'+
+          '<td class="small">'+(n.id==='m2s2'?'default':'研发')+'</td>'+
           '<td class="num">'+n.models.length+'</td>'+
           '<td><span class="badge green"><i class="dot green"></i>在线</span></td>'+
-          '<td class="num mono">'+(i===0?3:(i===1?5:18))+' ms</td></tr>';
+          '<td class="num mono">'+(n.id==='gb10a'?3:(n.id==='gb10b'?4:(n.id==='dell'?5:18)))+' ms</td></tr>';
       }).join('')+
       '</tbody></table></div>'+
     '<div class="panel"><h3>访问公钥<span class="tag">WireGuard peers</span></h3>'+
@@ -1840,7 +1859,7 @@ function buildAliases(){
     {alias:'gpt-4o-mini',      upstream:'qwen3-coder-30b',  node:'dell-shili-7960-llm', note:'兼容旧 IDE 插件配置', today:rndi(600,1800)},
     {alias:'gpt-4o',           upstream:'deepseek-v3.1',    node:'dell-shili-7960-llm', note:'主力对话别名',        today:rndi(900,3200)},
     {alias:'claude-sonnet',    upstream:'deepseek-v3.1',    node:'dell-shili-7960-llm', note:'Agent 工具链兼容层',  today:rndi(300,900)},
-    {alias:'qwen3-32b',        upstream:'qwen3-32b-instruct', node:'gb10-llm',          note:'短名映射',            today:rndi(400,1500)},
+    {alias:'qwen3-32b',        upstream:'qwen3-32b-instruct', node:'gb10-dgx-a/b-llm',  note:'双 DGX 节点均衡路由',   today:rndi(400,1500)},
     {alias:'embedding-fast',   upstream:'glm-4.5-air',      node:'m2s2NasUbuntuVM-shili-dev-llm', note:'轻量 Embedding 路由', today:rndi(200,800)}
   ];
   v.innerHTML =
@@ -1849,7 +1868,7 @@ function buildAliases(){
   '<div class="panel" style="padding:0;">'+
     '<table class="tbl"><thead><tr><th>别名</th><th></th><th>上游模型</th><th>路由节点</th><th>备注</th><th class="num">今日请求</th><th>状态</th><th>操作</th></tr></thead><tbody>'+
     rows.map(function(r){
-      const n = NODES.find(function(x){return x.name===r.node;});
+      const n = NODES.find(function(x){return r.node.indexOf(x.name)>=0;}) || NODES[0];
       return '<tr><td class="mono c-cyan">'+r.alias+'</td>'+
         '<td class="muted">→</td>'+
         '<td class="mono small">'+r.upstream+'</td>'+
