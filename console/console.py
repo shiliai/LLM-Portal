@@ -1060,6 +1060,9 @@ async def api_usage(request: Request) -> Response:
         days = 1.0
     logs, keys = await fetch_logs(), await key_list_full()
     alias_of = {k.get("token"): k.get("key_alias") or "?" for k in keys}
+    node_filter = request.query_params.get("node", "").strip().lower()[:120]
+    model_filter = request.query_params.get("model", "").strip()[:200]
+    key_filter = request.query_params.get("key", "").strip().lower()[:200]
 
     def ak_valid(ak: str) -> bool:
         # 只统计真实调用方：sha256 哈希（用户密钥）或 master 标识；失败鉴权的脏行（nope/invalid/None…）不入表
@@ -1068,10 +1071,22 @@ async def api_usage(request: Request) -> Response:
     rows_map: dict[tuple, dict] = {}
     buckets: dict[str, dict] = {}          # 趋势图桶：小时(今天)/日期(多日)
     tft_sum, tft_n, dur_sum = 0, 0, 0
+    filtered_logs = []
     for r in logs_since(logs, days):
         ak, model = str(r.get("api_key") or ""), r.get("model_group") or r.get("model") or "?"
         if not ak_valid(ak):
             continue
+        api_base = str(r.get("api_base") or "").lower()
+        alias = str(alias_of.get(ak) or "").lower()
+        key_suffix = ak[-4:].lower()
+        if model_filter and model != model_filter:
+            continue
+        if key_filter and key_filter not in alias and key_filter not in key_suffix and key_filter not in ak.lower():
+            continue
+        if node_filter and node_filter not in api_base and node_filter not in str(r.get("model_id") or "").lower():
+            continue
+        filtered_logs.append(r)
+    for r in filtered_logs:
         agg = rows_map.setdefault((ak, model), {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0,
                                                 "cached_tokens": 0, "duration_ms_sum": 0})
         agg["requests"] += 1
@@ -1103,7 +1118,7 @@ async def api_usage(request: Request) -> Response:
              "total_tokens": a["prompt_tokens"] + a["completion_tokens"] + a["cached_tokens"],
              "avg_ms": round(a["duration_ms_sum"] / a["requests"]) if a["requests"] else 0, **a}
             for (ak, model), a in sorted(rows_map.items())]
-    failures = [r for r in logs_since(logs, days) if r.get("status") == "failure"]
+    failures = [r for r in filtered_logs if r.get("status") == "failure"]
     errors = [{"time": iso_to_cst(r.get("startTime") or ""), "key": key_last4(r),
                "model": r.get("model_group") or r.get("model") or "?", "detail": err_text(r)}
               for r in failures[-10:]][::-1]

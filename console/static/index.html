@@ -13,6 +13,21 @@
 <body data-page="dashboard">
 <template id="page">
 
+  <div class="pf-toolbar" id="dashboard-filters" style="margin-bottom:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <select class="pf-select" id="dash-days"><option value="1">今天</option><option value="7">最近 7 天</option><option value="30">最近 30 天</option></select>
+    <select class="pf-select" id="dash-node"><option value="">全部节点</option></select>
+    <select class="pf-select" id="dash-model"><option value="">全部模型</option></select>
+    <select class="pf-select" id="dash-key"><option value="">全部 Key</option></select>
+    <label class="pf-switch" title="每 15 秒自动更新"><input type="checkbox" id="dash-auto" checked><span></span></label><span class="pf-desc">自动更新</span>
+    <span class="pf-desc" id="dash-updated" style="margin-left:auto">等待数据…</span>
+  </div>
+
+  <div class="pf-card flush" style="margin-bottom:14px">
+    <div class="pf-card-head"><div class="pf-card-title">请求与 Token 趋势</div><div class="pf-card-extra">图表保持不动 · 数据自动更新</div></div>
+    <div id="dash-trend" style="height:180px;padding:8px 14px"></div>
+    <div style="display:flex;gap:18px;padding:0 14px 10px;color:#8c8c8c;font-size:11px"><span><i style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#1677ff;margin-right:4px"></i>请求数</span><span><i style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#52c41a;margin-right:4px"></i>输入+输出 Token</span><span id="dash-window">今天</span></div>
+  </div>
+
   <!-- 统计卡行 -->
   <div class="pf-grid cols-4">
     <div class="pf-stat">
@@ -136,11 +151,29 @@
     return host;
   }
 
-  window.pfReady.then(function () {
-    window.pfApi('GET', '/overview').then(function (d) {
-      var t = d.totals;
+  function queryString() {
+    var q = '?days=' + encodeURIComponent(document.getElementById('dash-days').value);
+    ['dash-node','dash-model','dash-key'].forEach(function (id) { var v = document.getElementById(id).value; if (v) q += '&' + id.slice(5) + '=' + encodeURIComponent(v); });
+    return q;
+  }
+  function renderTrend(hourly) {
+    var W=900,H=150, pad=24, n=hourly.length||1, maxR=Math.max.apply(null,hourly.map(function(x){return x.reqs||0}).concat([1])), maxT=Math.max.apply(null,hourly.map(function(x){return (x.in||0)+(x.out||0)}).concat([1]));
+    function pts(fn,max){return hourly.map(function(x,i){var px=pad+(W-pad*2)*(n===1?0.5:i/(n-1||1));var py=H-pad-(H-pad*2)*(fn(x)/max);return px.toFixed(1)+','+py.toFixed(1)}).join(' ')}
+    var labels=hourly.filter(function(_,i){return i%Math.max(1,Math.ceil(n/8))===0}).map(function(x,i){return '<text x="'+(pad+i*(W-pad*2)/Math.max(1,Math.ceil(n/8)) + 2)+'" y="'+(H-3)+'" fill="#8c8c8c" font-size="10">'+esc(x.label)+'</text>'}).join('');
+    document.getElementById('dash-trend').innerHTML='<svg viewBox="0 0 '+W+' '+H+'" width="100%" height="100%" preserveAspectRatio="none"><path d="M'+pts(function(x){return x.reqs||0},maxR)+'" fill="none" stroke="#1677ff" stroke-width="3" stroke-linecap="round"/><path d="M'+pts(function(x){return (x.in||0)+(x.out||0)},maxT)+'" fill="none" stroke="#52c41a" stroke-width="2" stroke-dasharray="5 4" stroke-linecap="round"/>'+labels+'</svg>';
+  }
+  function fillFilters(d, usage) {
+    var nodes=(d.sites.rows||[]).map(function(s){return {value:s.wg_ip||s.address||s.name,label:s.name}}), models=(d.deployments.rows||[]).map(function(s){return s.model}), keys=(usage.rows||[]).map(function(s){return {value:s.key,label:s.alias+' · …'+s.key}});
+    function fill(id, vals, label){var el=document.getElementById(id), old=el.value; el.innerHTML='<option value="">'+label+'</option>'+Array.from(new Map(vals.filter(function(v){return v.value||v}).map(function(v){return [v.value||v.value||v,v]})).values()).sort(function(a,b){return (a.label||a).localeCompare(b.label||b)}).map(function(v){var value=v.value||v,labelText=v.label||v;return '<option value="'+esc(value)+'">'+esc(labelText)+'</option>'}).join(''); if(Array.from(el.options).some(function(o){return o.value===old}))el.value=old;}
+    fill('dash-node',nodes,'全部节点'); fill('dash-model',models.map(function(v){return {value:v,label:v}}),'全部模型'); fill('dash-key',keys,'全部 Key');
+  }
+  function loadDashboard() {
+    var epoch=++window.__dashEpoch;
+    Promise.all([window.pfApi('GET','/overview'), window.pfApi('GET','/usage'+queryString())]).then(function (pair) {
+      if(epoch!==window.__dashEpoch)return; var d=pair[0], usage=pair[1], t=usage.totals;
+      fillFilters(d, usage); renderTrend(usage.hourly||[]); document.getElementById('dash-window').textContent='窗口：'+(document.getElementById('dash-days').value==='1'?'今天':'最近 '+document.getElementById('dash-days').value+' 天'); document.getElementById('dash-updated').textContent='最近更新 '+new Date().toLocaleTimeString('zh-CN');
       document.getElementById('stat-req').textContent = fmtN(t.requests);
-      document.getElementById('stat-req-sub').textContent = '错误 ' + fmtN(t.errors) + ' 次';
+      document.getElementById('stat-req-sub').textContent = '错误 ' + fmtN(t.failures) + ' 次';
       document.getElementById('stat-token').textContent = fmtM(t.prompt_tokens + t.completion_tokens + (t.cached_tokens || 0));
       document.getElementById('stat-token-sub').textContent =
         '输入 ' + fmtM(t.prompt_tokens) + ' · 缓存读取 ' + fmtM(t.cached_tokens || 0) + ' · 输出 ' + fmtM(t.completion_tokens);
@@ -196,6 +229,13 @@
         '</tr>';
       }).join('') || '<tr><td colspan="4" class="pf-desc" style="padding:10px">今日无已入账错误</td></tr>';
     }).catch(function (e) { window.pfErr(e.error || '加载失败'); });
+  }
+  window.pfReady.then(function () {
+    ['dash-days','dash-node','dash-model','dash-key'].forEach(function(id){ document.getElementById(id).addEventListener('change', loadDashboard); });
+    var timer=null;
+    document.getElementById('dash-auto').addEventListener('change', function(){ if(timer)clearInterval(timer); timer=this.checked?setInterval(loadDashboard,15000):null; });
+    timer=setInterval(loadDashboard,15000);
+    loadDashboard();
   });
 })();
 </script>
