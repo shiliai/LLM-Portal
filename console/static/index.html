@@ -169,6 +169,7 @@
     fill('dash-node',nodes,'全部节点'); fill('dash-model',models.map(function(v){return {value:v,label:v}}),'全部模型'); fill('dash-key',keys,'全部 Key');
   }
   function loadDashboard() {
+    if (typeof window.__dashEpoch !== 'number') window.__dashEpoch = 0;
     var epoch=++window.__dashEpoch;
     var timeout = new Promise(function (_, reject) { setTimeout(function () { reject({error:'数据加载超过 8 秒，请检查节点采集或点击重试'}) }, 8000); });
     Promise.race([Promise.all([window.pfApi('GET','/overview'), window.pfApi('GET','/usage'+queryString())]), timeout]).then(function (pair) {
