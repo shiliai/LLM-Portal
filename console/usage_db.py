@@ -10,12 +10,11 @@ _CST = timezone(timedelta(hours=8))
 def window(days: int, now: Optional[datetime] = None):
     now = (now or datetime.now(timezone.utc)).astimezone(_CST)
     start_day = now.date() - timedelta(days=days - 1)
-    # LiteLLM_SpendLogs.startTime is timestamp without time zone and the
-    # deployment writes Shanghai local wall-clock values.  Keep boundaries
-    # naive in the same wall-clock domain; converting to UTC would exclude
-    # the first eight hours of every calendar day.
-    start = datetime.combine(start_day, datetime.min.time())
-    end = now.replace(tzinfo=None)
+    # LiteLLM_SpendLogs.startTime is timestamp without time zone, but LiteLLM
+    # writes UTC wall-clock values. Convert Shanghai calendar boundaries to
+    # naive UTC values before comparing them in PostgreSQL.
+    start = datetime.combine(start_day, datetime.min.time(), tzinfo=_CST).astimezone(timezone.utc).replace(tzinfo=None)
+    end = now.astimezone(timezone.utc).replace(tzinfo=None)
     return start, end
 
 def encode_cursor(start, request_id):
