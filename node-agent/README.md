@@ -20,5 +20,10 @@ remote-write URL if the site uses a different WireGuard address), then run
 The two agents share the `site=gb10` label while `instance` keeps their
 telemetry separate in VictoriaMetrics.
 
+The compose stack also runs NVIDIA DCGM exporter on port `9400`. vmagent
+scrapes both the LLM endpoint and DCGM metrics, including GPU temperature,
+power usage, and utilization, and forwards them with the node's external
+`site` and `instance` labels.
+
 Keep labels low cardinality (`site`, `instance`, and exporter labels). Never
 add request IDs, API keys, or user identifiers to metric labels.

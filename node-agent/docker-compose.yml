@@ -1,4 +1,16 @@
 services:
+  dcgm-exporter:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:4.4.1-4.6.0-ubuntu22.04
+    container_name: private-llm-dcgm-exporter
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: utility
+    cap_add:
+      - SYS_ADMIN
+    network_mode: host
+
   vmagent:
     image: victoriametrics/vmagent:v1.127.0
     container_name: private-llm-node-vmagent
