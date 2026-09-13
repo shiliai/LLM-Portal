@@ -39,7 +39,7 @@
 - 运行时、节点地址、连接状态、最近采集时间；
 - 吞吐和资源趋势。
 
-真实节点没有 exporter 指标时必须显示 `—`，不能伪造为 0。当前真实链路包含 `gb10-dgx-a-llm`、`gb10-dgx-b-llm`、`dell-shili-7960-llm`、`m2s2NasUbuntuVM-shili-dev-llm`。
+真实节点没有 exporter 指标时必须显示 `—`，不能伪造为 0。当前真实链路包含 `gb10-head`、`gb10-worker`、`dell-shili-7960-llm`、`m2s2NasUbuntuVM-shili-dev-llm`。
 
 ## 请求与用量详细页
 

@@ -441,7 +441,7 @@ function applyTheme(t, persist){
 /* ---------------- 基础数据模型（与 SPEC 严格一致） ---------------- */
 const NODES = [
   {
-    id:'gb10a', name:'gb10-dgx-a-llm', runtime:'llama.cpp b6345',
+    id:'gb10-head', name:'gb10-head', runtime:'llama.cpp b6345',
     addr:'http://10.77.0.11:8080', wgIp:'10.77.0.11',
     hw:'NVIDIA GB10 · Grace Blackwell · 128GB 统一内存',
     models:['qwen3-32b-instruct'],
@@ -451,7 +451,7 @@ const NODES = [
     color:TC.s.cyan
   },
   {
-    id:'gb10b', name:'gb10-dgx-b-llm', runtime:'llama.cpp b6345',
+    id:'gb10-worker', name:'gb10-worker', runtime:'llama.cpp b6345',
     addr:'http://10.77.0.14:8080', wgIp:'10.77.0.14',
     hw:'NVIDIA GB10 · Grace Blackwell · 128GB 统一内存',
     models:['qwen3-32b-instruct'],
@@ -483,7 +483,7 @@ const NODES = [
 ];
 const MODELS = ['qwen3-32b-instruct','deepseek-v3.1','qwen3-coder-30b','glm-4.5-air'];
 const MODEL_NODES = {
-  'qwen3-32b-instruct':['gb10a','gb10b'],
+  'qwen3-32b-instruct':['gb10-head','gb10-worker'],
   'deepseek-v3.1':['dell'],
   'qwen3-coder-30b':['dell'],
   'glm-4.5-air':['m2s2']
@@ -1789,7 +1789,7 @@ function buildSites(){
           '<td class="small">'+(n.id==='m2s2'?'default':'研发')+'</td>'+
           '<td class="num">'+n.models.length+'</td>'+
           '<td><span class="badge green"><i class="dot green"></i>在线</span></td>'+
-          '<td class="num mono">'+(n.id==='gb10a'?3:(n.id==='gb10b'?4:(n.id==='dell'?5:18)))+' ms</td></tr>';
+          '<td class="num mono">'+(n.id==='gb10-head'?3:(n.id==='gb10-worker'?4:(n.id==='dell'?5:18)))+' ms</td></tr>';
       }).join('')+
       '</tbody></table></div>'+
     '<div class="panel"><h3>访问公钥<span class="tag">WireGuard peers</span></h3>'+
@@ -1859,7 +1859,7 @@ function buildAliases(){
     {alias:'gpt-4o-mini',      upstream:'qwen3-coder-30b',  node:'dell-shili-7960-llm', note:'兼容旧 IDE 插件配置', today:rndi(600,1800)},
     {alias:'gpt-4o',           upstream:'deepseek-v3.1',    node:'dell-shili-7960-llm', note:'主力对话别名',        today:rndi(900,3200)},
     {alias:'claude-sonnet',    upstream:'deepseek-v3.1',    node:'dell-shili-7960-llm', note:'Agent 工具链兼容层',  today:rndi(300,900)},
-    {alias:'qwen3-32b',        upstream:'qwen3-32b-instruct', node:'gb10-dgx-a/b-llm',  note:'双 DGX 节点均衡路由',   today:rndi(400,1500)},
+    {alias:'qwen3-32b',        upstream:'qwen3-32b-instruct', node:'gb10-head / gb10-worker', note:'双 DGX 节点均衡路由', today:rndi(400,1500)},
     {alias:'embedding-fast',   upstream:'glm-4.5-air',      node:'m2s2NasUbuntuVM-shili-dev-llm', note:'轻量 Embedding 路由', today:rndi(200,800)}
   ];
   v.innerHTML =

@@ -16,8 +16,8 @@
 
 | 节点 | 运行时 | 地址 | 硬件 | 部署模型 |
 |---|---|---|---|---|
-| `gb10-dgx-a-llm` | llama.cpp b6345 | http://10.77.0.11:8080 | NVIDIA GB10 / DGX A (Grace Blackwell, 128GB 统一内存) | qwen3-32b-instruct |
-| `gb10-dgx-b-llm` | llama.cpp b6345 | http://10.77.0.14:8080 | NVIDIA GB10 / DGX B (Grace Blackwell, 128GB 统一内存) | qwen3-32b-instruct |
+| `gb10-head` | llama.cpp b6345 | http://10.77.0.11:8080 | NVIDIA GB10 (Grace Blackwell, 128GB 统一内存) | qwen3-32b-instruct |
+| `gb10-worker` | llama.cpp b6345 | http://10.77.0.14:8080 | NVIDIA GB10 (Grace Blackwell, 128GB 统一内存) | qwen3-32b-instruct |
 | `dell-shili-7960-llm` | llama.cpp b6345 | http://10.77.0.12:8080 | Dell Precision 7960 (RTX 6000 Ada 48GB) | deepseek-v3.1, qwen3-coder-30b |
 | `m2s2NasUbuntuVM-shili-dev-llm` | llama.cpp b6180 | http://10.77.0.13:8080 | Mac NAS 上的 Ubuntu VM (M 系列, 32GB) | glm-4.5-air |
 
