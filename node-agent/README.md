@@ -12,7 +12,7 @@ label:
 | host | env file | `NODE_INSTANCE` | WireGuard IP |
 |---|---|---|---|
 | GB10 Head | `deployments/gb10-head.env.example` | `gb10-head` | `10.77.0.11` |
-| GB10 Worker | `deployments/gb10-worker.env.example` | `gb10-worker` | `10.77.0.14` |
+| GB10 Worker | `deployments/gb10-worker.env.example` | `gb10-worker` | `10.77.0.15` |
 
 On each DGX host, copy the matching env file to `.env` (and adjust the
 remote-write URL if the site uses a different WireGuard address), then run
