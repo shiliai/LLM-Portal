@@ -58,6 +58,14 @@ function makeLogs() {
 
   console.log('== 1. 明细加载 + 时区(+08)格式:');
   if (await page.locator('#ug-tbody tr').count() !== 20) throw new Error('default per-page must be 20');
+  const headers = await page.locator('.pf-table thead th').allInnerTexts();
+  if (!headers.includes('IP')) throw new Error('request detail table must expose IP column');
+  if (await page.locator('#ug-tbody .pf-token-read').count() !== 20 ||
+      await page.locator('#ug-tbody .pf-token-write').count() !== 20) throw new Error('read/write token formatter missing');
+  if (!(await page.locator('#ug-tbody .pf-token-cache.is-hit').count()) ||
+      !(await page.locator('#ug-tbody .pf-token-cache.is-miss').count())) throw new Error('cache hit/miss state must be explicit');
+  if (!(await page.locator('#ug-tbody tr').first().innerText()).includes('10.77.0.')) throw new Error('IP value missing from request detail row');
+  console.log('IP 列 + 读/写 formatter + 缓存命中/未命中标记: true');
   const ts = (await page.locator('#ug-tbody tr td').first().innerText()).trim();
   console.log('首行时间:', ts, '| 格式 YYYY-MM-DD HH:MM:SS:', /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(ts));
   if (!/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(ts)) throw new Error('timestamp must be CST wall clock');

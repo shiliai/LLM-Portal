@@ -344,6 +344,29 @@ h1, h2, h3, h4, p { margin: 0; }
 .pf-table tbody tr.clickable { cursor: pointer; }
 .pf-table .num { white-space: nowrap; font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .pf-table th.num { text-align: right; }
+.pf-token-metric {
+  display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px;
+  min-height: 20px; line-height: 20px; white-space: nowrap;
+  font-family: var(--mono); font-variant-numeric: tabular-nums;
+}
+.pf-token-icon { width: 13px; text-align: center; font-family: ui-sans-serif, system-ui, sans-serif; font-weight: 700; }
+.pf-token-value { min-width: 3ch; text-align: right; }
+.pf-token-total { color: var(--accent); }
+.pf-token-read { color: var(--blue); }
+.pf-token-write { color: var(--green); }
+.pf-token-cache { gap: 5px; }
+.pf-token-cache.is-hit { color: var(--amber); }
+.pf-token-cache.is-hit .pf-token-state {
+  padding: 0 4px; border-radius: 4px; font-size: 10px; line-height: 16px;
+  color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--amber) 30%, transparent);
+}
+.pf-token-cache.is-miss { color: var(--muted); }
+.pf-token-cache.is-miss .pf-token-icon { color: var(--muted); font-size: 12px; }
+.pf-token-cache.is-miss .pf-token-state {
+  padding: 0 5px; border-radius: 4px; font-size: 10px; line-height: 16px;
+  color: var(--text2); background: var(--panel3); border: 1px solid var(--border2);
+}
 tr.pf-err-row td { background: var(--err-row-bg); }
 .pf-err-detail {
   background: var(--err-bg); border: 1px solid var(--err-border); border-radius: 5px;

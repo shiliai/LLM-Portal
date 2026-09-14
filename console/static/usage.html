@@ -91,7 +91,7 @@
       <div class="pf-tb-item"><label>节点</label><select class="pf-select" id="ug-f-node"><option value="all">全部节点</option></select></div>
       <div class="pf-tb-item"><label>端点</label><select class="pf-select" id="ug-f-ep"><option value="all">全部端点</option></select></div>
       <div class="pf-tb-item"><label>状态</label><select class="pf-select" id="ug-f-status"><option value="">全部</option><option value="ok">成功</option><option value="failure">失败</option></select></div>
-      <div class="pf-tb-item"><input type="text" class="pf-input" id="ug-search" placeholder="搜索 Key / 用户 / 模型 / 节点 / 端点 / request_id…" style="width:230px"></div>
+      <div class="pf-tb-item"><input type="text" class="pf-input" id="ug-search" placeholder="搜索 Key / 用户 / IP / 模型 / 节点 / 端点 / request_id…" style="width:230px"></div>
       <div class="pf-tb-right">
         <span id="ug-count"></span>
         <button class="pf-btn" id="ug-reset" type="button">✕ 重置</button>
@@ -101,7 +101,7 @@
     </div>
     <div class="pf-card flush">
       <table class="pf-table"><thead><tr>
-        <th>时间</th><th>Key / 用户</th><th>模型</th><th>节点</th><th>端点</th>
+        <th>时间</th><th>Key / 用户</th><th>模型</th><th>节点</th><th>IP</th><th>端点</th>
         <th class="num">读 Token</th><th class="num">写 Token</th><th class="num">缓存 Token</th>
         <th class="num">首字延迟</th><th class="num">总时延</th><th>状态</th>
       </tr></thead><tbody id="ug-tbody"></tbody></table>
@@ -147,6 +147,29 @@
     return String(Math.round(n));
   }
   function dash() { return '<span style="color:var(--muted)">—</span>'; }
+
+  /* Token 内容由行数据提供，视觉格式统一由 formatter + portal.css 提供。 */
+  function tokenMetricHtml(value, kind, compact) {
+    var n = Number(value || 0);
+    var meta = {
+      total: { icon: 'Σ', label: '总' },
+      read: { icon: '↓', label: '读' },
+      write: { icon: '↑', label: '写' }
+    }[kind] || { icon: '·', label: '' };
+    return '<span class="pf-token-metric pf-token-' + kind + '" title="' + esc(meta.label + ' Token ' + fmt(n)) + '">' +
+      '<span class="pf-token-icon" aria-hidden="true">' + meta.icon + '</span>' +
+      '<span class="pf-token-value">' + (compact ? fmtK(n) : fmt(n)) + '</span></span>';
+  }
+  function cacheMetricHtml(value, compact) {
+    var n = Number(value || 0);
+    if (n > 0) {
+      return '<span class="pf-token-metric pf-token-cache is-hit" title="缓存命中 · 读取 ' + esc(fmt(n)) + ' token">' +
+        '<span class="pf-token-icon" aria-hidden="true">▣</span><span class="pf-token-value">' + (compact ? fmtK(n) : fmt(n)) +
+        '</span><span class="pf-token-state">命中</span></span>';
+    }
+    return '<span class="pf-token-metric pf-token-cache is-miss" title="缓存未命中 · 读取 0 token">' +
+      '<span class="pf-token-icon" aria-hidden="true">□</span><span class="pf-token-state">未命中</span></span>';
+  }
 
   function TC() {
     var light = document.documentElement.getAttribute('data-theme') === 'light';
@@ -280,10 +303,10 @@
     return m;
   }
   function cellTokens(o) {
-    return '<td class="num" style="color:var(--accent)">' + fmtK(o.inT + o.outT) + '</td>' +
-      '<td class="num">' + fmtK(o.inT) + '</td>' +
-      '<td class="num">' + fmtK(o.outT) + '</td>' +
-      '<td class="num">' + (o.cacheT ? fmtK(o.cacheT) : dash()) + '</td>';
+    return '<td class="num">' + tokenMetricHtml(o.inT + o.outT, 'total', true) + '</td>' +
+      '<td class="num">' + tokenMetricHtml(o.inT, 'read', true) + '</td>' +
+      '<td class="num">' + tokenMetricHtml(o.outT, 'write', true) + '</td>' +
+      '<td class="num">' + cacheMetricHtml(o.cacheT, true) + '</td>';
   }
 
   function renderDistModel() {
@@ -495,10 +518,11 @@
         '<td><span class="mono" style="font-size:11px">…' + esc(r.key) + '</span><div style="font-size:11px;color:var(--muted)">' + esc(r.alias) + ' · ' + esc(r.group || 'default') + '</div></td>' +
         '<td class="mono" style="font-size:11px">' + esc(r.model) + '</td>' +
         '<td class="mono" style="font-size:11px">' + esc(r.node || '—') + '</td>' +
+        '<td class="mono" style="font-size:11px;color:var(--muted)">' + esc(r.ip || '—') + '</td>' +
         '<td class="mono" style="font-size:11px;color:var(--muted)">' + esc(r.endpoint || '—') + '</td>' +
-        '<td class="num">' + fmt(r.prompt_tokens) + '</td>' +
-        '<td class="num">' + fmt(r.completion_tokens) + '</td>' +
-        '<td class="num">' + (r.cached_tokens ? fmt(r.cached_tokens) : dash()) + '</td>' +
+        '<td class="num">' + tokenMetricHtml(r.prompt_tokens, 'read') + '</td>' +
+        '<td class="num">' + tokenMetricHtml(r.completion_tokens, 'write') + '</td>' +
+        '<td class="num">' + cacheMetricHtml(r.cached_tokens) + '</td>' +
         '<td class="num">' + latencyHtml(r.tft_ms) + '</td>' +
         '<td class="num">' + latencyHtml(r.duration_ms) + '</td>' +
         '<td>' + (fail
@@ -506,14 +530,14 @@
           : '<span class="pf-chip ok"><span class="pf-dot ok" style="margin-right:0"></span>成功</span>') + '</td>' +
       '</tr>';
       if (fail && exp) {
-        tr += '<tr class="pf-err-row"><td colspan="11"><div class="pf-err-detail">' +
+        tr += '<tr class="pf-err-row"><td colspan="12"><div class="pf-err-detail">' +
           'request_id: ' + esc(r.request_id) + '\n' +
           'error: ' + esc(r.error || 'failure') + '\n' +
           'node: ' + esc(r.node || '—') + ' · model: ' + esc(r.model) + ' · endpoint: ' + esc(r.endpoint || '—') + '\n' +
           'ip: ' + esc(r.ip || '—') + (r.effort ? ' · effort: ' + esc(r.effort) : '') + '</div></td></tr>';
       }
       return tr;
-    }).join('') || '<tr><td colspan="11" style="padding:10px" class="pf-desc">当前过滤条件下暂无请求</td></tr>';
+    }).join('') || '<tr><td colspan="12" style="padding:10px" class="pf-desc">当前过滤条件下暂无请求</td></tr>';
     $('ug-count').textContent = '共 ' + fmt(rows.length) + ' 条 · 第 ' + rl.page + '/' + pages + ' 页';
     /* 分页（窗口页码） */
     var pager = $('ug-pager');
@@ -536,10 +560,10 @@
     return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   }
   function exportCsv() {
-    var head = ['时间', '请求ID', 'Key', '用户', '分组', '模型', '节点', '端点', '读Token', '写Token', '缓存Token', '首字延迟ms', '总时延ms', '状态', '错误详情'];
+    var head = ['时间', '请求ID', 'Key', '用户', '分组', '模型', '节点', 'IP', '端点', '读Token', '写Token', '缓存Token', '首字延迟ms', '总时延ms', '状态', '错误详情'];
     var lines = [head.join(',')];
     rl.logs.forEach(function (r) {
-      lines.push([r.ts, r.request_id, '…' + r.key, r.alias, r.group, r.model, r.node, r.endpoint,
+      lines.push([r.ts, r.request_id, '…' + r.key, r.alias, r.group, r.model, r.node, r.ip, r.endpoint,
         r.prompt_tokens, r.completion_tokens, r.cached_tokens, r.tft_ms, r.duration_ms,
         r.status === 'failure' ? '失败' : '成功', r.error].map(csvCell).join(','));
     });
