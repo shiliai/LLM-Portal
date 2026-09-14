@@ -124,6 +124,21 @@
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function fmt(n) { return Number(Math.round(n || 0)).toLocaleString('zh-CN'); }
+  function latency(ms) {
+    ms = Number(ms || 0);
+    if (!ms) return { value: '—', unit: '', title: '' };
+    if (ms >= 60000) {
+      var minutes = Math.floor(ms / 60000), seconds = (ms % 60000) / 1000;
+      return { value: minutes + 'm ' + seconds.toFixed(1) + 's', unit: '', title: fmt(ms) + ' ms' };
+    }
+    if (ms >= 1000) return { value: (ms / 1000).toFixed(1), unit: 's', title: fmt(ms) + ' ms' };
+    return { value: fmt(ms), unit: 'ms', title: '' };
+  }
+  function latencyHtml(ms) {
+    var x = latency(ms);
+    return '<span' + (x.title ? ' title="原始值 ' + esc(x.title) + '"' : '') + '>' + x.value +
+      (x.unit ? ' <span class="unit">' + x.unit + '</span>' : '') + '</span>';
+  }
   function fmtK(n) {
     n = Number(n || 0);
     if (n >= 1e8) return (n / 1e8).toFixed(2) + '亿';
@@ -240,8 +255,8 @@
         sub: '读 ' + fmtK(tt.prompt_tokens) + ' / 写 ' + fmtK(tt.completion_tokens), color: t.s.cyan },
       { label: '成功率', val: sr === null ? dash() : sr.toFixed(1), unit: sr === null ? '' : '%',
         sub: '失败 ' + fmt(tt.failures || 0) + ' 次', color: sr !== null && sr < 95 ? t.s.red : t.s.green },
-      { label: '平均首字延迟', val: tt.avg_tft ? fmt(tt.avg_tft) : dash(), unit: tt.avg_tft ? 'ms' : '',
-        sub: '成功请求 TTFT · 总时延 ' + (tt.avg_ms ? fmt(tt.avg_ms) + ' ms' : '—'), color: t.s.amber },
+      { label: '平均首字延迟', val: latency(tt.avg_tft).value, unit: latency(tt.avg_tft).unit,
+        sub: '成功请求 TTFT · 总时延 ' + latencyHtml(tt.avg_ms), color: t.s.amber },
       { label: '缓存读取 Token', val: fmtK(tt.cached_tokens), unit: 'tok',
         sub: '命中率 ' + (tt.prompt_tokens ? ((tt.cached_tokens || 0) / tt.prompt_tokens * 100).toFixed(0) : '0') + '%（占输入）', color: t.s.violet }
     ];
@@ -456,8 +471,8 @@
       { label: '读 TOKEN 合计', val: fmtK(inT), unit: 'tok', sub: '输入 / Prompt', color: t.s.cyan },
       { label: '写 TOKEN 合计', val: fmtK(outT), unit: 'tok', sub: '输出 / 解码生成', color: t.s.green },
       { label: '缓存 TOKEN 合计', val: fmtK(cacheT), unit: 'tok', sub: 'KV Cache 命中复用', color: t.s.amber },
-      { label: '平均延迟', val: avgTft === null ? dash() : fmt(avgTft), unit: avgTft === null ? '' : 'ms',
-        sub: '首字 TTFT · 总时延 ' + (avgLat === null ? '—' : fmt(avgLat) + ' ms'), color: t.s.violet }
+      { label: '平均延迟', val: avgTft === null ? dash() : latency(avgTft).value, unit: avgTft === null ? '' : latency(avgTft).unit,
+        sub: '首字 TTFT · 总时延 ' + (avgLat === null ? '—' : latencyHtml(avgLat)), color: t.s.violet }
     ];
     $('ug-statbar').innerHTML = cards.map(function (k) {
       return '<div class="pf-kpi"><div class="k-label"><span class="pf-dot" style="background:' + k.color + ';margin-right:0"></span>' + k.label + '</div>' +
@@ -484,8 +499,8 @@
         '<td class="num">' + fmt(r.prompt_tokens) + '</td>' +
         '<td class="num">' + fmt(r.completion_tokens) + '</td>' +
         '<td class="num">' + (r.cached_tokens ? fmt(r.cached_tokens) : dash()) + '</td>' +
-        '<td class="num">' + (r.tft_ms ? fmt(r.tft_ms) + ' ms' : dash()) + '</td>' +
-        '<td class="num">' + fmt(r.duration_ms) + ' ms</td>' +
+        '<td class="num">' + latencyHtml(r.tft_ms) + '</td>' +
+        '<td class="num">' + latencyHtml(r.duration_ms) + '</td>' +
         '<td>' + (fail
           ? '<span class="pf-chip err"><span class="pf-dot err" style="margin-right:0"></span>失败</span> <span style="font-size:11px;color:var(--muted)">' + (exp ? '▾' : '▸') + '</span>'
           : '<span class="pf-chip ok"><span class="pf-dot ok" style="margin-right:0"></span>成功</span>') + '</td>' +
