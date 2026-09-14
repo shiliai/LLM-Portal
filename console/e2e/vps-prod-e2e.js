@@ -49,8 +49,13 @@ const EMAIL = process.env.PROD_EMAIL, PASSWORD = process.env.PROD_PASSWORD, TOTP
   if (blocks < 2) throw new Error('node blocks = ' + blocks);
   const gb10Tile = await page.locator('.pf-node-block', { hasText: 'gb10' }).first().locator('.pf-metric-grid').innerText();
   console.log('  节点块:', blocks, '| gb10 含 DCGM 温度:', /\d+\s*°C/.test(gb10Tile), '| 含功耗:', /\d+\s*W/.test(gb10Tile));
-  const dellTile = await page.locator('.pf-node-block', { hasText: 'dell-shili-7960' }).first().locator('.pf-metric-grid').innerText();
-  console.log('  dell 含推测解码:', /\d+\.\d\s*%/.test(dellTile) && dellTile.includes('推测解码'), '| 缺失指标 — 计数:', (dellTile.match(/—/g) || []).length);
+  // dell/m2s2 已部署 node-agent（vmagent+DCGM），温度/功耗必须出数
+  for (const n of ['dell-shili-7960', 'm2s2NasUbuntuVM-shili-dev']) {
+    const tile = await page.locator('.pf-node-block', { hasText: n }).first().locator('.pf-metric-grid').innerText();
+    if (!/\d+\s*°C/.test(tile) || !/\d+\s*W/.test(tile))
+      throw new Error(n + ' tile missing DCGM temp/power — node-agent not delivering');
+    console.log(' ', n, '| DCGM 温度+功耗:', /\d+\s*°C/.test(tile) && /\d+\s*W/.test(tile), '| 推测解码:', /\d+\.\d\s*%/.test(tile) && tile.includes('推测解码'), '| 缺失 — 计数:', (tile.match(/—/g) || []).length);
+  }
   await page.screenshot({ path: '/tmp/e2e/prod-nodes.png' });
 
   /* ═══ 请求与用量（真实数据） ═══ */
