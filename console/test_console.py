@@ -992,23 +992,27 @@ def test_mcp_usage_overview_has_ranges_states_refresh_and_stale_protection():
 
 
 def test_usage_filters_refresh_from_full_selected_range():
+    """issue #106 用量页：筛选语义在服务端（query 参数），下拉随范围重填、失效选择复位。"""
     source = (CONSOLE_DIR / "static" / "usage.html").read_text()
-    assert "function rlFillFilters(rows)" in source
-    assert "rlFillFilters(d.rows || []);" in source
-    assert "RL=d.logs||[]" in source and "RL=d.logs||[]; nextCursor" in source
-    assert "rlPage=index+1; rlFillFilters()" not in source
-    assert "RL=[];rlFillFilters([]);" in source
-    assert "&key=' + encodeURIComponent($('rl-key').value)" in source
-    assert "&model=' + encodeURIComponent($('rl-model').value)" in source
-    assert "if (k && String(r.key || '').slice(-4) !== k)" in source
+    assert "function fillDimOptions()" in source
+    assert "await window.pfApi('GET', '/usage' + sumQuery())" in source
+    assert "if (Array.from(el.options).some(function (o) { return o.value === old; })) el.value = old;" in source
+    # 明细：服务端过滤参数 + 客户端分页/导出
+    assert "'&limit=2000'" in source
+    assert "['key', rl.key], ['model', rl.model], ['node', rl.node], ['endpoint', rl.ep], ['status', rl.status], ['q', rl.q]" in source
+    assert "function exportCsv()" in source
+    # 明细下拉同样随数据重填
+    assert "function fillRecFilters()" in source
 
 
 def test_usage_logs_api_passes_filters_to_database(console_admin, monkeypatch):
     install_litellm_stub(monkeypatch, _handler)
     seen = {}
 
-    async def filtered_logs(days, cursor, limit, key_suffix="", model=""):
-        seen.update(days=days, cursor=cursor, limit=limit, key_suffix=key_suffix, model=model)
+    async def filtered_logs(days, cursor, limit, key_suffix="", model="", filters=None,
+                            status="", q="", range_from=None, range_to=None):
+        seen.update(days=days, cursor=cursor, limit=limit, key_suffix=key_suffix, model=model,
+                    status=status, q=q)
         return [], None
 
     monkeypatch.setattr(console_admin, "usage_logs", filtered_logs)
@@ -1016,11 +1020,12 @@ def test_usage_logs_api_passes_filters_to_database(console_admin, monkeypatch):
         login = client.post("/console/api/admin-login",
                             json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}, headers=XRW)
         response = client.get(
-            "/console/api/usage/logs?days=30&limit=20&key=a1b2&model=qwen",
+            "/console/api/usage/logs?days=30&limit=20&key=a1b2&model=qwen&status=failure&q=timeout",
             headers={"Cookie": _cookie_of(login)})
 
     assert response.status_code == 200
-    assert seen == {"days": 30, "cursor": "", "limit": 20, "key_suffix": "a1b2", "model": "qwen"}
+    assert seen == {"days": 30.0, "cursor": "", "limit": 20, "key_suffix": "a1b2", "model": "qwen",
+                    "status": "failure", "q": "timeout"}
 
 
 def test_mcp_registration_uses_accessible_page_confirmation_without_native_dialogs():
@@ -1493,3 +1498,132 @@ def test_direct_rejects_an_address_owned_by_another_site(console, monkeypatch):
         "site": "duplicate", "address": DIRECT_SITE["address"],
         "models": [{"name": "m1", "upstream_model": "m1"}]})
     assert response.status_code == 409
+
+
+# ---------------------------------------------------------------- issue #106 观测原型落地
+
+def test_finish_metrics_maps_aliases_and_derives_ratios(console_admin):
+    vals = {
+        "llamacpp:predicted_tokens_seconds": 45.2,
+        "llamacpp:prompt_tokens_seconds": 210.0,
+        "llamacpp:requests_processing": 3,
+        "llamacpp:requests_deferred": 1,
+        "llamacpp:spec_decode_num_accepted_tokens_total": 62,
+        "llamacpp:spec_decode_num_draft_tokens_total": 100,
+        "llamacpp:prompt_tokens_cached_total": 6400,
+        "llamacpp:prompt_tokens_total": 10000,
+        "DCGM_FI_DEV_GPU_UTIL": 82.0,
+        "DCGM_FI_DEV_GPU_TEMP": 64.0,
+        "DCGM_FI_DEV_POWER_USAGE": 285.0,
+    }
+    out = console_admin._finish_metrics(vals)
+    assert out["output_tok_s"] == 45.2
+    assert out["input_tok_s"] == 210.0
+    assert out["requests_running"] == 3
+    assert out["requests_waiting"] == 1
+    assert out["spec_accept_pct"] == pytest.approx(62.0)
+    assert out["cache_hit_pct"] == pytest.approx(64.0)
+    assert out["gpu_util_pct"] == 82.0
+    assert out["gpu_temp_c"] == 64.0
+    assert out["power_w"] == 285.0
+    assert out["runtime"] == "llamacpp"
+    assert "kv_cache_pct" not in out          # llama.cpp 无 KV 占用量表 → 缺失不伪造
+
+
+def test_finish_metrics_requires_both_sides_of_ratio(console_admin):
+    out = console_admin._finish_metrics({"llamacpp:spec_decode_num_accepted_tokens_total": 62})
+    assert "spec_accept_pct" not in out
+
+
+def test_vm_site_matcher_accepts_llm_suffix_and_bare_name(console_admin):
+    m = console_admin.vm_site_matcher("gb10")
+    assert 'site=~"^gb10(-llm)?$"' in m
+    assert "DCGM_FI_DEV_[A-Z_0-9]+" in m
+
+
+def _admin_login(mod):
+    """console_admin 实例（配置了管理员账号）的登录客户端 + 请求头。"""
+    client = TestClient(mod.app)
+    ok = client.post("/console/api/admin-login",
+                     json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}, headers=XRW)
+    assert ok.status_code == 200
+    return client, {"Cookie": _cookie_of(ok), **XRW}
+
+
+def test_metrics_range_rejects_unknown_metric_and_hours(console_admin, monkeypatch):
+    install_litellm_stub(monkeypatch, _handler)
+    client, hdr = _admin_login(console_admin)
+    bad_metric = client.get("/console/api/metrics/range?metric=free_form&site=gb10&hours=1", headers=hdr)
+    bad_hours = client.get("/console/api/metrics/range?metric=output_tok_s&site=gb10&hours=3", headers=hdr)
+    bad_site = client.get("/console/api/metrics/range?metric=output_tok_s&site=&hours=1", headers=hdr)
+    assert bad_metric.status_code == 400
+    assert bad_hours.status_code == 400
+    assert bad_site.status_code == 400
+
+
+def test_metrics_range_returns_points_from_vm(console_admin, monkeypatch):
+    install_litellm_stub(monkeypatch, _handler)
+    seen = {}
+
+    class _Resp:
+        status_code = 200
+        def json(self):
+            return {"status": "success", "data": {"result": [
+                {"metric": {"__name__": "llamacpp:predicted_tokens_seconds"}, "values": [[1, "41.5"], [2, "43.0"]]},
+                {"metric": {"__name__": "llamacpp:predicted_tokens_seconds", "instance": "gb10-worker"},
+                 "values": [[1, "40.0"], [2, "44.0"]]},
+            ]}}
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, params=None):
+            seen["url"], seen["params"] = url, params
+            return _Resp()
+
+    monkeypatch.setattr(console_admin, "VM_URL", "http://vm-stub.invalid")
+    monkeypatch.setattr(console_admin.httpx, "AsyncClient", _Client)
+    client, hdr = _admin_login(console_admin)
+    resp = client.get("/console/api/metrics/range?metric=output_tok_s&site=gb10&hours=1", headers=hdr)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["points"] == [[1, 40.75], [2, 43.5]]   # 双实例均值
+    assert seen["params"]["step"] == 60
+
+
+def test_usage_api_returns_node_endpoint_group_dimensions(console_admin, monkeypatch):
+    install_litellm_stub(monkeypatch, _handler)
+    token = hashlib.sha256(USER_KEY.encode()).hexdigest()
+
+    async def fake_aggregate(start, end, step=3600, filters=None):
+        totals = {"requests": 2, "prompt_tokens": 100, "completion_tokens": 50,
+                  "cached_tokens": 10, "failures": 0, "avg_ms": 1200, "avg_tft": 300}
+        buckets = []
+        rows = [{"api_key": token, "model": "qwen3.8-27b", "api_base": "http://10.77.0.11:8890/v1",
+                 "call_type": "acompletion", "requests": 2, "failures": 0,
+                 "prompt_tokens": 100, "completion_tokens": 50, "cached_tokens": 10, "avg_ms": 1200}]
+        errors = []
+        return totals, buckets, rows, errors
+
+    async def fake_sites():
+        return [{"name": "gb10", "transport": "wireguard", "wg_ip": "10.77.0.11", "status": "active",
+                 "address": None, "pubkey": "pk", "models": [], "groups": []}]
+
+    async def fake_deps():
+        return [{"model_name": "qwen3.8-27b", "model_info": {"id": "m1"},
+                 "litellm_params": {"api_base": "http://10.77.0.11:8890/v1"}}]
+
+    monkeypatch.setattr(console_admin, "usage_aggregate", fake_aggregate)
+    monkeypatch.setattr(console_admin, "onboard_sites", fake_sites)
+    monkeypatch.setattr(console_admin, "litellm_deployments", fake_deps)
+    client, hdr = _admin_login(console_admin)
+    resp = client.get("/console/api/usage?days=1", headers=hdr)
+    assert resp.status_code == 200
+    body = resp.json()
+    row = body["rows"][0]
+    assert row["node"] == "gb10"
+    assert row["endpoint"] == "/v1/chat/completions"
+    assert row["group"] == "default"
+    assert row["alias"] == "unit-user"
+    assert len(body["hourly"]) == 24          # days=1 → 今天 24 个小时桶铺满
