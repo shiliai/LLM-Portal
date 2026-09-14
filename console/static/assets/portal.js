@@ -15,6 +15,30 @@
   'use strict';
   var API = '/console/api';
 
+  /* Page modules use timers for polling. Track them so SPA navigation can
+     dispose the old module instead of letting hidden pages keep refreshing. */
+  var nativeSetInterval = window.setInterval.bind(window);
+  var nativeClearInterval = window.clearInterval.bind(window);
+  var nativeSetTimeout = window.setTimeout.bind(window);
+  var nativeClearTimeout = window.clearTimeout.bind(window);
+  var pageIntervals = [], pageTimeouts = [];
+  window.setInterval = function (fn, ms) {
+    var id = nativeSetInterval(fn, ms); pageIntervals.push(id); return id;
+  };
+  window.clearInterval = function (id) {
+    nativeClearInterval(id); pageIntervals = pageIntervals.filter(function (x) { return x !== id; });
+  };
+  window.setTimeout = function (fn, ms) {
+    var id = nativeSetTimeout(fn, ms); pageTimeouts.push(id); return id;
+  };
+  window.clearTimeout = function (id) {
+    nativeClearTimeout(id); pageTimeouts = pageTimeouts.filter(function (x) { return x !== id; });
+  };
+  function disposePage() {
+    pageIntervals.forEach(nativeClearInterval); pageIntervals = [];
+    pageTimeouts.forEach(nativeClearTimeout); pageTimeouts = [];
+  }
+
   /* ---------- 数据请求助手 ---------- */
   async function pfApi(method, path, body) {
     var opt = { method: method, headers: { 'X-Requested-With': 'XMLHttpRequest' } };
@@ -147,10 +171,69 @@
       syncThemeBtn();
       document.dispatchEvent(new CustomEvent('pftheme'));
     });
+    layout.querySelectorAll('.pf-nav-item').forEach(function (link) {
+      link.addEventListener('click', function (e) {
+        e.preventDefault();
+        navigatePage(link.getAttribute('href'), true);
+      });
+    });
     layout.querySelector('#pf-logout').addEventListener('click', async function () {
       try { await pfApi('POST', '/logout'); } catch (e) { /* 忽略 */ }
       location.href = '/console/login.html';
     });
+  }
+
+  var navigationBusy = false;
+  async function navigatePage(file, push) {
+    if (navigationBusy) return;
+    var target = new URL(file, location.href);
+    if (target.pathname === location.pathname && !target.search) return;
+    navigationBusy = true;
+    try {
+      var r = await fetch(target.href, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+      if (!r.ok) throw new Error('页面加载失败（' + r.status + '）');
+      var html = await r.text();
+      var parsed = new DOMParser().parseFromString(html, 'text/html');
+      var tpl = parsed.getElementById('page');
+      var pageKey = parsed.body && parsed.body.dataset.page;
+      if (!tpl || !pageKey) throw new Error('页面结构无效');
+      var content = document.querySelector('.pf-content');
+      if (!content) throw new Error('控制台壳未初始化');
+      window.dispatchEvent(new CustomEvent('pfpagehide'));
+      disposePage();
+      content.replaceChildren(document.importNode(tpl.content, true));
+      document.body.dataset.page = pageKey;
+      var item = null;
+      NAV_GROUPS.some(function (g) { return g.items.some(function (n) {
+        if (n.key === pageKey) { item = n; return true; } return false;
+      }); });
+      document.querySelectorAll('.pf-nav-item').forEach(function (n) {
+        n.classList.toggle('active', !!item && n.getAttribute('href') === item.file);
+      });
+      var title = document.querySelector('.pf-topbar-title');
+      if (title && item) title.textContent = item.title;
+      document.title = parsed.title || document.title;
+      /* Load page-only dependencies once, then run its inline module. */
+      var scripts = Array.prototype.slice.call(parsed.querySelectorAll('script'));
+      for (var i = 0; i < scripts.length; i++) {
+        var src = scripts[i].getAttribute('src');
+        if (src) {
+          if (src.indexOf('portal.js') >= 0 || (src.indexOf('echarts') >= 0 && window.echarts)) continue;
+          await new Promise(function (resolve, reject) {
+            var s = document.createElement('script'); s.src = new URL(src, target.href).href;
+            s.onload = resolve; s.onerror = reject; document.head.appendChild(s);
+          });
+        } else if (scripts[i].textContent.trim()) {
+          new Function(scripts[i].textContent)();
+        }
+      }
+      document.querySelectorAll('.pf-tabs').forEach(function (bar) { pfTabs(bar); });
+      initCodeBlocks();
+      if (push) history.pushState({ page: pageKey }, '', target.href);
+      window.scrollTo(0, 0);
+    } catch (e) {
+      pfErr(e.message || '页面加载失败');
+    } finally { navigationBusy = false; }
   }
 
   /* ---------- 遮罩 + 抽屉/弹窗 ---------- */
@@ -296,6 +379,9 @@
         initCodeBlocks();
         initDelegation();
         sessionResolve(sess);
+        window.addEventListener('popstate', function () {
+          navigatePage(location.pathname.split('/').pop() || 'index.html', false);
+        });
       } catch (e) { /* 已跳转 login 或失败静默 */ }
     } else {
       initCodeBlocks();

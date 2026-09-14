@@ -37,7 +37,7 @@
              <div class="pf-kv-v">值</div> …重复… </div>
    代码块：<div class="pf-code"><pre>curl …</pre></div>
            （portal.js 自动注入右上角「复制」按钮）
-   密钥片：<span class="pf-key">sk-portal-a3f4…9k2e</span>
+   密钥片：<span class="pf-key">sk-example…9k2e</span>
    空态：  <div class="pf-empty"><div class="pf-empty-icon">▢</div>暂无数据</div>
    统计卡：<div class="pf-stat"><div class="pf-stat-label">…</div>
              <div class="pf-stat-value">…</div>
@@ -145,6 +145,8 @@ body {
   font: 13px/1.6 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
         "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
 }
 code, pre, .pf-key, .pf-code, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 a { color: var(--accent); text-decoration: none; }
@@ -222,7 +224,7 @@ h1, h2, h3, h4, p { margin: 0; }
 }
 [data-theme="light"] .pf-avatar { color: #fff; }
 .pf-avatar.sm { width: 24px; height: 24px; font-size: 12px; }
-.pf-content { flex: 1; padding: 16px 20px 28px; }
+.pf-content { flex: 1; min-height: calc(100vh - 48px); box-sizing: border-box; padding: 16px 20px 28px; transition: opacity .12s ease; }
 
 /* ---------- 卡片 ---------- */
 .pf-card {

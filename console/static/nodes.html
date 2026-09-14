@@ -21,7 +21,7 @@
   <div id="nd-blocks"></div>
 </template>
 <script src="assets/vendor/echarts.min.js"></script>
-<script src="assets/portal.js"></script>
+<script src="assets/portal.js?v=20260914-spa"></script>
 <script>
 (function () {
   'use strict';
@@ -227,6 +227,7 @@
   }
 
   var loadEpoch = 0;
+  window.addEventListener('pfpagehide', function () { loadEpoch++; });
   var loading = false;
   async function load() {
     if (loading) return;
@@ -239,12 +240,12 @@
       await fetchHist(visibleNodes(), st.hours);
       if (epoch !== loadEpoch) return;
       render();
-      document.getElementById('nd-last').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+      var last = document.getElementById('nd-last'); if (last) last.textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false });
       st.left = st.interval;
     } catch (e) {
       if (epoch !== loadEpoch) return;
       window.pfErr((e && e.error) || '加载失败');
-      document.getElementById('nd-last').textContent = '加载失败';
+      var last = document.getElementById('nd-last'); if (last) last.textContent = '加载失败';
     } finally { loading = false; }
   }
 

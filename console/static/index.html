@@ -64,7 +64,7 @@
 
 </template>
 <script src="assets/vendor/echarts.min.js"></script>
-<script src="assets/portal.js"></script>
+<script src="assets/portal.js?v=20260914-spa"></script>
 <script>
 (function () {
   'use strict';
@@ -367,6 +367,7 @@
   }
 
   var loadEpoch = 0;
+  window.addEventListener('pfpagehide', function () { loadEpoch++; });
   async function load() {
     var epoch = ++loadEpoch;
     var hours = winHours();
@@ -379,7 +380,7 @@
       if (epoch !== loadEpoch) return;
       if (pair[0].status === 'rejected') {
         window.pfErr((pair[0].reason && pair[0].reason.error) || 'overview 加载失败');
-        document.getElementById('ov-last').textContent = '加载失败';
+        var last = document.getElementById('ov-last'); if (last) last.textContent = '加载失败';
         return;
       }
       st.ov = pair[0].value;
@@ -388,12 +389,12 @@
       await fetchSeries(visibleNodes().length ? visibleNodes() : (st.ov.sites.rows || []), hours);
       if (epoch !== loadEpoch) return;
       renderKpis(); renderSpeed(); renderCap(); renderRes(); renderHealth();
-      document.getElementById('ov-last').textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+      var last = document.getElementById('ov-last'); if (last) last.textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false });
       st.left = st.interval;
     } catch (e) {
       if (epoch !== loadEpoch) return;
       window.pfErr((e && e.error) || '加载失败');
-      document.getElementById('ov-last').textContent = '加载失败';
+      var last = document.getElementById('ov-last'); if (last) last.textContent = '加载失败';
     }
   }
 
