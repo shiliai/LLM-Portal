@@ -18,6 +18,9 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    # Exporter is scraped locally by vmagent; do not expose its unauthenticated
+    # HTTP endpoint on the WireGuard/LAN interfaces.
+    command: ["-a", "127.0.0.1:9400"]
 
   vmagent:
     image: victoriametrics/vmagent:v1.127.0
@@ -34,6 +37,7 @@ services:
       - -remoteWrite.url=${VM_REMOTE_WRITE_URL:?set VM_REMOTE_WRITE_URL}
       - -remoteWrite.tmpDataPath=/vmagent-data
       - -remoteWrite.maxDiskUsagePerURL=2GB
+      - -httpListenAddr=127.0.0.1:8429
     volumes:
       - ./prometheus.yml:/etc/vmagent/prometheus.yml:ro
       - vmagent-data:/vmagent-data

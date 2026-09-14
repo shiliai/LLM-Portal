@@ -139,6 +139,13 @@
     if (st.key) q += '&key=' + encodeURIComponent(st.key);
     return q;
   }
+  function overviewQuery() {
+    var q = '';
+    if (st.node) q += (q ? '&' : '?') + 'node=' + encodeURIComponent(st.node);
+    if (st.model) q += (q ? '&' : '?') + 'model=' + encodeURIComponent(st.model);
+    if (st.key) q += (q ? '&' : '?') + 'key=' + encodeURIComponent(st.key);
+    return q;
+  }
   function siteOf(apiBase) {
     var host = ((apiBase || '').split('//')[1] || '').split(':')[0];
     var rows = (st.ov && st.ov.sites.rows) || [];
@@ -366,7 +373,7 @@
     try {
       /* overview 与 usage 互不拖累：usage 库不可达时 Token 卡显示 —，实时指标照常 */
       var pair = await Promise.allSettled([
-        window.pfApi('GET', '/overview'),
+        window.pfApi('GET', '/overview' + overviewQuery()),
         window.pfApi('GET', '/usage' + usageQuery())
       ]);
       if (epoch !== loadEpoch) return;

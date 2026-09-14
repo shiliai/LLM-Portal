@@ -191,7 +191,7 @@
     if (ug.today) q += '&today=1';
     if (ug.gran) q += '&gran=' + ug.gran;
     Object.keys(ug.dims).forEach(function (k) {
-      if (ug.dims[k] !== 'all') q += '&' + k + '=' + encodeURIComponent(ug.dims[k]);
+      if (ug.dims[k] !== 'all') q += '&' + (k === 'ep' ? 'endpoint' : k) + '=' + encodeURIComponent(ug.dims[k]);
     });
     return q;
   }
@@ -386,6 +386,7 @@
   /* ══════════ 请求明细 ══════════ */
   var rl = { range: '0.9999', today: false, from: null, to: null, key: 'all', model: 'all',
              node: 'all', ep: 'all', status: '', q: '', page: 1, per: 20, logs: [], expanded: {} };
+  var recEpoch = 0;
 
   function recQuery() {
     var q = '?days=' + encodeURIComponent(rl.today ? 1 : rl.range) + '&limit=2000';
@@ -398,9 +399,20 @@
   }
 
   async function loadRecs(keepPage) {
+    var epoch = ++recEpoch;
     try {
-      var d = await window.pfApi('GET', '/usage/logs' + recQuery());
-      rl.logs = d.logs || [];
+      var all = [], cursor = '';
+      /* Follow the server cursor so large ranges remain complete while each
+         response stays bounded. The UI still paginates the combined result. */
+      for (var page = 0; page < 100; page++) {
+        var d = await window.pfApi('GET', '/usage/logs' + recQuery() + (cursor ? '&cursor=' + encodeURIComponent(cursor) : ''));
+        if (epoch !== recEpoch) return;
+        all = all.concat(d.logs || []);
+        if (!d.next_cursor || !d.has_more) break;
+        cursor = d.next_cursor;
+      }
+      if (epoch !== recEpoch) return;
+      rl.logs = all;
       if (!keepPage) rl.page = 1;
       rl.expanded = {};
       fillRecFilters();
@@ -505,6 +517,7 @@
 
   function csvCell(s) {
     s = String(s == null ? '' : s);
+    if (/^[=+\-@]/.test(s)) s = "'" + s;
     return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   }
   function exportCsv() {
@@ -541,10 +554,14 @@
       this.querySelectorAll('button').forEach(function (x) { x.classList.toggle('on', x === b); });
       setRecRangeShared(b.dataset.r);
       loadSummary();
+      loadRecs();
     });
     function setRecRangeShared(r) {
       ug.today = r === 'today';
       if (r !== 'today') ug.range = r;
+      /* Keep the detail window aligned with the summary selection so switching
+         tabs does not silently show a different time range. */
+      setRecRange(r);
     }
     $('ug-gran').addEventListener('click', function (e) {
       var b = e.target.closest('button'); if (!b) return;
@@ -566,6 +583,10 @@
       window.pfToast('维度筛选已重置');
     });
     $('ug-refresh1').addEventListener('click', function () { loadSummary(); window.pfToast('用量汇总已刷新'); });
+    $('ug-tabs').addEventListener('click', function (e) {
+      var tab = e.target.closest('.pf-tab');
+      if (tab && tab.dataset.tab === 'rec') loadRecs();
+    });
     $('ug-model-tabs').addEventListener('click', function (e) {
       var b = e.target.closest('button'); if (!b) return;
       ug.tabModel = b.dataset.m;
@@ -676,7 +697,7 @@
     });
 
     loadSummary();
-    loadRecs();
+    renderRecTable();
   });
 })();
 </script>

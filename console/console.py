@@ -39,9 +39,9 @@
   GET  /console/api/mcp                外部 MCP 注册清单（脱敏）
   GET  /console/api/mcp/vision         已注册模型的视觉能力与当前 Vision MCP 选择
   POST /console/api/mcp/vision         保存 Vision MCP 模型（models.dev 校验；未知模型实测）
-  POST /console/api/mcp/register       注册外部 MCP（写配置 + 重启 mcp-hub）
+  POST /console/api/mcp/register       注册外部 MCP（写配置 + 重启 MCP 服务）
   POST /console/api/mcp/groups         更新外部 MCP 的分组绑定
-  POST /console/api/mcp/remove         移除（写配置 + 重启 mcp-hub）
+  POST /console/api/mcp/remove         移除（写配置 + 重启 MCP 服务）
   GET  /console/api/mcp/tools          聚合 tools/list 预览（直连各外部 MCP）
   GET  /console/api/mcp/usage?days=N   按 Key 工具调用计数（usage.db）
 
@@ -898,7 +898,7 @@ def _finish_metrics(vals: dict) -> dict:
         "DCGM_FI_DEV_GPU_TEMP": "gpu_temp_c",
         "DCGM_FI_DEV_POWER_USAGE": "power_w",
     }
-    out = {dst: round(vals[src], 2) for src, dst in aliases.items() if src in vals}
+    out = {dst: round(vals[src] * (100 if dst == "kv_cache_pct" and vals[src] <= 1 else 1), 2) for src, dst in aliases.items() if src in vals}
     out.update(_derive_metrics(vals))
     if out:
         out["runtime"] = "vllm" if any(k.startswith("vllm:") for k in vals) else \
@@ -1077,18 +1077,29 @@ async def api_overview(request: Request) -> Response:
     sess = await require(request)
     if isinstance(sess, JSONResponse):
         return sess
-    logs, deps, sites, hs = await fetch_logs(), await litellm_deployments(), await onboard_sites(), wg_handshakes()
+    deps, sites, hs = await litellm_deployments(), await onboard_sites(), wg_handshakes()
     health = await direct_health(sites)
     metrics = await asyncio.gather(*(site_metrics(s, deps) for s in sites), return_exceptions=True)
-    today = [r for r in logs_today_calendar(logs) if valid_usage_row(r)]
-    ok_rows = [r for r in today if r.get("status") != "failure"]
-    totals = {
-        "requests": len(today),
-        "prompt_tokens": sum(int(r.get("prompt_tokens") or 0) for r in today),
-        "completion_tokens": sum(int(r.get("completion_tokens") or 0) for r in today),
-        "cached_tokens": sum(row_cached(r) for r in today),
-        "errors": sum(1 for r in today if r.get("status") == "failure"),
-    }
+    # KPI 使用本地只读账本聚合，避免每次刷新从 LiteLLM 下载约 17 MB 的全量 spend logs。
+    # 账本暂不可用时保留旧回退路径，兼容迁移中的部署。
+    filters = await _usage_dims(request)
+    today, errors, usage_rows = [], [], []
+    try:
+        usage_start, usage_end = usage_window(1, today=True)
+        totals, _buckets, usage_rows, errors = await usage_aggregate(usage_start, usage_end, 3600, filters)
+        totals = {"requests": int(totals.get("requests", 0)),
+                  "prompt_tokens": int(totals.get("prompt_tokens", 0)),
+                  "completion_tokens": int(totals.get("completion_tokens", 0)),
+                  "cached_tokens": int(totals.get("cached_tokens", 0)),
+                  "errors": int(totals.get("failures", 0))}
+    except Exception:
+        logs = await fetch_logs()
+        today = [r for r in logs_today_calendar(logs) if valid_usage_row(r)]
+        totals = {"requests": len(today),
+                  "prompt_tokens": sum(int(r.get("prompt_tokens") or 0) for r in today),
+                  "completion_tokens": sum(int(r.get("completion_tokens") or 0) for r in today),
+                  "cached_tokens": sum(row_cached(r) for r in today),
+                  "errors": sum(1 for r in today if r.get("status") == "failure")}
     site_rows = []
     for s, metric in zip(sites, metrics):
         if not isinstance(metric, dict):
@@ -1104,7 +1115,13 @@ async def api_overview(request: Request) -> Response:
                           "address": s.get("address") if direct else None, "wg_ip": None if direct else s["wg_ip"], "handshake": ago,
                           "deployments": n_deps, "status": status, "metrics": metric})
     per_dep = {}
-    for r in today:
+    dep_source = today or usage_rows
+    for r in dep_source:
+        if "requests" in r and "model" in r:
+            k = (r.get("model") or "?", r.get("model") or "?")
+            # usage_db rows are already grouped; retain the aggregate directly.
+            per_dep[k] = {"requests": int(r.get("requests") or 0), "failures": int(r.get("failures") or 0)}
+            continue
         k = (r.get("model_id") or r.get("api_base") or "?", r.get("model_group") or "?")
         agg = per_dep.setdefault(k, {"requests": 0, "failures": 0})
         agg["requests"] += 1
@@ -1112,17 +1129,24 @@ async def api_overview(request: Request) -> Response:
     dep_rows = []
     for d in deps:
         k = ((d.get("model_info") or {}).get("id") or "?", d.get("model_name") or "?")
-        agg = per_dep.get(k, {"requests": 0, "failures": 0})
+        agg = per_dep.get(k) or per_dep.get((d.get("model_name") or "?", d.get("model_name") or "?"),
+                                             {"requests": 0, "failures": 0})
         state = "无流量" if agg["requests"] == 0 else ("近期异常" if agg["failures"] > 0 else "健康")
         dep_rows.append({"model": d.get("model_name"),
                          "api_base": (d.get("litellm_params") or {}).get("api_base"),
                          "rpm": (d.get("model_info") or {}).get("rpm"),
                          "tpm": (d.get("model_info") or {}).get("tpm"),
                          "state": state, **agg})
-    failures = [r for r in today if r.get("status") == "failure"]
-    recent_errors = [{"time": (r.get("startTime") or "")[:19], "key": key_last4(r),
-                      "model": r.get("model_group") or r.get("model") or "?", "detail": err_text(r)}
-                     for r in failures[-5:]][::-1]
+    if errors:
+        recent_errors = [{"time": iso_to_cst(str(r.get("startTime") or "")),
+                          "key": key_last4({"api_key": r.get("api_key")}),
+                          "model": r.get("model") or "?", "detail": r.get("detail") or "failure"}
+                         for r in errors[:5]]
+    else:
+        failures = [r for r in today if r.get("status") == "failure"]
+        recent_errors = [{"time": (r.get("startTime") or "")[:19], "key": key_last4(r),
+                          "model": r.get("model_group") or r.get("model") or "?", "detail": err_text(r)}
+                         for r in failures[-5:]][::-1]
     online_sites = sum(1 for x in site_rows if x["status"] == "online")
     healthy_deps = sum(1 for x in dep_rows if x["state"] == "健康")
     return JSONResponse({"version": PORTAL_VERSION, "build": PORTAL_BUILD,
@@ -1679,7 +1703,11 @@ async def api_usage(request: Request) -> Response:
     def bucket_label(b):
         dt = datetime.fromisoformat(str(b)).replace(tzinfo=timezone.utc).astimezone(_CST)
         return dt.strftime("%m-%d") if step >= 86400 else dt.strftime("%H:%M" if step < 3600 else "%H:00")
-    by_label = {bucket_label(x["b"]): x for x in buckets}
+    def bucket_key(v):
+        dt = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    by_label = {bucket_key(x["b"]): x for x in buckets}
     start_local = datetime.fromisoformat(str(start)).replace(tzinfo=timezone.utc).astimezone()
     now_local = datetime.now().astimezone()
     # 日历日语义（today=1 或 days=1）铺满全天 24 小时（空桶补零），与旧契约一致
@@ -1690,8 +1718,9 @@ async def api_usage(request: Request) -> Response:
     if step < 86400:
         cur_local = start_local.replace(second=0, microsecond=0)
     while cur_local <= fill_until:
+        key = cur_local.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         label = cur_local.astimezone(_CST).strftime("%m-%d" if step >= 86400 else ("%H:%M" if step < 3600 else "%H:00"))
-        x = by_label.get(label) or {}
+        x = by_label.get(key) or {}
         hourly.append({"label": label, "reqs": x.get("reqs", 0), "in": x.get("in", 0),
                        "out": x.get("out", 0), "cache": x.get("cache", 0), "avg_tft": x.get("avg_tft", 0)})
         cur_local += timedelta(seconds=step)

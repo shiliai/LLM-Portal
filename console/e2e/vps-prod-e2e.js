@@ -32,7 +32,7 @@ const EMAIL = process.env.PROD_EMAIL, PASSWORD = process.env.PROD_PASSWORD, TOTP
   const kpis = await page.locator('#ov-kpis .pf-kpi').count();
   if (kpis !== 7) throw new Error('overview KPI cards = ' + kpis);
   const health = await page.locator('#ov-health').innerText();
-  for (const node of ['gb10', 'dell-shili-7960', 'm2s2NasUbuntuVM-shili-dev']) {
+  for (const node of ['gb10-head', 'gb10-worker', 'dell-shili-7960', 'm2s2NasUbuntuVM-shili-dev']) {
     if (!health.includes(node)) throw new Error('real node missing in health table: ' + node);
   }
   const runtimeOk = health.includes('vllm') && health.includes('llamacpp');
@@ -75,8 +75,7 @@ const EMAIL = process.env.PROD_EMAIL, PASSWORD = process.env.PROD_PASSWORD, TOTP
   console.log('  7d 汇总:', kpi7d.replace(/\n/g, ' ').slice(0, 120));
 
   await page.locator('.pf-tab[data-tab="rec"]').click();
-  await page.waitForSelector('#ug-tbody tr', { timeout: 20000 });
-  await page.waitForTimeout(800);
+  await page.waitForFunction(() => document.querySelectorAll('#ug-tbody tr').length === 20, null, { timeout: 20000 });
   const recRows = await page.locator('#ug-tbody tr').count();
   if (recRows !== 20) throw new Error('records first page rows = ' + recRows);
   const recHead = await page.locator('#ug-tbody tr').first().innerText();

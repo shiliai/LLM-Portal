@@ -227,7 +227,10 @@
   }
 
   var loadEpoch = 0;
+  var loading = false;
   async function load() {
+    if (loading) return;
+    loading = true;
     var epoch = ++loadEpoch;
     try {
       st.ov = await window.pfApi('GET', '/overview');
@@ -242,7 +245,7 @@
       if (epoch !== loadEpoch) return;
       window.pfErr((e && e.error) || '加载失败');
       document.getElementById('nd-last').textContent = '加载失败';
-    }
+    } finally { loading = false; }
   }
 
   window.pfReady.then(function () {
@@ -270,7 +273,6 @@
     document.getElementById('nd-refresh').addEventListener('click', function () { st.left = st.interval; load(); });
     document.addEventListener('pftheme', function () {
       charts = {};
-      Object.keys(st.hist).forEach(function (k) { delete st.hist[k]; });
       render();
     });
     window.addEventListener('resize', function () {
