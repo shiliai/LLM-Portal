@@ -117,7 +117,8 @@ async def logs(days, cursor, limit, key_suffix="", model="", filters=None, q="",
         args.append(list(f["call_types"]))
         where.append(f"lower(call_type)=ANY(${len(args)})")
     if status in ("ok", "failure"):
-        where.append(f"status={'=' if status=='failure' else '<>'}'failure'")
+        # 库内取值为 success/failure；"ok" 语义即非失败
+        where.append("status='failure'" if status == "failure" else "status<>'failure'")
     if q:
         args.append(f"%{q}%")
         w = f"${len(args)}"

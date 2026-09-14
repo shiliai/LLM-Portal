@@ -871,12 +871,12 @@ def _derive_metrics(vals: dict) -> dict:
         spec = _ratio(vals, "vllm:spec_decode_num_accepted_tokens_total",
                       "vllm:spec_decode_num_draft_tokens_total")
     if spec is not None:
-        out["spec_accept_pct"] = spec
+        out["spec_accept_pct"] = round(spec, 1)
     hit = _ratio(vals, "llamacpp:prompt_tokens_cached_total", "llamacpp:prompt_tokens_total")
     if hit is None:
         hit = _ratio(vals, "vllm:prefix_cache_hits_total", "vllm:prefix_cache_queries_total")
     if hit is not None:
-        out["cache_hit_pct"] = hit
+        out["cache_hit_pct"] = round(hit, 1)
     return out
 
 
@@ -884,6 +884,7 @@ def _finish_metrics(vals: dict) -> dict:
     """原始值表 → 对外 metrics dict（别名映射 + 派生比率 + runtime 标识）。"""
     aliases = {
         "generation_tokens_per_second": "output_tok_s",
+        "prompt_tokens_per_second": "input_tok_s",
         "vllm:gpu_cache_usage_perc": "kv_cache_pct",
         "vllm:kv_cache_usage_perc": "kv_cache_pct",
         "vllm:num_requests_running": "requests_running",
@@ -917,6 +918,7 @@ async def site_metrics(site: dict, deps: list[dict]) -> dict:
              for d in deps if dep_of_site_row(d, site)]
     if site.get("transport", "wireguard") == "direct" and site.get("address"):
         bases.insert(0, str(site["address"]))
+    out: dict = {}
     for base in bases:
         url = base.rstrip("/")
         if url.endswith("/v1"):
@@ -937,17 +939,20 @@ async def site_metrics(site: dict, deps: list[dict]) -> dict:
                     continue
             out = _finish_metrics(vals)
             if out:
-                return out
+                break
         except (httpx.HTTPError, ValueError):
             pass
     # Direct node access is useful for low-latency values, but the central
     # VictoriaMetrics store is the authoritative fallback for nodes whose
     # model endpoint is not reachable from consoled (for example gb10).
     if VM_URL:
-        out = await vm_site_metrics(str(site.get("name") or "").strip())
-        if out:
-            return out
-    return {}
+        vm_out = await vm_site_metrics(str(site.get("name") or "").strip())
+        if vm_out:
+            # VM 独有字段（DCGM 温度/功耗/利用率只经 node-agent 入库）与直连值合并；
+            # 直连值更新鲜，同名字段以直连为准
+            vm_out.update(out or {})
+            return vm_out
+    return out or {}
 
 
 async def vm_query_instant(query: str, timeout: float = 3) -> dict[str, float]:
@@ -969,19 +974,35 @@ async def vm_query_instant(query: str, timeout: float = 3) -> dict[str, float]:
 
 def vm_site_matcher(site_name: str) -> str:
     """portal 站点名 → VM 标签匹配：约定 NODE_INSTANCE=<site>-llm，兼容裸站点名
-    （gb10 双 DGX 共用 site=gb10、instance=gb10-head/gb10-worker）。"""
-    return f'{{__name__=~"{_VM_METRIC_RE}",site=~"^{re.escape(site_name)}(-llm)?$"}}'
+    （gb10 双 DGX 共用 site=gb10、instance=gb10-head/gb10-worker）。
+    站点名只允许 [A-Za-z0-9_-]（与 NAME_RE 同口径）；不做 re.escape——Go 正则
+    （VictoriaMetrics）不认 \\- 这类转义，遇连字符会整条查询 400。"""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", site_name or ""):
+        return '{__name__="__none__"}'
+    return '{__name__=~"' + _VM_METRIC_RE + '",site=~"^{name}(-llm)?$"}'.replace("{name}", site_name)
 
 
 async def vm_site_metrics(site_name: str) -> dict:
     if not site_name:
         return {}
+    matcher = vm_site_matcher(site_name)
     try:
-        vals = await vm_query_instant(vm_site_matcher(site_name))
+        vals = await vm_query_instant(matcher)
         if not vals:
             # 兜底：实例标签=站点名（如 instance="gb10-head" 的非 -llm 命名）
             vals = await vm_query_instant(
-                f'{{__name__=~"{_VM_METRIC_RE}",instance=~"^{re.escape(site_name)}(-llm)?$"}}')
+                '{__name__=~"' + _VM_METRIC_RE + '",instance=~"^{name}(-llm)?$"}'.replace("{name}", site_name))
+        # vLLM 吞吐是计数器，无即时量表——用 5m rate 派生（TGI 风格别名进 _finish_metrics）
+        if vals and "llamacpp:predicted_tokens_seconds" not in vals \
+                and "vllm:generation_tokens_total" in vals:
+            rate = await vm_query_instant("sum(rate(vllm:generation_tokens_total" +
+                                          matcher[matcher.index("{"):] + "[5m]))")
+            if rate:
+                vals["generation_tokens_per_second"] = next(iter(rate.values()))
+            rate_in = await vm_query_instant("sum(rate(vllm:prompt_tokens_total" +
+                                             matcher[matcher.index("{"):] + "[5m]))")
+            if rate_in:
+                vals["prompt_tokens_per_second"] = next(iter(rate_in.values()))
     except (httpx.HTTPError, ValueError, TypeError, KeyError):
         return {}
     return _finish_metrics(vals)
@@ -1717,7 +1738,8 @@ async def api_usage_logs(request: Request) -> Response:
         r["alias"]=aliases.get(ak) or ("管理员（master key）" if ak=="litellm_proxy_master_key" else "已删除密钥")
         r["group"]=group_of.get(ak, "default"); r["node"]=node; r["endpoint"]=endpoint
         r["status"]="failure" if r["status"]=="failure" else "ok"
-    return JSONResponse({"logs":rows,"next_cursor":next_cursor,"has_more":bool(next_cursor)})
+    return JSONResponse({"logs": rows[:2000], "count": len(rows),
+                         "next_cursor": next_cursor, "has_more": bool(next_cursor)})
 
 async def api_sites_revoke(request: Request) -> Response:
     sess = await require(request)
