@@ -39,9 +39,9 @@
   GET  /console/api/mcp                外部 MCP 注册清单（脱敏）
   GET  /console/api/mcp/vision         已注册模型的视觉能力与当前 Vision MCP 选择
   POST /console/api/mcp/vision         保存 Vision MCP 模型（models.dev 校验；未知模型实测）
-  POST /console/api/mcp/register       注册外部 MCP（写配置 + 重启 mcp-hub）
+  POST /console/api/mcp/register       注册外部 MCP（写配置 + 重启 MCP 服务）
   POST /console/api/mcp/groups         更新外部 MCP 的分组绑定
-  POST /console/api/mcp/remove         移除（写配置 + 重启 mcp-hub）
+  POST /console/api/mcp/remove         移除（写配置 + 重启 MCP 服务）
   GET  /console/api/mcp/tools          聚合 tools/list 预览（直连各外部 MCP）
   GET  /console/api/mcp/usage?days=N   按 Key 工具调用计数（usage.db）
 
@@ -89,6 +89,7 @@ from urllib.parse import urlsplit, urlunsplit
 LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://127.0.0.1:4000")
 ONBOARD_URL = os.environ.get("ONBOARDD_URL", "http://127.0.0.1:8100")
 MCP_HUB_URL = os.environ.get("MCP_HUB_URL", "http://127.0.0.1:8200")
+VM_URL = os.environ.get("VM_URL", "http://127.0.0.1:8428")
 LITELLM_MASTER_KEY = os.environ["LITELLM_MASTER_KEY"]
 ONBOARD_ADMIN_TOKEN = os.environ["ONBOARD_ADMIN_TOKEN"]
 # 管理员网页登录凭据（console.env，deploy.sh 从 vps/.env 生成）：邮箱 + 密码 + 可选 TOTP。
@@ -106,6 +107,8 @@ MCP_MAX_DISCOVERED_TOOLS = 64
 MCP_MAX_SCHEMA_DEPTH = 12
 MCP_MAX_SCHEMA_BYTES = 16 * 1024
 MCP_MAX_METADATA_BYTES = 96 * 1024
+PORTAL_VERSION = os.environ.get("PORTAL_VERSION", "dev")
+PORTAL_BUILD = os.environ.get("PORTAL_BUILD", os.environ.get("GIT_COMMIT", "unknown"))
 
 
 def positive_seconds_env(name: str, default: float, minimum: float) -> float:
@@ -569,7 +572,8 @@ async def api_me(request: Request) -> Response:
                 group = (k.get("metadata") or {}).get("group") or "default"
                 break
     return JSONResponse({"role": sess["role"], "alias": alias, "group": group,
-                         "key_last4": sess["key_last4"] or "—"})
+                         "key_last4": sess["key_last4"] or "—",
+                         "version": PORTAL_VERSION, "build": PORTAL_BUILD})
 
 
 # ---------------------------------------------------------------- 数据源辅助
@@ -599,6 +603,22 @@ def logs_since(logs: list[dict], days: float) -> list[dict]:
         dt = _local_dt(r.get("startTime") or "")
         if dt and dt >= cutoff:
             out.append(r)
+    return out
+
+
+def valid_usage_row(row: dict) -> bool:
+    """Match usage view filtering so dashboard totals use billed callers only."""
+    ak = str(row.get("api_key") or "")
+    return ak == "litellm_proxy_master_key" or (len(ak) == 64 and all(c in "0123456789abcdef" for c in ak))
+
+def logs_today_calendar(logs: list[dict]) -> list[dict]:
+    """Use the same Asia/Shanghai calendar-day window as the usage SQL view."""
+    today = datetime.now(_CST).date()
+    out = []
+    for row in logs:
+        dt = _aware_dt(row.get("startTime") or "")
+        if dt and dt.astimezone(_CST).date() == today:
+            out.append(row)
     return out
 
 
@@ -807,6 +827,187 @@ async def direct_health(sites: list[dict]) -> dict[str, bool]:
     return {s["name"]: value is True for s, value in zip(direct, results)}
 
 
+# 观测指标体系（issue #106 原型落地）：
+# - 直连抓取：节点 /metrics（llama.cpp / vLLM 导出器）
+# - VM 回退：node-agent(vmagent+DCGM) remote_write 的中央库，带 site/instance 外部标签
+# 缺失指标一律不进结果 dict，前端渲染 "—"，绝不用 0 伪造。
+_VM_METRIC_RE = r"(llamacpp:[a-z_0-9]+|vllm:[a-z_0-9]+|DCGM_FI_DEV_[A-Z_0-9]+)"
+
+# 趋势查询的逻辑名 → PromQL 片段列表（{M} 为标签匹配占位符；同一节点的
+# llama.cpp / vLLM 两路片段用 or 合并，实际只有一路有数据）
+LOGICAL_RANGE_METRICS: dict[str, list[str]] = {
+    "output_tok_s": ["llamacpp:predicted_tokens_seconds{M}",
+                     "sum(rate(vllm:generation_tokens_total{M}[5m]))"],
+    "input_tok_s": ["llamacpp:prompt_tokens_seconds{M}",
+                    "sum(rate(vllm:prompt_tokens_total{M}[5m]))"],
+    "requests_running": ["avg(llamacpp:requests_processing{M})",
+                         "avg(vllm:num_requests_running{M})"],
+    "requests_waiting": ["avg(llamacpp:requests_deferred{M})",
+                         "avg(vllm:num_requests_waiting{M})"],
+    "requests_active": ["sum(llamacpp:requests_processing{M} or llamacpp:requests_deferred{M})",
+                        "sum(vllm:num_requests_running{M} or vllm:num_requests_waiting{M})"],
+    "kv_cache_pct": ["avg(vllm:kv_cache_usage_perc{M})"],
+    "gpu_util_pct": ["avg(DCGM_FI_DEV_GPU_UTIL{M})"],
+    "gpu_temp_c": ["avg(DCGM_FI_DEV_GPU_TEMP{M})"],
+    "power_w": ["avg(DCGM_FI_DEV_POWER_USAGE{M})"],
+}
+
+
+def _ratio(vals: dict, num: str, den: str) -> float | None:
+    d = vals.get(den)
+    n = vals.get(num)
+    if not d or n is None:
+        return None
+    v = n / d * 100
+    return v if 0 <= v <= 100 else None
+
+
+def _derive_metrics(vals: dict) -> dict:
+    """从原始导出器计数/量表推导百分比类指标；任一缺失即 None 不输出。"""
+    out: dict = {}
+    spec = _ratio(vals, "llamacpp:spec_decode_num_accepted_tokens_total",
+                  "llamacpp:spec_decode_num_draft_tokens_total")
+    if spec is None:
+        spec = _ratio(vals, "vllm:spec_decode_num_accepted_tokens_total",
+                      "vllm:spec_decode_num_draft_tokens_total")
+    if spec is not None:
+        out["spec_accept_pct"] = round(spec, 1)
+    hit = _ratio(vals, "llamacpp:prompt_tokens_cached_total", "llamacpp:prompt_tokens_total")
+    if hit is None:
+        hit = _ratio(vals, "vllm:prefix_cache_hits_total", "vllm:prefix_cache_queries_total")
+    if hit is not None:
+        out["cache_hit_pct"] = round(hit, 1)
+    return out
+
+
+def _finish_metrics(vals: dict) -> dict:
+    """原始值表 → 对外 metrics dict（别名映射 + 派生比率 + runtime 标识）。"""
+    aliases = {
+        "generation_tokens_per_second": "output_tok_s",
+        "prompt_tokens_per_second": "input_tok_s",
+        "vllm:gpu_cache_usage_perc": "kv_cache_pct",
+        "vllm:kv_cache_usage_perc": "kv_cache_pct",
+        "vllm:num_requests_running": "requests_running",
+        "vllm:num_requests_waiting": "requests_waiting",
+        "vllm:gpu_utilization": "gpu_util_pct",
+        "llamacpp:predicted_tokens_seconds": "output_tok_s",
+        "llamacpp:prompt_tokens_seconds": "input_tok_s",
+        "llamacpp:requests_processing": "requests_running",
+        "llamacpp:requests_deferred": "requests_waiting",
+        "DCGM_FI_DEV_GPU_UTIL": "gpu_util_pct",
+        "DCGM_FI_DEV_GPU_TEMP": "gpu_temp_c",
+        "DCGM_FI_DEV_POWER_USAGE": "power_w",
+    }
+    out = {dst: round(vals[src] * (100 if dst == "kv_cache_pct" and vals[src] <= 1 else 1), 2) for src, dst in aliases.items() if src in vals}
+    out.update(_derive_metrics(vals))
+    if out:
+        out["runtime"] = "vllm" if any(k.startswith("vllm:") for k in vals) else \
+            ("llamacpp" if any(k.startswith("llamacpp:") for k in vals) else "")
+    return out
+
+
+async def site_metrics(site: dict, deps: list[dict]) -> dict:
+    """Best-effort Prometheus metrics for private deployments.
+
+    Nodes may expose vLLM/TGI style metrics at ``/metrics``.  Collection is
+    bounded and optional so an unavailable exporter never affects the dashboard.
+    DCGM(GPU 温度/功耗/利用率)只经 VictoriaMetrics；内存/显存类指标当前
+    exporter 不提供，前端按缺失渲染 —（issue #106 验收条款 3）。
+    """
+    bases = [str((d.get("litellm_params") or {}).get("api_base") or "")
+             for d in deps if dep_of_site_row(d, site)]
+    if site.get("transport", "wireguard") == "direct" and site.get("address"):
+        bases.insert(0, str(site["address"]))
+    out: dict = {}
+    for base in bases:
+        url = base.rstrip("/")
+        if url.endswith("/v1"):
+            url = url[:-3]
+        try:
+            async with httpx.AsyncClient(timeout=2, follow_redirects=False) as client:
+                r = await client.get(url + "/metrics")
+            if r.status_code != 200:
+                continue
+            vals = {}
+            for line in r.text.splitlines():
+                if line.startswith("#") or " " not in line:
+                    continue
+                name, raw = line.split(None, 1)
+                try:
+                    vals[name.split("{")[0]] = float(raw)
+                except ValueError:
+                    continue
+            out = _finish_metrics(vals)
+            if out:
+                break
+        except (httpx.HTTPError, ValueError):
+            pass
+    # Direct node access is useful for low-latency values, but the central
+    # VictoriaMetrics store is the authoritative fallback for nodes whose
+    # model endpoint is not reachable from consoled (for example gb10).
+    if VM_URL:
+        vm_out = await vm_site_metrics(str(site.get("name") or "").strip())
+        if vm_out:
+            # VM 独有字段（DCGM 温度/功耗/利用率只经 node-agent 入库）与直连值合并；
+            # 直连值更新鲜，同名字段以直连为准
+            vm_out.update(out or {})
+            return vm_out
+    return out or {}
+
+
+async def vm_query_instant(query: str, timeout: float = 3) -> dict[str, float]:
+    """一次 instant 查询，返回 {__name__: 跨序列均值}（DCGM 多 GPU / 双 vmagent 实例取均值）。"""
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        r = await client.get(VM_URL.rstrip("/") + "/api/v1/query", params={"query": query})
+    if r.status_code != 200:
+        return {}
+    result = (r.json().get("data") or {}).get("result") or []
+    acc: dict[str, list[float]] = {}
+    for s in result:
+        name = str((s.get("metric") or {}).get("__name__") or "")
+        try:
+            acc.setdefault(name, []).append(float(s.get("value", [0, 0])[1]))
+        except (TypeError, ValueError):
+            continue
+    return {k: sum(v) / len(v) for k, v in acc.items()}
+
+
+def vm_site_matcher(site_name: str) -> str:
+    """portal 站点名 → VM 标签匹配：约定 NODE_INSTANCE=<site>-llm，兼容裸站点名
+    （gb10 双 DGX 共用 site=gb10、instance=gb10-head/gb10-worker）。
+    站点名只允许 [A-Za-z0-9_-]（与 NAME_RE 同口径）；不做 re.escape——Go 正则
+    （VictoriaMetrics）不认 \\- 这类转义，遇连字符会整条查询 400。"""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", site_name or ""):
+        return '{__name__="__none__"}'
+    return '{__name__=~"' + _VM_METRIC_RE + '",site=~"^{name}(-llm)?$"}'.replace("{name}", site_name)
+
+
+async def vm_site_metrics(site_name: str) -> dict:
+    if not site_name:
+        return {}
+    matcher = vm_site_matcher(site_name)
+    try:
+        vals = await vm_query_instant(matcher)
+        if not vals:
+            # 兜底：实例标签=站点名（如 instance="gb10-head" 的非 -llm 命名）
+            vals = await vm_query_instant(
+                '{__name__=~"' + _VM_METRIC_RE + '",instance=~"^{name}(-llm)?$"}'.replace("{name}", site_name))
+        # vLLM 吞吐是计数器，无即时量表——用 5m rate 派生（TGI 风格别名进 _finish_metrics）
+        if vals and "llamacpp:predicted_tokens_seconds" not in vals \
+                and "vllm:generation_tokens_total" in vals:
+            rate = await vm_query_instant("sum(rate(vllm:generation_tokens_total" +
+                                          matcher[matcher.index("{"):] + "[5m]))")
+            if rate:
+                vals["generation_tokens_per_second"] = next(iter(rate.values()))
+            rate_in = await vm_query_instant("sum(rate(vllm:prompt_tokens_total" +
+                                             matcher[matcher.index("{"):] + "[5m]))")
+            if rate_in:
+                vals["prompt_tokens_per_second"] = next(iter(rate_in.values()))
+    except (httpx.HTTPError, ValueError, TypeError, KeyError):
+        return {}
+    return _finish_metrics(vals)
+
+
 def _dep_port(dep: dict) -> int:
     """从 api_base（http://wg_ip:port/v1）解出端口；解析失败给 0。"""
     tail = str((dep.get("litellm_params") or {}).get("api_base") or "").rsplit(":", 1)[-1]
@@ -876,19 +1077,33 @@ async def api_overview(request: Request) -> Response:
     sess = await require(request)
     if isinstance(sess, JSONResponse):
         return sess
-    logs, deps, sites, hs = await fetch_logs(), await litellm_deployments(), await onboard_sites(), wg_handshakes()
+    deps, sites, hs = await litellm_deployments(), await onboard_sites(), wg_handshakes()
     health = await direct_health(sites)
-    today = logs_since(logs, 1)
-    ok_rows = [r for r in today if r.get("status") != "failure"]
-    totals = {
-        "requests": len(today),
-        "prompt_tokens": sum(int(r.get("prompt_tokens") or 0) for r in today),
-        "completion_tokens": sum(int(r.get("completion_tokens") or 0) for r in today),
-        "cached_tokens": sum(row_cached(r) for r in today),
-        "errors": sum(1 for r in today if r.get("status") == "failure"),
-    }
+    metrics = await asyncio.gather(*(site_metrics(s, deps) for s in sites), return_exceptions=True)
+    # KPI 使用本地只读账本聚合，避免每次刷新从 LiteLLM 下载约 17 MB 的全量 spend logs。
+    # 账本暂不可用时保留旧回退路径，兼容迁移中的部署。
+    filters = await _usage_dims(request)
+    today, errors, usage_rows = [], [], []
+    try:
+        usage_start, usage_end = usage_window(1, today=True)
+        totals, _buckets, usage_rows, errors = await usage_aggregate(usage_start, usage_end, 3600, filters)
+        totals = {"requests": int(totals.get("requests", 0)),
+                  "prompt_tokens": int(totals.get("prompt_tokens", 0)),
+                  "completion_tokens": int(totals.get("completion_tokens", 0)),
+                  "cached_tokens": int(totals.get("cached_tokens", 0)),
+                  "errors": int(totals.get("failures", 0))}
+    except Exception:
+        logs = await fetch_logs()
+        today = [r for r in logs_today_calendar(logs) if valid_usage_row(r)]
+        totals = {"requests": len(today),
+                  "prompt_tokens": sum(int(r.get("prompt_tokens") or 0) for r in today),
+                  "completion_tokens": sum(int(r.get("completion_tokens") or 0) for r in today),
+                  "cached_tokens": sum(row_cached(r) for r in today),
+                  "errors": sum(1 for r in today if r.get("status") == "failure")}
     site_rows = []
-    for s in sites:
+    for s, metric in zip(sites, metrics):
+        if not isinstance(metric, dict):
+            metric = {}
         direct = s.get("transport", "wireguard") == "direct"
         ago = None if direct else hs.get(s.get("pubkey") or "", -1)
         n_deps = sum(1 for d in deps if dep_of_site_row(d, s))
@@ -898,9 +1113,15 @@ async def api_overview(request: Request) -> Response:
                  "online" if online else s["status"]
         site_rows.append({"name": s["name"], "transport": "direct" if direct else "wireguard",
                           "address": s.get("address") if direct else None, "wg_ip": None if direct else s["wg_ip"], "handshake": ago,
-                          "deployments": n_deps, "status": status})
+                          "deployments": n_deps, "status": status, "metrics": metric})
     per_dep = {}
-    for r in today:
+    dep_source = today or usage_rows
+    for r in dep_source:
+        if "requests" in r and "model" in r:
+            k = (r.get("model") or "?", r.get("model") or "?")
+            # usage_db rows are already grouped; retain the aggregate directly.
+            per_dep[k] = {"requests": int(r.get("requests") or 0), "failures": int(r.get("failures") or 0)}
+            continue
         k = (r.get("model_id") or r.get("api_base") or "?", r.get("model_group") or "?")
         agg = per_dep.setdefault(k, {"requests": 0, "failures": 0})
         agg["requests"] += 1
@@ -908,25 +1129,134 @@ async def api_overview(request: Request) -> Response:
     dep_rows = []
     for d in deps:
         k = ((d.get("model_info") or {}).get("id") or "?", d.get("model_name") or "?")
-        agg = per_dep.get(k, {"requests": 0, "failures": 0})
+        agg = per_dep.get(k) or per_dep.get((d.get("model_name") or "?", d.get("model_name") or "?"),
+                                             {"requests": 0, "failures": 0})
         state = "无流量" if agg["requests"] == 0 else ("近期异常" if agg["failures"] > 0 else "健康")
         dep_rows.append({"model": d.get("model_name"),
                          "api_base": (d.get("litellm_params") or {}).get("api_base"),
                          "rpm": (d.get("model_info") or {}).get("rpm"),
                          "tpm": (d.get("model_info") or {}).get("tpm"),
                          "state": state, **agg})
-    failures = [r for r in today if r.get("status") == "failure"]
-    recent_errors = [{"time": (r.get("startTime") or "")[:19], "key": key_last4(r),
-                      "model": r.get("model_group") or r.get("model") or "?", "detail": err_text(r)}
-                     for r in failures[-5:]][::-1]
+    if errors:
+        recent_errors = [{"time": iso_to_cst(str(r.get("startTime") or "")),
+                          "key": key_last4({"api_key": r.get("api_key")}),
+                          "model": r.get("model") or "?", "detail": r.get("detail") or "failure"}
+                         for r in errors[:5]]
+    else:
+        failures = [r for r in today if r.get("status") == "failure"]
+        recent_errors = [{"time": (r.get("startTime") or "")[:19], "key": key_last4(r),
+                          "model": r.get("model_group") or r.get("model") or "?", "detail": err_text(r)}
+                         for r in failures[-5:]][::-1]
     online_sites = sum(1 for x in site_rows if x["status"] == "online")
     healthy_deps = sum(1 for x in dep_rows if x["state"] == "健康")
-    return JSONResponse({"totals": totals,
+    return JSONResponse({"version": PORTAL_VERSION, "build": PORTAL_BUILD,
+                         "totals": totals,
                          "sites": {"online": online_sites, "total": len([s for s in sites if s["status"] != "revoked"]),
                                    "rows": site_rows},
                          "deployments": {"healthy": healthy_deps, "total": len(dep_rows), "rows": dep_rows},
                          "recent_errors": recent_errors,
                          "note": "近期错误仅覆盖已入账请求（鉴权失败不产生日志行）"})
+
+
+async def api_metrics_query(request: Request) -> Response:
+    sess = await require(request)
+    if isinstance(sess, Response):
+        return sess
+    query = request.query_params.get("query", "").strip()
+    if not query or len(query) > 500 or any(x in query for x in ("{", "}", ";")):
+        return jerr("invalid query", 400)
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            r = await client.get(VM_URL.rstrip("/") + "/api/v1/query", params={"query": query})
+        if r.status_code != 200:
+            return jerr("metrics unavailable", 502)
+        body = r.json()
+        return JSONResponse({"status": body.get("status"), "data": body.get("data", {})})
+    except (httpx.HTTPError, ValueError):
+        return jerr("metrics unavailable", 502)
+
+
+_RANGE_HOURS = {1: 60, 6: 300, 24: 600, 168: 3600}  # 窗口小时 → 步长秒（≤168 点）
+
+
+async def api_metrics_range(request: Request) -> Response:
+    """节点历史趋势（issue #106 总览/节点页折线）：白名单逻辑指标 + 站点标签闭环，
+    中心 VM 不可达时返回 502，前端保留上一帧数据并显示 —。"""
+    sess = await require(request)
+    if isinstance(sess, Response):
+        return sess
+    metric = request.query_params.get("metric", "").strip()
+    site = request.query_params.get("site", "").strip()[:120]
+    try:
+        hours = int(request.query_params.get("hours", "1"))
+    except ValueError:
+        return jerr("invalid hours", 400)
+    if metric not in LOGICAL_RANGE_METRICS or not site:
+        return jerr("invalid metric or site", 400)
+    step = _RANGE_HOURS.get(hours)
+    if not step:
+        return jerr("hours must be one of 1/6/24/168", 400)
+    matcher = vm_site_matcher(site)
+    expr = " or ".join("(" + frag.replace("{M}", matcher) + ")"
+                       for frag in LOGICAL_RANGE_METRICS[metric])
+    end = int(time.time())
+    start = end - hours * 3600
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(VM_URL.rstrip("/") + "/api/v1/query_range",
+                                 params={"query": expr, "start": start, "end": end, "step": step})
+        if r.status_code != 200:
+            return jerr("metrics unavailable", 502)
+        result = (r.json().get("data") or {}).get("result") or []
+    except (httpx.HTTPError, ValueError):
+        return jerr("metrics unavailable", 502)
+    # 单序列（or 合并后只命中一路）；跨实例多序列时按时间戳取均值
+    by_ts: dict[int, list[float]] = {}
+    for s in result:
+        for ts, v in s.get("values") or []:
+            try:
+                by_ts.setdefault(int(ts), []).append(float(v))
+            except (TypeError, ValueError):
+                continue
+    points = [[ts, round(sum(v) / len(v), 3)] for ts, v in sorted(by_ts.items())]
+    return JSONResponse({"metric": metric, "site": site, "step": step, "points": points})
+
+
+_ENDPOINT_OF = {
+    "acompletion": "/v1/chat/completions", "completion": "/v1/chat/completions",
+    "atext_completion": "/v1/completions", "text_completion": "/v1/completions",
+    "aembedding": "/v1/embeddings", "aembeddings": "/v1/embeddings",
+    "embedding": "/v1/embeddings", "embeddings": "/v1/embeddings",
+}
+
+
+def endpoint_of(row: dict) -> str:
+    return _ENDPOINT_OF.get(str(row.get("call_type") or "").lower(),
+                            "/" + str(row.get("call_type") or "other"))
+
+
+def _bucket_plan(days: float, today: bool) -> tuple[datetime, int]:
+    """返回 (窗口起点, 步长秒)。短窗口用分钟级桶，长窗口按天；标签由桶时间戳生成。"""
+    now = datetime.now().astimezone()
+    if today:
+        start = datetime.now(_CST).replace(hour=0, minute=0, second=0, microsecond=0).astimezone()
+        return start, 3600
+    if days <= 0.13:
+        step = 300
+    elif days <= 0.75:
+        step = 1800
+    elif days <= 1.6:
+        step = 3600
+    else:
+        step = 86400
+    return now - timedelta(days=days), step
+
+
+def _bucket_label(dt: datetime, step_s: int) -> str:
+    dt = dt.astimezone(_CST)
+    if step_s >= 86400:
+        return dt.strftime("%m-%d")
+    return dt.strftime("%H:%M" if step_s < 3600 else "%H:00")
 
 
 async def api_usage(request: Request) -> Response:
@@ -939,6 +1269,16 @@ async def api_usage(request: Request) -> Response:
         days = 1.0
     logs, keys = await fetch_logs(), await key_list_full()
     alias_of = {k.get("token"): k.get("key_alias") or "?" for k in keys}
+    node_filter = request.query_params.get("node", "").strip().lower()[:120]
+    model_filter = request.query_params.get("model", "").strip()[:200]
+    key_filter = request.query_params.get("key", "").strip().lower()[:200]
+    node_models: dict[str, str] = {}
+    if node_filter:
+        for dep in await litellm_deployments():
+            params = dep.get("litellm_params") or {}
+            base = str(params.get("api_base") or "").lower()
+            if node_filter in base:
+                node_models[str(dep.get("model_name") or "")] = node_filter
 
     def ak_valid(ak: str) -> bool:
         # 只统计真实调用方：sha256 哈希（用户密钥）或 master 标识；失败鉴权的脏行（nope/invalid/None…）不入表
@@ -947,10 +1287,22 @@ async def api_usage(request: Request) -> Response:
     rows_map: dict[tuple, dict] = {}
     buckets: dict[str, dict] = {}          # 趋势图桶：小时(今天)/日期(多日)
     tft_sum, tft_n, dur_sum = 0, 0, 0
+    filtered_logs = []
     for r in logs_since(logs, days):
         ak, model = str(r.get("api_key") or ""), r.get("model_group") or r.get("model") or "?"
         if not ak_valid(ak):
             continue
+        api_base = str(r.get("api_base") or "").lower()
+        alias = str(alias_of.get(ak) or "").lower()
+        key_suffix = ak[-4:].lower()
+        if model_filter and model != model_filter:
+            continue
+        if key_filter and key_filter not in alias and key_filter not in key_suffix and key_filter not in ak.lower():
+            continue
+        if node_filter and node_filter not in api_base and node_filter not in str(r.get("model_id") or "").lower() and model not in node_models:
+            continue
+        filtered_logs.append(r)
+    for r in filtered_logs:
         agg = rows_map.setdefault((ak, model), {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0,
                                                 "cached_tokens": 0, "duration_ms_sum": 0})
         agg["requests"] += 1
@@ -982,7 +1334,7 @@ async def api_usage(request: Request) -> Response:
              "total_tokens": a["prompt_tokens"] + a["completion_tokens"] + a["cached_tokens"],
              "avg_ms": round(a["duration_ms_sum"] / a["requests"]) if a["requests"] else 0, **a}
             for (ak, model), a in sorted(rows_map.items())]
-    failures = [r for r in logs_since(logs, days) if r.get("status") == "failure"]
+    failures = [r for r in filtered_logs if r.get("status") == "failure"]
     errors = [{"time": iso_to_cst(r.get("startTime") or ""), "key": key_last4(r),
                "model": r.get("model_group") or r.get("model") or "?", "detail": err_text(r)}
               for r in failures[-10:]][::-1]
@@ -1224,9 +1576,14 @@ async def api_sites_direct_probe(request: Request) -> Response:
     return JSONResponse({"address": address, "models": models})
 
 
-async def _usage_days(request: Request) -> int:
-    try: return min(max(int(request.query_params.get("days", "1")), 1), 30)
-    except ValueError: return 1
+async def _usage_days(request: Request) -> float:
+    """时间窗（天）。支持小数窗口（1h=1/24）；today 参数切换上海日历日语义。"""
+    try:
+        days = min(max(float(request.query_params.get("days", "1")), 0.005), 90)
+    except ValueError:
+        days = 1.0
+    return days
+
 
 async def usage_aliases() -> dict[str, str]:
     global _usage_alias_cache
@@ -1237,46 +1594,181 @@ async def usage_aliases() -> dict[str, str]:
     _usage_alias_cache = (time.monotonic() + USAGE_KEY_CACHE_TTL, aliases)
     return aliases
 
+
+async def _usage_key_meta() -> tuple[dict[str, str], dict[str, list[str]]]:
+    """(token→分组, 分组→token 列表)。分组在 Key metadata（LiteLLM 建键时写入）。"""
+    keys = await key_list_full()
+    group_of: dict[str, str] = {}
+    by_group: dict[str, list[str]] = {}
+    for k in keys:
+        token = k.get("token") or ""
+        group = str((k.get("metadata") or {}).get("group") or "default")
+        group_of[token] = group
+        by_group.setdefault(group, []).append(token)
+    return group_of, by_group
+
+
+async def _usage_dims(request: Request) -> dict:
+    """用量页/明细页的公共维度解析：SQL 过滤参数。
+    节点=部署关联解析（与 PR #104 /usage 口径一致）；分组=Key metadata。"""
+    filters: dict = {}
+    model = request.query_params.get("model", "").strip()[:200]
+    if model and model != "all":
+        filters["model"] = model
+    node = request.query_params.get("node", "").strip()[:120]
+    if node and node != "all":
+        sites, deps = await onboard_sites(), await litellm_deployments()
+        target = next((s for s in sites if s["name"].lower() == node.lower()), None)
+        if target is None:
+            filters["api_bases"] = ["\x00不可能匹配"]      # 未知站点 → 空结果集而非全量
+        else:
+            api_bases = [str((d.get("litellm_params") or {}).get("api_base") or "")
+                         for d in deps if dep_of_site_row(d, target)]
+            if target.get("transport", "wireguard") == "direct" and target.get("address"):
+                api_bases.append(str(target["address"]))
+            filters["api_bases"] = api_bases or ["\x00不可能匹配"]
+    endpoint = request.query_params.get("endpoint", "").strip()[:60]
+    call_types = [ct for ct, ep in _ENDPOINT_OF.items() if ep == endpoint]
+    if endpoint and endpoint != "all" and call_types:
+        filters["call_types"] = call_types
+    group = request.query_params.get("group", "").strip()[:80]
+    if group and group != "all":
+        _, by_group = await _usage_key_meta()
+        filters["api_keys"] = by_group.get(group) or ["\x00不可能匹配"]
+    key = request.query_params.get("key", "").strip().lower()
+    if key and key != "all":
+        filters["key_suffix"] = key[-4:]
+    return filters
+
+
+async def _usage_node_map() -> dict[str, str]:
+    """api_base → 站点名（行级标注节点/端点维度用）。"""
+    sites, deps = await onboard_sites(), await litellm_deployments()
+    base_to_site: dict[str, str] = {}
+    for s in sites:
+        for dep in deps:
+            if dep_of_site_row(dep, s):
+                base_to_site[str((dep.get("litellm_params") or {}).get("api_base") or "")] = s["name"]
+        if s.get("transport", "wireguard") == "direct" and s.get("address"):
+            base_to_site[str(s["address"])] = s["name"]
+    return base_to_site
+
+
 async def api_usage(request: Request) -> Response:
     sess = await require(request)
     if isinstance(sess, JSONResponse): return sess
+    days = await _usage_days(request)
+    today = request.query_params.get("today", "") in ("1", "true")
+    filters = await _usage_dims(request)
+    # 趋势桶步长随窗口自适应（issue #106：15m→1min、1h→5min、6h→30min、24h/今天→1h、7d→天）；
+    # gran=hour|day 显式覆盖（用量页粒度切换）
+    gran = request.query_params.get("gran", "").strip()[:10]
+    if gran == "hour":
+        step = 3600
+    elif gran == "day":
+        step = 86400
+    elif today:
+        step = 3600
+    elif days <= 0.02:
+        step = 60
+    elif days <= 0.13:
+        step = 300
+    elif days <= 0.75:
+        step = 1800
+    elif days <= 1.6:
+        step = 3600
+    else:
+        step = 86400
+    start, end = usage_window(days, today=today)
     try:
-        days = await _usage_days(request)
-        totals, buckets, rows, errors = await usage_aggregate(days)
+        totals, buckets, rows, errors = await usage_aggregate(start, end, step, filters)
     except Exception as exc:
         return jerr(f"usage database unavailable: {exc}", 502)
     aliases = await usage_aliases()
+    group_of, _ = await _usage_key_meta()
+    base_to_site = await _usage_node_map()
+
     def alias(k): return aliases.get(k) or ("管理员（master key）" if k == "litellm_proxy_master_key" else "已删除密钥")
+    def node_of(base): return base_to_site.get(str(base or ""), "未知节点")
     out, per_key = [], {}
     for r in rows:
         api_key = r.pop("api_key")
         r["key"], r["alias"] = str(api_key)[-4:], alias(api_key)
+        r["group"] = group_of.get(api_key, "default")
+        r["node"] = node_of(r.pop("api_base"))
+        r["endpoint"] = _ENDPOINT_OF.get(str(r.pop("call_type") or "").lower(), "/v1/other")
         r["total_tokens"] = r["prompt_tokens"] + r["completion_tokens"] + r["cached_tokens"]
         per_key[r["alias"]] = per_key.get(r["alias"], 0) + r["requests"]; out.append(r)
-    hourly = {(datetime.fromisoformat(x["b"]).strftime("%H:00" if days == 1 else "%m-%d")): {k:v for k,v in x.items() if k != "b"} | {"label": datetime.fromisoformat(x["b"]).strftime("%H:00" if days == 1 else "%m-%d")} for x in buckets}
-    now = datetime.now(_CST); labels = [f"{i:02d}:00" for i in range(24)] if days == 1 else [(now - timedelta(days=i)).strftime("%m-%d") for i in range(days-1,-1,-1)]
-    empty = {"reqs":0,"in":0,"out":0,"cache":0,"avg_tft":0}
+    # 趋势桶：从窗口起点按步长铺满（空桶补零，前端直接画）
+    def bucket_label(b):
+        dt = datetime.fromisoformat(str(b)).replace(tzinfo=timezone.utc).astimezone(_CST)
+        return dt.strftime("%m-%d") if step >= 86400 else dt.strftime("%H:%M" if step < 3600 else "%H:00")
+    def bucket_key(v):
+        dt = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    by_label = {bucket_key(x["b"]): x for x in buckets}
+    start_local = datetime.fromisoformat(str(start)).replace(tzinfo=timezone.utc).astimezone()
+    now_local = datetime.now().astimezone()
+    # 日历日语义（today=1 或 days=1）铺满全天 24 小时（空桶补零），与旧契约一致
+    fill_until = now_local
+    if today or abs(days - 1.0) < 1e-9:
+        fill_until = start_local + timedelta(days=1) - timedelta(seconds=step)
+    hourly, cur_local = [], start_local
+    if step < 86400:
+        cur_local = start_local.replace(second=0, microsecond=0)
+    while cur_local <= fill_until:
+        key = cur_local.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        label = cur_local.astimezone(_CST).strftime("%m-%d" if step >= 86400 else ("%H:%M" if step < 3600 else "%H:00"))
+        x = by_label.get(key) or {}
+        hourly.append({"label": label, "reqs": x.get("reqs", 0), "in": x.get("in", 0),
+                       "out": x.get("out", 0), "cache": x.get("cache", 0), "avg_tft": x.get("avg_tft", 0)})
+        cur_local += timedelta(seconds=step)
     return JSONResponse({"totals": totals, "rows": out, "per_key": sorted(per_key.items(), key=lambda x:-x[1]),
-      "hourly": [hourly.get(x, {**empty,"label":x}) for x in labels],
+      "hourly": hourly,
       "errors": [{"time": iso_to_cst(str(x["startTime"])),"key":key_last4({"api_key":x["api_key"]}),"model":x["model"],"detail":x["detail"]} for x in errors]})
 
 async def api_usage_logs(request: Request) -> Response:
     sess = await require(request)
     if isinstance(sess, JSONResponse): return sess
-    try: limit = min(max(int(request.query_params.get("limit", "20")), 1), 50)
+    # 新用量页单次拉全量（上限 2000，客户端过滤/分页/导出）；旧明细表仍走游标分页（limit≤50）
+    try: limit = min(max(int(request.query_params.get("limit", "20")), 1), 2000)
     except ValueError: limit = 20
     key_suffix = request.query_params.get("key", "")
-    if len(key_suffix) != 4:
+    if key_suffix and key_suffix != "all":
+        key_suffix = key_suffix[-4:]
+    else:
+        key_suffix = ""
+    if len(key_suffix) not in (0, 4):
         key_suffix = ""
     model = request.query_params.get("model", "")[:200]
-    try: rows, next_cursor = await usage_logs(
-        await _usage_days(request), request.query_params.get("cursor", ""), limit,
-        key_suffix=key_suffix, model=model)
+    if model == "all":
+        model = ""
+    status = request.query_params.get("status", "")[:10]
+    q = request.query_params.get("q", "")[:200]
+    from_s, to_s = request.query_params.get("from", "")[:32], request.query_params.get("to", "")[:32]
+    range_from = _aware_dt(from_s) if from_s else None
+    range_to = _aware_dt(to_s) if to_s else None
+    filters = await _usage_dims(request)
+    try:
+        rows, next_cursor = await usage_logs(
+            await _usage_days(request), request.query_params.get("cursor", ""), limit,
+            key_suffix=key_suffix, model=model, filters=filters, status=status, q=q,
+            range_from=range_from, range_to=range_to)
     except Exception as exc: return jerr(f"usage database unavailable: {exc}", 502)
     aliases = await usage_aliases()
+    group_of, _ = await _usage_key_meta()
+    base_to_site = await _usage_node_map()
     for r in rows:
-        ak=r.pop("api_key"); r["ts"]=iso_to_cst(str(r.pop("startTime"))); r["key"]=key_last4({"api_key":ak}); r["alias"]=aliases.get(ak) or ("管理员（master key）" if ak=="litellm_proxy_master_key" else "已删除密钥"); r["status"]="failure" if r["status"]=="failure" else "ok"
-    return JSONResponse({"logs":rows,"next_cursor":next_cursor,"has_more":bool(next_cursor)})
+        ak=r.pop("api_key")
+        node = base_to_site.get(str(r.pop("api_base") or ""), "未知节点")
+        endpoint = _ENDPOINT_OF.get(str(r.pop("call_type") or "").lower(), "/v1/other")
+        r["ts"]=iso_to_cst(str(r.pop("startTime"))); r["key"]=key_last4({"api_key":ak})
+        r["alias"]=aliases.get(ak) or ("管理员（master key）" if ak=="litellm_proxy_master_key" else "已删除密钥")
+        r["group"]=group_of.get(ak, "default"); r["node"]=node; r["endpoint"]=endpoint
+        r["status"]="failure" if r["status"]=="failure" else "ok"
+    return JSONResponse({"logs": rows[:2000], "count": len(rows),
+                         "next_cursor": next_cursor, "has_more": bool(next_cursor)})
 
 async def api_sites_revoke(request: Request) -> Response:
     sess = await require(request)
@@ -2669,6 +3161,8 @@ api_routes = [
     Route("/console/api/logout", api_logout, methods=["POST"]),
     Route("/console/api/me", api_me, methods=["GET"]),
     Route("/console/api/overview", api_overview, methods=["GET"]),
+    Route("/console/api/metrics/query", api_metrics_query, methods=["GET"]),
+    Route("/console/api/metrics/range", api_metrics_range, methods=["GET"]),
     Route("/console/api/usage", api_usage, methods=["GET"]),
     Route("/console/api/usage/logs", api_usage_logs, methods=["GET"]),
     Route("/console/api/sites", api_sites, methods=["GET"]),

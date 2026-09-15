@@ -2,6 +2,8 @@
    远程模型网关控制台（live）· 壳注入 + 会话守卫 + 交互助手
    由高保真原型 assets/portal.js 接线改造：导航表与助手函数保持，
    会话分为管理员（邮箱+密码+可选 TOTP）与用户虚拟 Key 两种角色。
+   issue #106：深/浅双主题（localStorage 持久化，?theme=light|dark 优先）
+   与分组导航（监控 / 资源 / 系统 / 个人）。
    契约：
    - 页面写 <body data-page="key"> + <template id="page">；本脚本注入侧边栏/顶栏。
    - 页面业务脚本等待 window.pfReady（会话就绪，resolve {role, alias, ...}）。
@@ -12,6 +14,30 @@
 (function () {
   'use strict';
   var API = '/console/api';
+
+  /* Page modules use timers for polling. Track them so SPA navigation can
+     dispose the old module instead of letting hidden pages keep refreshing. */
+  var nativeSetInterval = window.setInterval.bind(window);
+  var nativeClearInterval = window.clearInterval.bind(window);
+  var nativeSetTimeout = window.setTimeout.bind(window);
+  var nativeClearTimeout = window.clearTimeout.bind(window);
+  var pageIntervals = [], pageTimeouts = [];
+  window.setInterval = function (fn, ms) {
+    var id = nativeSetInterval(fn, ms); pageIntervals.push(id); return id;
+  };
+  window.clearInterval = function (id) {
+    nativeClearInterval(id); pageIntervals = pageIntervals.filter(function (x) { return x !== id; });
+  };
+  window.setTimeout = function (fn, ms) {
+    var id = nativeSetTimeout(fn, ms); pageTimeouts.push(id); return id;
+  };
+  window.clearTimeout = function (id) {
+    nativeClearTimeout(id); pageTimeouts = pageTimeouts.filter(function (x) { return x !== id; });
+  };
+  function disposePage() {
+    pageIntervals.forEach(nativeClearInterval); pageIntervals = [];
+    pageTimeouts.forEach(nativeClearTimeout); pageTimeouts = [];
+  }
 
   /* ---------- 数据请求助手 ---------- */
   async function pfApi(method, path, body) {
@@ -28,29 +54,50 @@
   }
   window.pfApi = pfApi;
 
-  /* ---------- 导航表（key → 标题 → 文件 → 图标） ---------- */
+  /* ---------- 主题（深色指挥中心 / 浅色经典后台） ----------
+     页面 <head> 的内联片段已先行设置 data-theme 防闪烁；这里只提供切换与持久化。 */
+  function pfTheme(t) {
+    if (t) {
+      document.documentElement.setAttribute('data-theme', t);
+      try { localStorage.setItem('llm-portal-theme', t); } catch (e) { /* 隐私模式 */ }
+    }
+    return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  }
+  window.pfTheme = pfTheme;
+
+  /* ---------- 导航表（分组 → key → 标题 → 文件 → 图标） ---------- */
   function icon(paths) {
     return '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' + paths + '</svg>';
   }
-  var NAV = [
-    { key: 'dashboard', title: '仪表盘', file: 'index.html', admin: true,
-      icon: icon('<rect x="1.8" y="1.8" width="5.2" height="5.2" rx="1"/><rect x="9" y="1.8" width="5.2" height="5.2" rx="1"/><rect x="1.8" y="9" width="5.2" height="5.2" rx="1"/><rect x="9" y="9" width="5.2" height="5.2" rx="1"/>') },
-    { key: 'sites', title: '站点与公钥', file: 'sites.html', admin: true,
-      icon: icon('<circle cx="4.6" cy="4.6" r="2.4"/><circle cx="11.4" cy="11.4" r="2.4"/><path d="M6.4 6.4l3.2 3.2"/><path d="M2.4 11.4h2.8M11.4 1.8v2.8"/>') },
-    { key: 'groups', title: '分组', file: 'groups.html', admin: true,
-      icon: icon('<rect x="1.8" y="3.4" width="7.4" height="7.4" rx="1.2"/><rect x="6.8" y="6" width="7.4" height="7.4" rx="1.2"/>') },
-    { key: 'models', title: '模型与别名', file: 'models.html', admin: true,
-      icon: icon('<path d="M1.8 4.5h3.4l5 7h4"/><path d="M1.8 11.5h3.4M10.2 4.5h4"/><path d="M12.4 2.7l1.8 1.8-1.8 1.8M12.4 9.7l1.8 1.8-1.8 1.8"/>') },
-    { key: 'keys', title: '用户 Key', file: 'keys.html', admin: true,
-      icon: icon('<circle cx="5" cy="8" r="2.6"/><path d="M7.6 8h6.6M11.4 8v2.4M14.2 8v1.7"/>') },
-    { key: 'usage', title: '用量总览', file: 'usage.html', admin: true,
-      icon: icon('<path d="M2.4 13.6V8.4M6.4 13.6V4.4M10.4 13.6V6.8M14 13.6V2.4"/>') },
-    { key: 'my-usage', title: '我的用量', file: 'my-usage.html', admin: false,
-      icon: icon('<circle cx="8" cy="5.4" r="2.6"/><path d="M2.6 14c0-2.9 2.4-4.6 5.4-4.6s5.4 1.7 5.4 4.6"/>') },
-    { key: 'mcp', title: 'MCP 管理', file: 'mcp.html', admin: true,
-      icon: icon('<rect x="1.8" y="3" width="12.4" height="10" rx="1.4"/><path d="M4.6 6.4l2 1.8-2 1.8M8.6 10h2.8"/>') },
-    { key: 'security', title: '安全设置', file: '2fa.html', admin: true,
-      icon: icon('<path d="M8 1.8l4.6 1.8v3.6c0 3-1.9 5.6-4.6 6.8-2.7-1.2-4.6-3.8-4.6-6.8V3.6z"/><path d="M5.9 8l1.5 1.5 2.7-2.7"/>') }
+  var NAV_GROUPS = [
+    { group: '监控', items: [
+      { key: 'dashboard', title: '总览', file: 'index.html', admin: true,
+        icon: icon('<rect x="1.8" y="1.8" width="5.2" height="5.2" rx="1"/><rect x="9" y="1.8" width="5.2" height="5.2" rx="1"/><rect x="1.8" y="9" width="5.2" height="5.2" rx="1"/><rect x="9" y="9" width="5.2" height="5.2" rx="1"/>') },
+      { key: 'nodes', title: '节点性能', file: 'nodes.html', admin: true,
+        icon: icon('<circle cx="4" cy="4" r="2.2"/><circle cx="12" cy="4" r="2.2"/><circle cx="8" cy="12" r="2.2"/><path d="M5.8 5.3 7 10M10.2 5.3 9 10M6.2 4h3.6"/>') },
+      { key: 'usage', title: '请求与用量', file: 'usage.html', admin: true,
+        icon: icon('<path d="M2.4 13.6V8.4M6.4 13.6V4.4M10.4 13.6V6.8M14 13.6V2.4"/>') }
+    ] },
+    { group: '资源', items: [
+      { key: 'sites', title: '站点与公钥', file: 'sites.html', admin: true,
+        icon: icon('<circle cx="4.6" cy="4.6" r="2.4"/><circle cx="11.4" cy="11.4" r="2.4"/><path d="M6.4 6.4l3.2 3.2"/><path d="M2.4 11.4h2.8M11.4 1.8v2.8"/>') },
+      { key: 'groups', title: '分组', file: 'groups.html', admin: true,
+        icon: icon('<rect x="1.8" y="3.4" width="7.4" height="7.4" rx="1.2"/><rect x="6.8" y="6" width="7.4" height="7.4" rx="1.2"/>') },
+      { key: 'models', title: '模型与别名', file: 'models.html', admin: true,
+        icon: icon('<path d="M1.8 4.5h3.4l5 7h4"/><path d="M1.8 11.5h3.4M10.2 4.5h4"/><path d="M12.4 2.7l1.8 1.8-1.8 1.8M12.4 9.7l1.8 1.8-1.8 1.8"/>') },
+      { key: 'keys', title: '用户 Key', file: 'keys.html', admin: true,
+        icon: icon('<circle cx="5" cy="8" r="2.6"/><path d="M7.6 8h6.6M11.4 8v2.4M14.2 8v1.7"/>') },
+      { key: 'mcp', title: 'MCP 管理', file: 'mcp.html', admin: true,
+        icon: icon('<rect x="1.8" y="3" width="12.4" height="10" rx="1.4"/><path d="M4.6 6.4l2 1.8-2 1.8M8.6 10h2.8"/>') }
+    ] },
+    { group: '系统', items: [
+      { key: 'security', title: '安全设置', file: '2fa.html', admin: true,
+        icon: icon('<path d="M8 1.8l4.6 1.8v3.6c0 3-1.9 5.6-4.6 6.8-2.7-1.2-4.6-3.8-4.6-6.8V3.6z"/><path d="M5.9 8l1.5 1.5 2.7-2.7"/>') }
+    ] },
+    { group: '个人', items: [
+      { key: 'my-usage', title: '我的用量', file: 'my-usage.html', admin: false,
+        icon: icon('<circle cx="8" cy="5.4" r="2.6"/><path d="M2.6 14c0-2.9 2.4-4.6 5.4-4.6s5.4 1.7 5.4 4.6"/>') }
+    ] }
   ];
 
   /* ---------- 会话守卫 + 壳注入 ---------- */
@@ -73,11 +120,15 @@
 
     var current = null;
     var navHtml = '';
-    NAV.forEach(function (n) {
-      if (sess.role !== 'admin' && n.admin) return;
-      var active = n.key === pageKey;
-      if (active) current = n;
-      navHtml += '<a class="pf-nav-item' + (active ? ' active' : '') + '" href="' + n.file + '">' + n.icon + '<span>' + n.title + '</span></a>';
+    NAV_GROUPS.forEach(function (g) {
+      var items = g.items.filter(function (n) { return sess.role === 'admin' || !n.admin; });
+      if (!items.length) return;
+      navHtml += '<div class="pf-nav-group">' + g.group + '</div>';
+      items.forEach(function (n) {
+        var active = n.key === pageKey;
+        if (active) current = n;
+        navHtml += '<a class="pf-nav-item' + (active ? ' active' : '') + '" href="' + n.file + '">' + n.icon + '<span>' + n.title + '</span></a>';
+      });
     });
     var title = current ? current.title : '远程模型网关';
     var who = sess.role === 'admin' ? '管理员' : (sess.alias || '用户');
@@ -101,7 +152,9 @@
       '<div class="pf-main">' +
         '<header class="pf-topbar">' +
           '<div class="pf-topbar-title">' + title + '</div>' +
-          '<div class="pf-topbar-right"><span class="pf-avatar">' + (sess.role === 'admin' ? 'A' : 'U') + '</span></div>' +
+          '<div class="pf-topbar-right"><span class="pf-build">v' + (sess.version || 'dev') + ' · ' + (sess.build || 'unknown').slice(0, 12) + '</span>' +
+          '<button class="pf-theme-btn" id="pf-theme" type="button" title="切换浅色 / 深色主题（localStorage 持久化）">☀</button>' +
+          '<span class="pf-avatar">' + (sess.role === 'admin' ? 'A' : 'U') + '</span></div>' +
         '</header>' +
         '<main class="pf-content"></main>' +
       '</div>';
@@ -110,10 +163,77 @@
     content.appendChild(tpl.content);
     tpl.remove();
     document.body.insertBefore(layout, document.body.firstChild);
+    var themeBtn = layout.querySelector('#pf-theme');
+    function syncThemeBtn() { themeBtn.textContent = pfTheme() === 'light' ? '🌙' : '☀'; }
+    syncThemeBtn();
+    themeBtn.addEventListener('click', function () {
+      pfTheme(pfTheme() === 'light' ? 'dark' : 'light');
+      syncThemeBtn();
+      document.dispatchEvent(new CustomEvent('pftheme'));
+    });
+    layout.querySelectorAll('.pf-nav-item').forEach(function (link) {
+      link.addEventListener('click', function (e) {
+        e.preventDefault();
+        navigatePage(link.getAttribute('href'), true);
+      });
+    });
     layout.querySelector('#pf-logout').addEventListener('click', async function () {
       try { await pfApi('POST', '/logout'); } catch (e) { /* 忽略 */ }
       location.href = '/console/login.html';
     });
+  }
+
+  var navigationBusy = false;
+  async function navigatePage(file, push) {
+    if (navigationBusy) return;
+    var target = new URL(file, location.href);
+    if (target.pathname === location.pathname && !target.search) return;
+    navigationBusy = true;
+    try {
+      var r = await fetch(target.href, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+      if (!r.ok) throw new Error('页面加载失败（' + r.status + '）');
+      var html = await r.text();
+      var parsed = new DOMParser().parseFromString(html, 'text/html');
+      var tpl = parsed.getElementById('page');
+      var pageKey = parsed.body && parsed.body.dataset.page;
+      if (!tpl || !pageKey) throw new Error('页面结构无效');
+      var content = document.querySelector('.pf-content');
+      if (!content) throw new Error('控制台壳未初始化');
+      window.dispatchEvent(new CustomEvent('pfpagehide'));
+      disposePage();
+      content.replaceChildren(document.importNode(tpl.content, true));
+      document.body.dataset.page = pageKey;
+      var item = null;
+      NAV_GROUPS.some(function (g) { return g.items.some(function (n) {
+        if (n.key === pageKey) { item = n; return true; } return false;
+      }); });
+      document.querySelectorAll('.pf-nav-item').forEach(function (n) {
+        n.classList.toggle('active', !!item && n.getAttribute('href') === item.file);
+      });
+      var title = document.querySelector('.pf-topbar-title');
+      if (title && item) title.textContent = item.title;
+      document.title = parsed.title || document.title;
+      /* Load page-only dependencies once, then run its inline module. */
+      var scripts = Array.prototype.slice.call(parsed.querySelectorAll('script'));
+      for (var i = 0; i < scripts.length; i++) {
+        var src = scripts[i].getAttribute('src');
+        if (src) {
+          if (src.indexOf('portal.js') >= 0 || (src.indexOf('echarts') >= 0 && window.echarts)) continue;
+          await new Promise(function (resolve, reject) {
+            var s = document.createElement('script'); s.src = new URL(src, target.href).href;
+            s.onload = resolve; s.onerror = reject; document.head.appendChild(s);
+          });
+        } else if (scripts[i].textContent.trim()) {
+          new Function(scripts[i].textContent)();
+        }
+      }
+      document.querySelectorAll('.pf-tabs').forEach(function (bar) { pfTabs(bar); });
+      initCodeBlocks();
+      if (push) history.pushState({ page: pageKey }, '', target.href);
+      window.scrollTo(0, 0);
+    } catch (e) {
+      pfErr(e.message || '页面加载失败');
+    } finally { navigationBusy = false; }
   }
 
   /* ---------- 遮罩 + 抽屉/弹窗 ---------- */
@@ -172,7 +292,7 @@
     if (!toastBox) pfToast('');
     var t = document.createElement('div');
     t.className = 'pf-toast';
-    t.innerHTML = '<span class="pf-toast-icon" style="color:#c0392b">✕</span><span></span>';
+    t.innerHTML = '<span class="pf-toast-icon" style="background:var(--red)">✕</span><span></span>';
     t.lastElementChild.textContent = msg || '操作失败';
     toastBox.appendChild(t);
     requestAnimationFrame(function () { t.classList.add('show'); });
@@ -259,6 +379,9 @@
         initCodeBlocks();
         initDelegation();
         sessionResolve(sess);
+        window.addEventListener('popstate', function () {
+          navigatePage(location.pathname.split('/').pop() || 'index.html', false);
+        });
       } catch (e) { /* 已跳转 login 或失败静默 */ }
     } else {
       initCodeBlocks();

@@ -1,0 +1,47 @@
+services:
+  dcgm-exporter:
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:4.4.1-4.6.0-ubuntu22.04
+    container_name: private-llm-dcgm-exporter
+    restart: unless-stopped
+    # GPU via device reservation instead of `runtime: nvidia`: hosts running the
+    # toolkit in CDI mode (no nvidia runtime registered) still get the GPU.
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: utility
+    cap_add:
+      - SYS_ADMIN
+    network_mode: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    # Exporter is scraped locally by vmagent; do not expose its unauthenticated
+    # HTTP endpoint on the WireGuard/LAN interfaces.
+    command: ["-a", "127.0.0.1:9400"]
+
+  vmagent:
+    image: victoriametrics/vmagent:v1.127.0
+    container_name: private-llm-node-vmagent
+    restart: unless-stopped
+    # prometheus.yml uses VictoriaMetrics `%{VAR}` placeholders, which resolve
+    # from these env vars (Prometheus-style ${VAR} is NOT substituted by VM).
+    environment:
+      SITE_NAME: ${SITE_NAME:?set SITE_NAME}
+      NODE_INSTANCE: ${NODE_INSTANCE:?set NODE_INSTANCE}
+      LLM_METRICS_PORT: ${LLM_METRICS_PORT:?set LLM_METRICS_PORT}
+    command:
+      - -promscrape.config=/etc/vmagent/prometheus.yml
+      - -remoteWrite.url=${VM_REMOTE_WRITE_URL:?set VM_REMOTE_WRITE_URL}
+      - -remoteWrite.tmpDataPath=/vmagent-data
+      - -remoteWrite.maxDiskUsagePerURL=2GB
+      - -httpListenAddr=127.0.0.1:8429
+    volumes:
+      - ./prometheus.yml:/etc/vmagent/prometheus.yml:ro
+      - vmagent-data:/vmagent-data
+    network_mode: host
+
+volumes:
+  vmagent-data:

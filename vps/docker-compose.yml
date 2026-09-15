@@ -138,6 +138,9 @@ services:
     environment:
       LITELLM_BASE: http://litellm:4000
       ONBOARDD_URL: http://private-llm-onboardd:8100
+      VM_URL: http://victoriametrics:8428
+      PORTAL_VERSION: ${PORTAL_VERSION:-dev}
+      PORTAL_BUILD: ${PORTAL_BUILD:-unknown}
       MCP_HUB_URL: http://private-llm-mcp-hub:8200
       MCP_HUB_READY_TIMEOUT: ${MCP_HUB_READY_TIMEOUT:-45}
       MCP_HUB_READY_POLL_INTERVAL: ${MCP_HUB_READY_POLL_INTERVAL:-0.5}
@@ -167,6 +170,20 @@ services:
     networks:
       - default
       - shared
+
+  # VictoriaMetrics：单节点时序存储，指标保留 30 天；仅在内部 compose 网络提供服务。
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.127.0
+    container_name: private-llm-victoriametrics
+    restart: unless-stopped
+    command: ["-storageDataPath=/storage", "-retentionPeriod=30d", "-selfScrapeInterval=30s"]
+    volumes:
+      - vmdata:/storage
+    ports:
+      # 接收私有节点 vmagent 的 WireGuard remote_write；不暴露公网。
+      - "10.77.0.1:8428:8428"
+    networks:
+      - default
 
   wireguard:
     build: ./wireguard
@@ -215,6 +232,7 @@ services:
 
 volumes:
   pgdata:
+  vmdata:
 
 networks:
   # 对外入口网络：standalone 模式 deploy.sh 自动创建（默认 private-llm-edge）；

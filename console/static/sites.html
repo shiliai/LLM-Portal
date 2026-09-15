@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1"><script>try{var q=new URLSearchParams(location.search).get("theme");var t=(q==="light"||q==="dark")?q:(localStorage.getItem("llm-portal-theme")||"dark");document.documentElement.setAttribute("data-theme",t);}catch(e){document.documentElement.setAttribute("data-theme","dark")}</script>
 <title>站点与公钥 · 远程模型网关</title>
 <link rel="stylesheet" href="assets/portal.css">
 <link rel="icon" href="favicon.ico" sizes="16x16 32x32 48x48">
@@ -48,7 +48,7 @@
         <div class="pf-form-row">
           <label class="req">站点名</label>
           <div>
-            <input class="pf-input mono" id="addsite-name" placeholder="例：shenzhen-lab">
+            <input class="pf-input mono" id="addsite-name" placeholder="例：gpu-site">
             <div class="pf-desc">仅字母/数字/-/_，将出现在站点列表与调用日志中。</div>
           </div>
         </div>
@@ -95,7 +95,7 @@
           此命令 <strong id="addsite-ttl">限时</strong>、仅可使用一次；过期或复用后返回 403，需重新生成。剩余有效时间：<span class="pf-key" id="addsite-countdown">--:--</span>
         </div>
         <div class="pf-code"><pre id="addsite-cmd"></pre></div>
-        <div class="pf-desc" style="margin-top:12px">在站点机器上以具备 sudo 权限且可出站 UDP 的账户执行以上命令。<span class="mono">install.sh</span> 将自动完成：生成 WireGuard 密钥对（私钥不离开该机器）→ 注册公钥 → 建立隧道 → <span class="mono">systemctl enable --now wg-quick@wg0</span> 自启 → 模型端口连通性自检并回显结果；全绿后模型立即进入路由池。</div>
+        <div class="pf-desc" style="margin-top:12px">在站点机器上以具备 sudo 权限且可出站 UDP 的账户执行以上命令。<span class="mono">install.sh</span> 将自动完成：生成 WireGuard 密钥对（私钥不离开该机器）→ 注册公钥 → 建立隧道 → 启用隧道服务自启 → 模型端口连通性自检并回显结果；全绿后模型立即进入路由池。</div>
       </div>
 
     </div>
@@ -198,7 +198,7 @@
   </div>
 
 </template>
-<script src="assets/portal.js"></script>
+<script src="assets/portal.js?v=20260914-spa"></script>
 <script>
 (function () {
   'use strict';

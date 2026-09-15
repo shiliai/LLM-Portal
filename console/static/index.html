@@ -2,8 +2,8 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>仪表盘 · 远程模型网关</title>
+<meta name="viewport" content="width=device-width,initial-scale=1"><script>try{var q=new URLSearchParams(location.search).get("theme");var t=(q==="light"||q==="dark")?q:(localStorage.getItem("llm-portal-theme")||"dark");document.documentElement.setAttribute("data-theme",t);}catch(e){document.documentElement.setAttribute("data-theme","dark")}</script>
+<title>总览 · 远程模型网关</title>
 <link rel="stylesheet" href="assets/portal.css">
 <link rel="icon" href="favicon.ico" sizes="16x16 32x32 48x48">
 <link rel="icon" href="assets/brand/favicon.svg" type="image/svg+xml" sizes="any">
@@ -13,110 +13,71 @@
 <body data-page="dashboard">
 <template id="page">
 
-  <!-- 统计卡行 -->
-  <div class="pf-grid cols-4">
-    <div class="pf-stat">
-      <div class="pf-stat-label">今日请求</div>
-      <div class="pf-stat-value" id="stat-req">—</div>
-      <div class="pf-stat-sub" id="stat-req-sub">加载中…</div>
-    </div>
-    <div class="pf-stat">
-      <div class="pf-stat-label">Token 消耗（今日）</div>
-      <div class="pf-stat-value" id="stat-token">—</div>
-      <div class="pf-stat-sub" id="stat-token-sub">&nbsp;</div>
-    </div>
-    <div class="pf-stat">
-      <div class="pf-stat-label">站点隧道</div>
-      <div class="pf-stat-value" id="stat-sites">—</div>
-      <div class="pf-stat-sub" id="stat-sites-sub">&nbsp;</div>
-    </div>
-    <div class="pf-stat">
-      <div class="pf-stat-label">模型部署状态</div>
-      <div class="pf-stat-value" id="stat-deps">—</div>
-      <div class="pf-stat-sub" id="stat-deps-sub">&nbsp;</div>
+  <div class="pf-toolbar" id="ov-toolbar">
+    <div class="pf-tb-item"><label>时间窗口</label><div class="pf-seg" id="ov-win">
+      <button data-win="0.010417">15分钟</button>
+      <button data-win="0.041667" class="on">1小时</button>
+      <button data-win="0.25">6小时</button>
+      <button data-win="0.9999">24小时</button>
+      <button data-win="7">7天</button>
+    </div></div>
+    <div class="pf-tb-item"><label>节点</label><select class="pf-select" id="ov-node"><option value="">全部节点</option></select></div>
+    <div class="pf-tb-item"><label>模型</label><select class="pf-select" id="ov-model"><option value="">全部模型</option></select></div>
+    <div class="pf-tb-item"><label>Key</label><select class="pf-select" id="ov-key"><option value="">全部 Key</option></select></div>
+    <div class="pf-tb-right">
+      <span class="pf-tb-item"><label>自动刷新</label><label class="pf-switch" title="按所选间隔自动更新"><input type="checkbox" id="ov-auto" checked><span></span></label></span>
+      <div class="pf-seg" id="ov-interval">
+        <button data-int="10" class="on">10s</button><button data-int="15">15s</button>
+        <button data-int="30">30s</button><button data-int="60">60s</button>
+      </div>
+      <span>最近更新 <span id="ov-last" style="color:var(--accent)">--:--:--</span></span>
+      <span>下次刷新 <span id="ov-cd" style="color:var(--amber)">10s</span></span>
+      <button class="pf-btn primary" id="ov-refresh" type="button">⟳ 刷新</button>
     </div>
   </div>
 
-  <div class="pf-grid main-side">
-    <!-- 站点隧道状态 -->
+  <div class="pf-kpi-row" id="ov-kpis" style="grid-template-columns:repeat(7,1fr)"></div>
+
+  <div class="pf-grid" style="grid-template-columns:1.7fr 1fr;margin-bottom:12px">
     <div class="pf-card">
-      <div class="pf-card-head">
-        <div class="pf-card-title">站点隧道状态</div>
-        <div class="pf-card-extra"><a href="sites.html">管理站点 ›</a></div>
-      </div>
-      <div id="site-rows"></div>
+      <div class="pf-card-head"><div class="pf-card-title">输出速度趋势 · tok/s</div><div class="pf-card-extra pf-panel-tag" id="ov-speed-tag">按节点</div></div>
+      <div id="ch-speed" class="pf-chart h240"></div>
     </div>
-
-    <!-- 公网攻击面 -->
     <div class="pf-card">
-      <div class="pf-card-head">
-        <div class="pf-card-title">公网攻击面</div>
-        <div class="pf-card-extra"><span class="pf-chip ok">C1/C2 基线</span></div>
-      </div>
-      <div class="pf-surface-row">
-        <div class="pf-surface-main">
-          <span class="pf-surface-icon">443</span>
-          <div>
-            <div class="pf-surface-title">443/tcp · HTTPS 入口</div>
-            <div class="pf-desc">唯一公网入口（API / MCP / 站点接入 / 控制台）</div>
-          </div>
-        </div>
-        <span class="pf-chip ok">开放</span>
-      </div>
-      <div class="pf-surface-row">
-        <div class="pf-surface-main">
-          <span class="pf-surface-icon" style="font-size:10px">51820</span>
-          <div>
-            <div class="pf-surface-title">51820/udp · WireGuard</div>
-            <div class="pf-desc">站点隧道；仅已注册密钥的站点可建联</div>
-          </div>
-        </div>
-        <span class="pf-chip ok">开放</span>
-      </div>
-      <div class="pf-desc" style="border-top:1px solid #f0f0f0;padding-top:10px;margin-top:2px">
-        内部组件均不直接对外；攻击面与收敛策略详见 runbook（部署仓库）。
-      </div>
+      <div class="pf-card-head"><div class="pf-card-title">容量使用 · 活动+排队</div><div class="pf-card-extra pf-panel-tag">实时并发</div></div>
+      <div id="ch-cap" class="pf-chart h240"></div>
     </div>
   </div>
 
-  <!-- 模型部署健康 -->
-  <div class="pf-card flush">
-    <div class="pf-card-head">
-      <div class="pf-card-title">模型 Deployment 状态（近 24h 请求成败）</div>
-      <div class="pf-card-extra"><a href="models.html">查看模型与别名 ›</a></div>
+  <div class="pf-grid" style="grid-template-columns:1fr 1.7fr;margin-bottom:12px">
+    <div class="pf-card">
+      <div class="pf-card-head"><div class="pf-card-title">资源概览 · 按节点</div><div class="pf-card-extra pf-panel-tag">KV / GPU %</div></div>
+      <div id="ch-res" class="pf-chart h240"></div>
     </div>
-    <table class="pf-table">
-      <thead>
-        <tr><th>对外模型名</th><th>站点</th><th>api_base</th><th>限流 RPM/TPM</th><th>近 24h</th><th>状态</th></tr>
-      </thead>
-      <tbody id="dep-rows"></tbody>
-    </table>
-  </div>
-
-  <!-- 最近错误 -->
-  <div class="pf-card flush">
-    <div class="pf-card-head">
-      <div class="pf-card-title">最近错误</div>
-      <div class="pf-card-extra"><a href="usage.html">查看用量与错误 ›</a></div>
+    <div class="pf-card flush">
+      <div class="pf-card-head"><div class="pf-card-title">节点健康与采集链路</div><div class="pf-card-extra pf-panel-tag" id="ov-health-tag"></div></div>
+      <table class="pf-table"><thead><tr>
+        <th>节点</th><th>运行时</th><th>地址</th><th>连接</th><th>最近采集</th><th>exporter 覆盖</th>
+      </tr></thead><tbody id="ov-health"></tbody></table>
     </div>
-    <table class="pf-table">
-      <thead>
-        <tr><th>时间</th><th>Key</th><th>模型</th><th>说明</th></tr>
-      </thead>
-      <tbody id="err-rows"></tbody>
-    </table>
-    <div class="pf-desc" style="padding:8px 12px">近期错误仅覆盖已入账请求（鉴权失败不产生日志行）。</div>
   </div>
 
 </template>
-<script src="assets/portal.js"></script>
+<script src="assets/vendor/echarts.min.js"></script>
+<script src="assets/portal.js?v=20260914-spa"></script>
 <script>
 (function () {
   'use strict';
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
-  function fmtN(n) { return Number(n || 0).toLocaleString('zh-CN'); }
-  function fmtM(n) { return n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'K' : String(n || 0); }
+  function fmt(n) { return Number(Math.round(n || 0)).toLocaleString('zh-CN'); }
+  function fmtK(n) {
+    n = Number(n || 0);
+    if (n >= 1e8) return (n / 1e8).toFixed(2) + '亿';
+    if (n >= 1e4) return (n / 1e4).toFixed(1) + '万';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return String(Math.round(n));
+  }
   function ago(sec) {
     if (sec === null || sec === undefined) return '未知';
     if (sec < 0) return '从未握手';
@@ -125,66 +86,355 @@
     if (sec < 86400) return Math.round(sec / 3600) + ' 小时前';
     return Math.round(sec / 86400) + ' 天前';
   }
-  function siteNameOf(apiBase, sites) {
+  function pad(n) { return n < 10 ? '0' + n : '' + n; }
+  function tsLabel(ts) { var d = new Date(ts); return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+
+  /* 主题图表色板（与 portal.css 令牌一致；切换主题时刷新） */
+  function TC() {
+    var light = document.documentElement.getAttribute('data-theme') === 'light';
+    return {
+      text2: light ? '#475569' : '#9ca3af', muted: light ? '#64748b' : '#6b7280',
+      border: light ? '#e2e8f0' : '#1f2937', panel2: light ? '#f8fafc' : '#151b26',
+      heading: light ? '#0f172a' : '#f3f4f6',
+      s: light ? { cyan: '#4f46e5', green: '#16a34a', amber: '#d97706', red: '#dc2626', blue: '#2563eb', violet: '#7c3aed' }
+               : { cyan: '#22d3ee', green: '#34d399', amber: '#fbbf24', red: '#f87171', blue: '#60a5fa', violet: '#a78bfa' }
+    };
+  }
+  var NODE_COLORS = ['cyan', 'blue', 'green', 'violet', 'amber'];
+
+  /* ECharts 实例注册表（复用 setOption，不重建 DOM） */
+  var charts = {};
+  function getChart(id) {
+    var dom = document.getElementById(id);
+    if (!dom) return null;
+    if (!charts[id]) charts[id] = echarts.init(dom, null, { renderer: 'canvas' });
+    return charts[id];
+  }
+  function axisStyle(t) {
+    return { axisLine: { lineStyle: { color: t.border } }, axisLabel: { color: t.muted, fontSize: 10, fontFamily: 'ui-monospace,Menlo,monospace' }, splitLine: { lineStyle: { color: t.panel2 } } };
+  }
+  function baseGrid() { return { left: 44, right: 14, top: 26, bottom: 24 }; }
+  function baseTooltip(t) {
+    return { trigger: 'axis', backgroundColor: t.panel2, borderColor: t.border,
+      textStyle: { color: t.text2, fontSize: 11, fontFamily: 'ui-monospace,Menlo,monospace' } };
+  }
+  function spark(data, w, h, color) {
+    w = w || 96; h = h || 26;
+    if (!data || data.length < 2) return '';
+    var min = Math.min.apply(null, data), max = Math.max.apply(null, data), span = (max - min) || 1;
+    var pts = data.map(function (v, i) { return ((i / (data.length - 1)) * w).toFixed(1) + ',' + (h - 2 - ((v - min) / span) * (h - 4)).toFixed(1); }).join(' ');
+    return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '">' +
+      '<polygon points="0,' + h + ' ' + pts + ' ' + w + ',' + h + '" fill="' + color + '" opacity="0.10"/>' +
+      '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.4"/></svg>';
+  }
+
+  var st = { win: '0.041667', node: '', model: '', key: '', interval: 10, left: 10,
+             ov: null, usage: null, series: {} };   // series[site] = {speed:[], active:[]}
+
+  function winHours() { return { '0.010417': 1, '0.041667': 1, '0.25': 6, '0.9999': 24, '7': 168 }[st.win] || 1; }
+  function usageQuery() {
+    var q = '?days=' + encodeURIComponent(st.win);
+    if (st.node) q += '&node=' + encodeURIComponent(st.node);
+    if (st.model) q += '&model=' + encodeURIComponent(st.model);
+    if (st.key) q += '&key=' + encodeURIComponent(st.key);
+    return q;
+  }
+  function overviewQuery() {
+    var q = '';
+    if (st.node) q += (q ? '&' : '?') + 'node=' + encodeURIComponent(st.node);
+    if (st.model) q += (q ? '&' : '?') + 'model=' + encodeURIComponent(st.model);
+    if (st.key) q += (q ? '&' : '?') + 'key=' + encodeURIComponent(st.key);
+    return q;
+  }
+  function siteOf(apiBase) {
     var host = ((apiBase || '').split('//')[1] || '').split(':')[0];
-    for (var i = 0; i < sites.length; i++) if (sites[i].wg_ip === host) return sites[i].name;
+    var rows = (st.ov && st.ov.sites.rows) || [];
+    for (var i = 0; i < rows.length; i++) if (rows[i].wg_ip === host) return rows[i].name;
     return host;
+  }
+  function visibleNodes() {
+    var rows = (st.ov && st.ov.sites.rows) || [];
+    var sel = rows.filter(function (s) { return !st.node || s.name === st.node; });
+    if (st.model) {
+      var hosts = {};
+      ((st.ov.deployments || {}).rows || []).forEach(function (d) {
+        if (d.model === st.model) hosts[siteOf(d.api_base)] = 1;
+      });
+      sel = sel.filter(function (s) { return hosts[s.name]; });
+    }
+    return sel;
+  }
+
+  async function fetchSeries(nodes, hours) {
+    var jobs = [];
+    nodes.forEach(function (s) {
+      jobs.push(window.pfApi('GET', '/metrics/range?metric=output_tok_s&site=' + encodeURIComponent(s.name) + '&hours=' + hours).catch(function () { return null; }));
+      jobs.push(window.pfApi('GET', '/metrics/range?metric=requests_active&site=' + encodeURIComponent(s.name) + '&hours=' + hours).catch(function () { return null; }));
+    });
+    var out = await Promise.all(jobs);
+    nodes.forEach(function (s, i) {
+      var speed = out[i * 2], act = out[i * 2 + 1];
+      st.series[s.name] = {
+        speed: (speed && speed.points) || [],
+        active: (act && act.points) || []
+      };
+    });
+  }
+
+  function kpis() {
+    var t = TC(), ov = st.ov || {}, u = st.usage || { totals: {} };
+    var nodes = visibleNodes();
+    var out = 0, act = 0, que = 0, hasMetric = false;
+    nodes.forEach(function (s) {
+      var m = s.metrics || {};
+      if (m.output_tok_s != null) { out += m.output_tok_s; hasMetric = true; }
+      act += Number(m.requests_running || 0);
+      que += Number(m.requests_waiting || 0);
+    });
+    var sparkData = null;
+    var hasSeries = nodes.some(function (s) { return (st.series[s.name] || { speed: [] }).speed.length; });
+    if (hasSeries) {
+      var ref = nodes.map(function (s) { return (st.series[s.name] || { speed: [] }).speed; })
+        .find(function (x) { return x.length; });
+      sparkData = ref.map(function (p, i) {
+        return nodes.reduce(function (a, s) {
+          var ser = (st.series[s.name] || { speed: [] }).speed;
+          return a + (ser[i] ? ser[i][1] : 0);
+        }, 0);
+      });
+    }
+    var today = (ov || {}).totals || {};
+    var succ = (today.requests || 0) - (today.errors || 0);
+    var sr = today.requests ? (succ / today.requests * 100) : null;
+    var dash = '<span style="color:var(--muted)">—</span>';
+    return [
+      { label: '综合输出速度', val: hasMetric ? out.toFixed(1) : dash, unit: hasMetric ? 'tok/s' : '',
+        sub: nodes.length + ' 节点聚合 · 实时', spark: sparkData, color: t.s.cyan },
+      { label: '活动请求', val: fmt(act), unit: '', sub: '排队 ' + fmt(que), color: t.s.green },
+      { label: '今日请求', val: fmt(today.requests), unit: '', sub: '错误 ' + fmt(today.errors || 0) + ' 次', color: t.s.blue },
+      { label: '成功率', val: sr === null ? dash : sr.toFixed(1), unit: sr === null ? '' : '%',
+        sub: '今日 ' + fmt(succ) + ' 成功', color: t.s.green },
+      { label: '输入 Token（窗口）', val: u.totals ? fmtK(u.totals.prompt_tokens) : dash, unit: 'tok', sub: '含预填充 Prompt', color: t.s.violet },
+      { label: '输出 Token（窗口）', val: u.totals ? fmtK(u.totals.completion_tokens) : dash, unit: 'tok', sub: '解码生成', color: t.s.cyan },
+      { label: '缓存读取 Token（窗口）', val: u.totals ? fmtK(u.totals.cached_tokens) : dash, unit: 'tok', sub: 'KV Cache 命中复用', color: t.s.amber }
+    ];
+  }
+  function renderKpis() {
+    var t = TC();
+    document.getElementById('ov-kpis').innerHTML = kpis().map(function (k) {
+      return '<div class="pf-kpi"><div class="k-label"><span class="pf-dot" style="background:' + k.color + ';margin-right:0"></span>' + k.label + '</div>' +
+        '<div class="k-val">' + k.val + '<span class="unit">' + (k.unit || '') + '</span></div>' +
+        '<div class="k-sub">' + k.sub + '</div>' +
+        (k.spark && k.spark.length > 1 ? '<div class="k-spark">' + spark(k.spark.slice(-30), 96, 26, k.color) + '</div>' : '') +
+        '</div>';
+    }).join('');
+  }
+
+  function renderSpeed() {
+    var ch = getChart('ch-speed'); if (!ch) return;
+    var t = TC();
+    var nodes = visibleNodes();
+    document.getElementById('ov-speed-tag').textContent =
+      st.node ? '节点 · ' + st.node : (st.model ? '模型 · ' + st.model : '按节点');
+    var series = nodes.map(function (s, i) {
+      var color = t.s[NODE_COLORS[i % NODE_COLORS.length]];
+      var pts = (st.series[s.name] || { speed: [] }).speed;
+      return {
+        name: s.name, type: 'line', smooth: true, symbol: 'none',
+        stack: nodes.length > 1 ? 'out' : undefined,
+        lineStyle: { width: 1.6, color: color }, itemStyle: { color: color },
+        areaStyle: nodes.length > 1 ? { opacity: 0.16 } : { color: color, opacity: 0.12 },
+        emphasis: { focus: 'series' },
+        data: pts.map(function (p) { return [p[0] * 1000, Math.round(p[1] * 10) / 10]; })
+      };
+    });
+    ch.setOption({
+      backgroundColor: 'transparent',
+      tooltip: baseTooltip(t),
+      legend: { textStyle: { color: t.text2, fontSize: 10.5 }, top: 0, icon: 'roundRect', itemWidth: 10, itemHeight: 3 },
+      grid: baseGrid(),
+      xAxis: Object.assign({ type: 'time', axisLabel: { formatter: tsLabel, color: t.muted, fontSize: 10, hideOverlap: true } }, axisStyle(t)),
+      yAxis: Object.assign({ type: 'value', name: 'tok/s', nameTextStyle: { color: t.muted, fontSize: 10 } }, axisStyle(t)),
+      series: series
+    }, { notMerge: true });
+  }
+
+  function renderCap() {
+    var ch = getChart('ch-cap'); if (!ch) return;
+    var t = TC();
+    var nodes = visibleNodes();
+    /* 合并各节点活动+排队序列为聚合值（时间戳对齐求和） */
+    var merged = {};
+    nodes.forEach(function (s) {
+      ((st.series[s.name] || {}).active || []).forEach(function (p) {
+        merged[p[0]] = (merged[p[0]] || 0) + p[1];
+      });
+    });
+    var data = Object.keys(merged).map(Number).sort(function (a, b) { return a - b; })
+      .map(function (ts) { return [ts * 1000, Math.round(merged[ts] * 10) / 10]; });
+    ch.setOption({
+      backgroundColor: 'transparent',
+      tooltip: baseTooltip(t),
+      legend: { textStyle: { color: t.text2, fontSize: 10.5 }, top: 0, icon: 'roundRect', itemWidth: 10, itemHeight: 3 },
+      grid: baseGrid(),
+      xAxis: Object.assign({ type: 'time', axisLabel: { formatter: tsLabel, color: t.muted, fontSize: 10, hideOverlap: true } }, axisStyle(t)),
+      yAxis: Object.assign({ type: 'value', minInterval: 1, name: '并发', nameTextStyle: { color: t.muted, fontSize: 10 } }, axisStyle(t)),
+      series: [{ name: '活动+排队', type: 'line', smooth: true, symbol: 'none', data: data,
+        lineStyle: { width: 1.6, color: t.s.amber }, itemStyle: { color: t.s.amber },
+        areaStyle: { color: t.s.amber, opacity: 0.15 } }]
+    }, { notMerge: true });
+  }
+
+  function renderRes() {
+    var ch = getChart('ch-res'); if (!ch) return;
+    var t = TC();
+    var nodes = visibleNodes();
+    var names = [], kv = [], gpu = [];
+    nodes.forEach(function (s) {
+      var m = s.metrics || {};
+      names.push(s.name);
+      kv.push(m.kv_cache_pct == null ? null : Math.round(m.kv_cache_pct * 10) / 10);
+      gpu.push(m.gpu_util_pct == null ? null : Math.round(m.gpu_util_pct * 10) / 10);
+    });
+    ch.setOption({
+      backgroundColor: 'transparent',
+      tooltip: baseTooltip(t),
+      legend: { textStyle: { color: t.text2, fontSize: 10.5 }, top: 0, icon: 'roundRect', itemWidth: 10, itemHeight: 3 },
+      grid: { left: 150, right: 20, top: 26, bottom: 24 },
+      xAxis: Object.assign({ type: 'value', max: 100 }, axisStyle(t)),
+      yAxis: Object.assign({ type: 'category', data: names, inverse: true,
+        axisLabel: { color: t.muted, fontSize: 10, fontFamily: 'ui-monospace,Menlo,monospace' } }, axisStyle(t)),
+      series: [
+        { name: 'KV Cache 占用', type: 'bar', barWidth: 10, data: kv, itemStyle: { color: t.s.cyan }, borderRadius: 3 },
+        { name: 'GPU 活跃度', type: 'bar', barWidth: 10, data: gpu, itemStyle: { color: t.s.green }, borderRadius: 3 }
+      ]
+    }, { notMerge: true });
+  }
+
+  function coverageOf(m) {
+    /* exporter 覆盖按指标组计：吞吐/并发/缓存/GPU/温功率，5 组全有=完整 */
+    var groups = [
+      m.output_tok_s != null,
+      m.requests_running != null,
+      m.kv_cache_pct != null || m.cache_hit_pct != null,
+      m.gpu_util_pct != null,
+      m.gpu_temp_c != null || m.power_w != null
+    ];
+    var n = groups.filter(Boolean).length;
+    return n === 5 ? 'full' : (n > 0 ? 'partial' : 'none');
+  }
+  function renderHealth() {
+    var t = TC();
+    var nodes = visibleNodes();
+    document.getElementById('ov-health').innerHTML = nodes.map(function (s) {
+      var m = s.metrics || {};
+      var cover = coverageOf(m) === 'full' ? '<span class="pf-chip accent">完整</span>'
+        : coverageOf(m) === 'partial' ? '<span class="pf-chip warn">部分</span>'
+        : '<span style="color:var(--muted)">—</span>';
+      var online = s.status === 'online';
+      var revoked = s.status === 'revoked';
+      var conn = revoked ? '<span class="pf-chip gray">已吊销</span>'
+        : online ? '<span class="pf-chip ok"><span class="pf-dot ok" style="margin-right:0"></span>up</span>'
+        : '<span class="pf-chip warn"><span class="pf-dot warn" style="margin-right:0"></span>' + esc(s.status || '未知') + '</span>';
+      var addr = s.wg_ip || (s.address || '').replace(/^https?:\/\//, '') || '—';
+      return '<tr>' +
+        '<td class="mono" style="color:' + t.s.cyan + '">' + esc(s.name) + '</td>' +
+        '<td class="mono">' + esc(m.runtime || '—') + '</td>' +
+        '<td class="mono">' + esc(addr) + '</td>' +
+        '<td>' + conn + '</td>' +
+        '<td class="mono">' + (online ? '刚刚' : ago(s.handshake)) + '</td>' +
+        '<td>' + cover + '</td>' +
+      '</tr>';
+    }).join('') || '<tr><td colspan="6" style="padding:10px" class="pf-desc">暂无节点</td></tr>';
+  }
+
+  function fillFilters() {
+    var d = st.ov;
+    if (!d) return;
+    var nodes = d.sites.rows.map(function (s) { return { v: s.name, t: s.name }; });
+    var models = (d.deployments.rows || []).map(function (r) { return r.model; })
+      .filter(function (m, i, a) { return m && a.indexOf(m) === i; })
+      .sort().map(function (m) { return { v: m, t: m }; });
+    function fill(id, vals, label) {
+      var el = document.getElementById(id), old = el.value;
+      el.innerHTML = '<option value="">' + label + '</option>' + vals.map(function (x) {
+        return '<option value="' + esc(x.v) + '">' + esc(x.t) + '</option>'; }).join('');
+      if (Array.from(el.options).some(function (o) { return o.value === old; })) el.value = old;
+    }
+    fill('ov-node', nodes, '全部节点');
+    fill('ov-model', models, '全部模型');
+    fill('ov-key', ((st.usage && st.usage.rows) || []).map(function (r) { return { v: r.key, t: '…' + r.key + '（' + r.alias + '）' }; }), '全部 Key');
+  }
+
+  var loadEpoch = 0;
+  window.addEventListener('pfpagehide', function () { loadEpoch++; });
+  async function load() {
+    var epoch = ++loadEpoch;
+    var hours = winHours();
+    try {
+      /* overview 与 usage 互不拖累：usage 库不可达时 Token 卡显示 —，实时指标照常 */
+      var pair = await Promise.allSettled([
+        window.pfApi('GET', '/overview' + overviewQuery()),
+        window.pfApi('GET', '/usage' + usageQuery())
+      ]);
+      if (epoch !== loadEpoch) return;
+      if (pair[0].status === 'rejected') {
+        window.pfErr((pair[0].reason && pair[0].reason.error) || 'overview 加载失败');
+        var last = document.getElementById('ov-last'); if (last) last.textContent = '加载失败';
+        return;
+      }
+      st.ov = pair[0].value;
+      st.usage = pair[1].status === 'fulfilled' ? pair[1].value : null;
+      fillFilters();
+      await fetchSeries(visibleNodes().length ? visibleNodes() : (st.ov.sites.rows || []), hours);
+      if (epoch !== loadEpoch) return;
+      renderKpis(); renderSpeed(); renderCap(); renderRes(); renderHealth();
+      var last = document.getElementById('ov-last'); if (last) last.textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+      st.left = st.interval;
+    } catch (e) {
+      if (epoch !== loadEpoch) return;
+      window.pfErr((e && e.error) || '加载失败');
+      var last = document.getElementById('ov-last'); if (last) last.textContent = '加载失败';
+    }
   }
 
   window.pfReady.then(function () {
-    window.pfApi('GET', '/overview').then(function (d) {
-      var t = d.totals;
-      document.getElementById('stat-req').textContent = fmtN(t.requests);
-      document.getElementById('stat-req-sub').textContent = '错误 ' + fmtN(t.errors) + ' 次';
-      document.getElementById('stat-token').textContent = fmtM(t.prompt_tokens + t.completion_tokens + (t.cached_tokens || 0));
-      document.getElementById('stat-token-sub').textContent =
-        '输入 ' + fmtM(t.prompt_tokens) + ' · 缓存读取 ' + fmtM(t.cached_tokens || 0) + ' · 输出 ' + fmtM(t.completion_tokens);
-      document.getElementById('stat-sites').innerHTML = d.sites.online + '<small>/' + d.sites.total + '</small>';
-      document.getElementById('stat-sites-sub').textContent = '隧道在线';
-      document.getElementById('stat-deps').innerHTML = d.deployments.healthy + '<small>/' + d.deployments.total + '</small>';
-      var bad = d.deployments.total - d.deployments.healthy;
-      document.getElementById('stat-deps-sub').textContent = bad ? bad + ' 个待关注' : '全部健康';
-
-      var lockSvg = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="1.8" y="5.4" width="12.4" height="7.4" rx="1.2"/><path d="M4.6 5.4V4a3.4 3.4 0 0 1 6.8 0v1.4"/></svg>';
-      document.getElementById('site-rows').innerHTML = d.sites.rows.map(function (s) {
-        var online = s.status === 'online';
-        var revoked = s.status === 'revoked';
-        return '<div class="pf-surface-row">' +
-          '<div class="pf-surface-main">' +
-            '<span class="pf-surface-icon"' + (revoked ? ' style="background:#fafafa;color:#bfbfbf"' : '') + '>' + lockSvg + '</span>' +
-            '<div>' +
-              '<div class="pf-surface-title' + (revoked ? ' pf-muted' : '') + '">' + esc(s.name) + ' <span class="pf-muted mono">' + esc(s.wg_ip) + '</span></div>' +
-              '<div class="pf-desc">' + (revoked ? '已吊销 · 隧道无法重连' : '最近握手 ' + ago(s.handshake) + ' · ' + s.deployments + ' 个模型部署') + '</div>' +
-            '</div>' +
-          '</div>' +
-          '<span class="pf-chip ' + (online ? 'ok' : revoked ? 'gray' : 'warn') + '">' + (online ? '<span class="pf-dot ok"></span>在线' : revoked ? '已吊销' : esc(s.status)) + '</span>' +
-        '</div>';
-      }).join('') || '<div class="pf-desc" style="padding:10px 12px">暂无站点</div>';
-
-      document.getElementById('dep-rows').innerHTML = d.deployments.rows.map(function (r) {
-        var chip = r.state === '健康' ? '<span class="pf-chip ok"><span class="pf-dot ok"></span>健康</span>'
-          : r.state === '近期异常' ? '<span class="pf-chip warn"><span class="pf-dot warn"></span>近期异常</span>'
-          : '<span class="pf-chip gray">' + esc(r.state) + '</span>';
-        var lim = (r.rpm == null ? '—' : r.rpm) + ' / ' + (r.tpm == null ? '—' : fmtN(r.tpm));
-        return '<tr>' +
-          '<td>' + esc(r.model) + '</td>' +
-          '<td>' + esc(siteNameOf(r.api_base, d.sites.rows)) + '</td>' +
-          '<td class="mono">' + esc((r.api_base || '').replace(/^https?:\/\//, '')) + '</td>' +
-          '<td class="num mono">' + lim + '</td>' +
-          '<td class="num">' + fmtN(r.requests) + ' 次' + (r.failures ? ' / 败 ' + r.failures : '') + '</td>' +
-          '<td>' + chip + '</td>' +
-        '</tr>';
-      }).join('') || '<tr><td colspan="6" class="pf-desc" style="padding:10px">暂无 deployment</td></tr>';
-
-      document.getElementById('err-rows').innerHTML = d.recent_errors.map(function (e) {
-        return '<tr>' +
-          '<td class="mono">' + esc((e.time || '').replace('T', ' ').slice(5)) + '</td>' +
-          '<td><span class="pf-key">' + esc(e.key) + '</span></td>' +
-          '<td>' + esc(e.model) + '</td>' +
-          '<td class="pf-desc">' + esc(e.detail) + '</td>' +
-        '</tr>';
-      }).join('') || '<tr><td colspan="4" class="pf-desc" style="padding:10px">今日无已入账错误</td></tr>';
-    }).catch(function (e) { window.pfErr(e.error || '加载失败'); });
+    /* 时间窗口分段器 */
+    document.getElementById('ov-win').addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      st.win = b.dataset.win;
+      this.querySelectorAll('button').forEach(function (x) { x.classList.toggle('on', x === b); });
+      load();
+    });
+    /* 刷新间隔分段器 + 每秒倒计时（勾掉自动刷新即暂停） */
+    setInterval(function () {
+      if (!document.getElementById('ov-auto').checked) { document.getElementById('ov-cd').textContent = '暂停'; return; }
+      st.left -= 1;
+      if (st.left <= 0) { st.left = st.interval; load(); }
+      document.getElementById('ov-cd').textContent = st.left + 's';
+    }, 1000);
+    document.getElementById('ov-interval').addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      st.interval = parseInt(b.dataset.int, 10);
+      st.left = st.interval;
+      this.querySelectorAll('button').forEach(function (x) { x.classList.toggle('on', x === b); });
+    });
+    ['ov-node', 'ov-model', 'ov-key'].forEach(function (id) {
+      document.getElementById(id).addEventListener('change', function () {
+        st[id.slice(3)] = document.getElementById(id).value;
+        load();
+      });
+    });
+    document.getElementById('ov-refresh').addEventListener('click', function () { st.left = st.interval; load(); });
+    /* 主题切换 → 图表按新色板重渲染（数据不动） */
+    document.addEventListener('pftheme', function () {
+      charts = {};
+      renderKpis(); renderSpeed(); renderCap(); renderRes();
+    });
+    window.addEventListener('resize', function () {
+      Object.values(charts).forEach(function (c) { c.resize(); });
+    });
+    load();
   });
 })();
 </script>

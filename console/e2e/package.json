@@ -12,7 +12,9 @@
     "usage-filter": "node usage-filter-e2e.js",
     "sites-models": "node sites-models-e2e.js",
     "mcp": "node mcp-e2e.js",
-    "mcp-usage": "node mcp-usage-e2e.js"
+    "mcp-usage": "node mcp-usage-e2e.js",
+    "observability": "node observability-e2e.js",
+    "vps-prod": "node vps-prod-e2e.js"
   },
   "devDependencies": {
     "playwright": "1.62.1"
