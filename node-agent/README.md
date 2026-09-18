@@ -13,6 +13,12 @@ Each private node runs one copy of this bundle. The current deployments:
 | GB10 Worker | `deployments/gb10-worker.env.example` | `gb10-worker` | `10.77.0.15` | `:8080` |
 | Dell Precision 7960 Tower | `deployments/dell-shili-7960.env.example` | `dell-shili-7960-llm` | `10.77.0.14` | `:8005` |
 | M2S2VMUbuntuA6000 | `deployments/m2s2NasUbuntuVM-shili-dev.env.example` | `m2s2NasUbuntuVM-shili-dev-llm` | `10.77.0.13` | `:8006` |
+| x570 workstation | `deployments/workstation.env.example` | `workstation-llm` | `10.78.0.14` | `:18001` |
+
+The x570 workstation writes to the nasubuntu portal instance instead of the
+Tokyo VPS: its `VM_REMOTE_WRITE_URL` points at `10.78.0.1:8428` (the
+nasubuntu WireGuard gateway), and its `site` label matches the `workstation`
+site registered in that portal.
 
 On each host, copy the matching env file to `.env` (and adjust the
 remote-write URL if the site uses a different WireGuard address), then run
