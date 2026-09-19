@@ -47,8 +47,10 @@ def _plain(row):
     return {key: int(value) if isinstance(value, Decimal) else value for key, value in dict(row).items()}
 
 def _epoch_floor(col: str, step: int) -> str:
-    # startTime 为 UTC 墙钟（naive）；显式按 UTC 转 epoch 再向下取整到步长
-    return f"to_timestamp(floor(extract(epoch from ({col}) AT TIME ZONE 'UTC')/{step})*{step})"
+    # startTime 为 UTC 墙钟（naive）；显式按 UTC 转 epoch 再向下取整到步长。
+    # +28800（UTC+8）让 86400 步长的日桶对齐上海日界；子日步长（≤3600s）整除
+    # 该偏移，网格不变。
+    return f"to_timestamp(floor((extract(epoch from ({col}) AT TIME ZONE 'UTC') + 28800)/{step})*{step} - 28800)"
 
 async def aggregate(start, end, step=3600, filters=None):
     """汇总：totals / 自步长桶 / 细粒度行(api_key×model×api_base×call_type) / 最近错误。
