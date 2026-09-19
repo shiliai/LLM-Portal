@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Delivery"
+  short_description: "Deliver outcomes with concise planning and focused verification"
+  default_prompt: "Use $orchestrate-project-delivery to complete this task with proportional planning and verification, then commit and open or update the pull request by default."
