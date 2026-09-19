@@ -14,6 +14,7 @@ import json
 import re
 import sqlite3
 import time
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1627,3 +1628,34 @@ def test_usage_api_returns_node_endpoint_group_dimensions(console_admin, monkeyp
     assert row["group"] == "default"
     assert row["alias"] == "unit-user"
     assert len(body["hourly"]) == 24          # days=1 → 今天 24 个小时桶铺满
+
+
+def test_usage_trend_buckets_align_on_step_grid(console_admin, monkeypatch):
+    """回归（nasubuntu 趋势图全零）：滚动 24h 窗口起点不在整点（14:51）时，
+    补桶键必须落在与 usage_db._epoch_floor 相同的整点网格上，否则 SQL 桶
+    （:00）永远查不中、趋势全部渲染成 0。"""
+    install_litellm_stub(monkeypatch, _handler)
+
+    fixed_start = datetime(2026, 9, 18, 14, 51, 28)   # naive UTC，:51 分
+    fixed_end = datetime(2026, 9, 19, 14, 51, 28)
+
+    def fake_window(days, now=None, today=False):
+        return fixed_start, fixed_end
+
+    async def fake_aggregate(start, end, step=3600, filters=None):
+        totals = {"requests": 34, "prompt_tokens": 10333036, "completion_tokens": 1000,
+                  "cached_tokens": 0, "failures": 0, "avg_ms": 0, "avg_tft": 300}
+        buckets = [{"b": "2026-09-18T14:00:00+00:00", "reqs": 34, "in": 10333036,
+                    "out": 1000, "cache": 0, "avg_tft": 300}]
+        return totals, buckets, [], []
+
+    monkeypatch.setattr(console_admin, "usage_window", fake_window)
+    monkeypatch.setattr(console_admin, "usage_aggregate", fake_aggregate)
+    client, hdr = _admin_login(console_admin)
+    resp = client.get("/console/api/usage?days=0.9999", headers=hdr)
+    assert resp.status_code == 200
+    hourly = resp.json()["hourly"]
+    assert hourly[0]["label"] == "22:00"       # 起点向下取整到 UTC 14:00 → 上海 22:00
+    hit = [x for x in hourly if x["in"]]
+    assert len(hit) == 1
+    assert hit[0]["label"] == "22:00" and hit[0]["reqs"] == 34 and hit[0]["in"] == 10333036

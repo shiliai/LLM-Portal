@@ -1699,10 +1699,10 @@ async def api_usage(request: Request) -> Response:
         r["endpoint"] = _ENDPOINT_OF.get(str(r.pop("call_type") or "").lower(), "/v1/other")
         r["total_tokens"] = r["prompt_tokens"] + r["completion_tokens"] + r["cached_tokens"]
         per_key[r["alias"]] = per_key.get(r["alias"], 0) + r["requests"]; out.append(r)
-    # 趋势桶：从窗口起点按步长铺满（空桶补零，前端直接画）
-    def bucket_label(b):
-        dt = datetime.fromisoformat(str(b)).replace(tzinfo=timezone.utc).astimezone(_CST)
-        return dt.strftime("%m-%d") if step >= 86400 else dt.strftime("%H:%M" if step < 3600 else "%H:00")
+    # 趋势桶：从窗口起点按步长铺满（空桶补零，前端直接画）。键必须与
+    # usage_db._epoch_floor 同一网格：UTC epoch 对步长取整（+28800 使日桶
+    # 对齐上海日界）。滚动窗口（1h/24h）起点不在整点，不能直接用起点累加，
+    # 否则键落在 :51 之类而 SQL 桶在 :00，全部 miss 渲染成 0。
     def bucket_key(v):
         dt = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
         if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
@@ -1710,20 +1710,21 @@ async def api_usage(request: Request) -> Response:
     by_label = {bucket_key(x["b"]): x for x in buckets}
     start_local = datetime.fromisoformat(str(start)).replace(tzinfo=timezone.utc).astimezone()
     now_local = datetime.now().astimezone()
-    # 日历日语义（today=1 或 days=1）铺满全天 24 小时（空桶补零），与旧契约一致
-    fill_until = now_local
+    step = int(step)
+    # 日历日语义（today=1 或 days=1）铺满全天（空桶补零），与旧契约一致
+    fill_until = int(now_local.timestamp())
     if today or abs(days - 1.0) < 1e-9:
-        fill_until = start_local + timedelta(days=1) - timedelta(seconds=step)
-    hourly, cur_local = [], start_local
-    if step < 86400:
-        cur_local = start_local.replace(second=0, microsecond=0)
-    while cur_local <= fill_until:
-        key = cur_local.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        label = cur_local.astimezone(_CST).strftime("%m-%d" if step >= 86400 else ("%H:%M" if step < 3600 else "%H:00"))
-        x = by_label.get(key) or {}
+        fill_until = int(start_local.timestamp()) + 86400 - step
+    cur = int(start_local.timestamp())
+    cur -= (cur + 28800) % step
+    hourly = []
+    while cur <= fill_until:
+        utc_dt = datetime.fromtimestamp(cur, timezone.utc)
+        label = utc_dt.astimezone(_CST).strftime("%m-%d" if step >= 86400 else ("%H:%M" if step < 3600 else "%H:00"))
+        x = by_label.get(utc_dt.strftime("%Y-%m-%d %H:%M:%S")) or {}
         hourly.append({"label": label, "reqs": x.get("reqs", 0), "in": x.get("in", 0),
                        "out": x.get("out", 0), "cache": x.get("cache", 0), "avg_tft": x.get("avg_tft", 0)})
-        cur_local += timedelta(seconds=step)
+        cur += step
     return JSONResponse({"totals": totals, "rows": out, "per_key": sorted(per_key.items(), key=lambda x:-x[1]),
       "hourly": hourly,
       "errors": [{"time": iso_to_cst(str(x["startTime"])),"key":key_last4({"api_key":x["api_key"]}),"model":x["model"],"detail":x["detail"]} for x in errors]})
