@@ -1536,6 +1536,19 @@ def test_finish_metrics_requires_both_sides_of_ratio(console_admin):
     assert "spec_accept_pct" not in out
 
 
+def test_finish_metrics_accepts_legacy_llamacpp_cache_counter_name(console_admin):
+    out = console_admin._finish_metrics({
+        "llamacpp:prompt_tokens_cached": 250,
+        "llamacpp:prompt_tokens_total": 1000,
+    })
+    assert out["cache_hit_pct"] == pytest.approx(25.0)
+
+
+def test_workstation_display_name_is_x570(console_admin):
+    assert console_admin.site_display_name("workstation") == "x570"
+    assert console_admin.site_display_name("m2s2NasUbuntuVM-shili-dev") == "m2s2NasUbuntuVM-shili-dev"
+
+
 def test_vm_site_matcher_accepts_llm_suffix_and_bare_name(console_admin):
     m = console_admin.vm_site_matcher("gb10")
     assert 'site=~"^gb10(-llm)?$"' in m

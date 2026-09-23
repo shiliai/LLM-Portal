@@ -17,8 +17,8 @@ Each private node runs one copy of this bundle. The current deployments:
 
 The x570 workstation writes to the nasubuntu portal instance instead of the
 Tokyo VPS: its `VM_REMOTE_WRITE_URL` points at `10.78.0.1:8428` (the
-nasubuntu WireGuard gateway), and its `site` label matches the `workstation`
-site registered in that portal.
+nasubuntu WireGuard gateway), and its `site` label matches the historical
+`workstation` registration key. The portal displays that node as `x570`.
 
 On each host, copy the matching env file to `.env` (and adjust the
 remote-write URL if the site uses a different WireGuard address), then run
