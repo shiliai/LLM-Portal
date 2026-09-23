@@ -152,6 +152,7 @@
     for (var i = 0; i < rows.length; i++) if (rows[i].wg_ip === host) return rows[i].name;
     return host;
   }
+  function nodeLabel(site) { return site.display_name || site.name; }
   function visibleNodes() {
     var rows = (st.ov && st.ov.sites.rows) || [];
     var sel = rows.filter(function (s) { return !st.node || s.name === st.node; });
@@ -234,13 +235,14 @@
     var ch = getChart('ch-speed'); if (!ch) return;
     var t = TC();
     var nodes = visibleNodes();
+    var selectedNode = st.node ? (nodes.length === 1 ? nodeLabel(nodes[0]) : st.node) : '';
     document.getElementById('ov-speed-tag').textContent =
-      st.node ? '节点 · ' + st.node : (st.model ? '模型 · ' + st.model : '按节点');
+      selectedNode ? '节点 · ' + selectedNode : (st.model ? '模型 · ' + st.model : '按节点');
     var series = nodes.map(function (s, i) {
       var color = t.s[NODE_COLORS[i % NODE_COLORS.length]];
       var pts = (st.series[s.name] || { speed: [] }).speed;
       return {
-        name: s.name, type: 'line', smooth: true, symbol: 'none',
+        name: nodeLabel(s), type: 'line', smooth: true, symbol: 'none',
         stack: nodes.length > 1 ? 'out' : undefined,
         lineStyle: { width: 1.6, color: color }, itemStyle: { color: color },
         areaStyle: nodes.length > 1 ? { opacity: 0.16 } : { color: color, opacity: 0.12 },
@@ -338,7 +340,7 @@
         : '<span class="pf-chip warn"><span class="pf-dot warn" style="margin-right:0"></span>' + esc(s.status || '未知') + '</span>';
       var addr = s.wg_ip || (s.address || '').replace(/^https?:\/\//, '') || '—';
       return '<tr>' +
-        '<td class="mono" style="color:' + t.s.cyan + '">' + esc(s.name) + '</td>' +
+        '<td class="mono" style="color:' + t.s.cyan + '">' + esc(nodeLabel(s)) + '</td>' +
         '<td class="mono">' + esc(m.runtime || '—') + '</td>' +
         '<td class="mono">' + esc(addr) + '</td>' +
         '<td>' + conn + '</td>' +
@@ -351,7 +353,7 @@
   function fillFilters() {
     var d = st.ov;
     if (!d) return;
-    var nodes = d.sites.rows.map(function (s) { return { v: s.name, t: s.name }; });
+    var nodes = d.sites.rows.map(function (s) { return { v: s.name, t: nodeLabel(s) }; });
     var models = (d.deployments.rows || []).map(function (r) { return r.model; })
       .filter(function (m, i, a) { return m && a.indexOf(m) === i; })
       .sort().map(function (m) { return { v: m, t: m }; });

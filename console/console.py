@@ -833,12 +833,23 @@ async def direct_health(sites: list[dict]) -> dict[str, bool]:
 # 缺失指标一律不进结果 dict，前端渲染 "—"，绝不用 0 伪造。
 _VM_METRIC_RE = r"(llamacpp:[a-z_0-9]+|vllm:[a-z_0-9]+|DCGM_FI_DEV_[A-Z_0-9]+)"
 
+# Keep the historical registration key usable while showing the hardware's
+# actual name in the dashboard. The key is still used for API filters and VM
+# label matching, so existing deployments do not need a destructive rename.
+SITE_DISPLAY_NAMES = {"workstation": "x570"}
+
+
+def site_display_name(name: str) -> str:
+    return SITE_DISPLAY_NAMES.get(str(name), str(name))
+
 # 趋势查询的逻辑名 → PromQL 片段列表（{M} 为标签匹配占位符；同一节点的
 # llama.cpp / vLLM 两路片段用 or 合并，实际只有一路有数据）
 LOGICAL_RANGE_METRICS: dict[str, list[str]] = {
-    "output_tok_s": ["llamacpp:predicted_tokens_seconds{M}",
+    "output_tok_s": ["sum(rate(llamacpp:tokens_predicted_total{M}[5m]))",
+                     "llamacpp:predicted_tokens_seconds{M}",
                      "sum(rate(vllm:generation_tokens_total{M}[5m]))"],
-    "input_tok_s": ["llamacpp:prompt_tokens_seconds{M}",
+    "input_tok_s": ["sum(rate(llamacpp:prompt_tokens_total{M}[5m]))",
+                    "llamacpp:prompt_tokens_seconds{M}",
                     "sum(rate(vllm:prompt_tokens_total{M}[5m]))"],
     "requests_running": ["avg(llamacpp:requests_processing{M})",
                          "avg(vllm:num_requests_running{M})"],
@@ -872,7 +883,15 @@ def _derive_metrics(vals: dict) -> dict:
                       "vllm:spec_decode_num_draft_tokens_total")
     if spec is not None:
         out["spec_accept_pct"] = round(spec, 1)
-    hit = _ratio(vals, "llamacpp:prompt_tokens_cached_total", "llamacpp:prompt_tokens_total")
+    cached = vals.get("llamacpp:prompt_tokens_cached_total")
+    uncached = vals.get("llamacpp:prompt_tokens_total")
+    if cached is None:
+        # Older llama.cpp builds used the short cached-token name.
+        cached = vals.get("llamacpp:prompt_tokens_cached")
+    # llama.cpp's prompt_tokens_total excludes cached tokens, so the hit
+    # denominator is cached + uncached prompt tokens.
+    hit = (cached / (cached + uncached) * 100
+           if cached is not None and uncached is not None and cached + uncached > 0 else None)
     if hit is None:
         hit = _ratio(vals, "vllm:prefix_cache_hits_total", "vllm:prefix_cache_queries_total")
     if hit is not None:
@@ -949,8 +968,12 @@ async def site_metrics(site: dict, deps: list[dict]) -> dict:
         vm_out = await vm_site_metrics(str(site.get("name") or "").strip())
         if vm_out:
             # VM 独有字段（DCGM 温度/功耗/利用率只经 node-agent 入库）与直连值合并；
-            # 直连值更新鲜，同名字段以直连为准
-            vm_out.update(out or {})
+            # 直连值更新鲜，同名字段以直连为准；llama.cpp 空闲时吞吐 gauge
+            # 会归零，此时保留 VM 端由计数器 rate 派生的值。
+            for key, value in (out or {}).items():
+                if key in {"output_tok_s", "input_tok_s"} and value == 0 and vm_out.get(key) is not None:
+                    continue
+                vm_out[key] = value
             return vm_out
     return out or {}
 
@@ -992,13 +1015,24 @@ async def vm_site_metrics(site_name: str) -> dict:
             # 兜底：实例标签=站点名（如 instance="gb10-head" 的非 -llm 命名）
             vals = await vm_query_instant(
                 '{__name__=~"' + _VM_METRIC_RE + '",instance=~"^{name}(-llm)?$"}'.replace("{name}", site_name))
-        # vLLM 吞吐是计数器，无即时量表——用 5m rate 派生（TGI 风格别名进 _finish_metrics）
-        if vals and "llamacpp:predicted_tokens_seconds" not in vals \
-                and "vllm:generation_tokens_total" in vals:
+        # 用计数器的 5m rate 作为 VM 即时吞吐，避免 llama.cpp 的滚动 gauge
+        # 在采集间隔内归零造成卡片和曲线看起来没有变化。
+        if vals and "llamacpp:tokens_predicted_total" in vals:
+            rate = await vm_query_instant("sum(rate(llamacpp:tokens_predicted_total" +
+                                          matcher[matcher.index("{"):] + "[5m]))")
+            if rate:
+                vals["llamacpp:predicted_tokens_seconds"] = next(iter(rate.values()))
+        if vals and "vllm:generation_tokens_total" in vals:
             rate = await vm_query_instant("sum(rate(vllm:generation_tokens_total" +
                                           matcher[matcher.index("{"):] + "[5m]))")
             if rate:
                 vals["generation_tokens_per_second"] = next(iter(rate.values()))
+        if vals and "llamacpp:prompt_tokens_total" in vals:
+            rate_in = await vm_query_instant("sum(rate(llamacpp:prompt_tokens_total" +
+                                             matcher[matcher.index("{"):] + "[5m]))")
+            if rate_in:
+                vals["llamacpp:prompt_tokens_seconds"] = next(iter(rate_in.values()))
+        if vals and "vllm:prompt_tokens_total" in vals:
             rate_in = await vm_query_instant("sum(rate(vllm:prompt_tokens_total" +
                                              matcher[matcher.index("{"):] + "[5m]))")
             if rate_in:
@@ -1111,7 +1145,8 @@ async def api_overview(request: Request) -> Response:
                  s["status"] in ("active", "partial") and 0 <= ago < HANDSHAKE_ONLINE
         status = "offline" if direct and s["status"] in ("active", "partial") and not online else \
                  "online" if online else s["status"]
-        site_rows.append({"name": s["name"], "transport": "direct" if direct else "wireguard",
+        site_rows.append({"name": s["name"], "display_name": site_display_name(s["name"]),
+                          "transport": "direct" if direct else "wireguard",
                           "address": s.get("address") if direct else None, "wg_ip": None if direct else s["wg_ip"], "handshake": ago,
                           "deployments": n_deps, "status": status, "metrics": metric})
     per_dep = {}
@@ -1429,7 +1464,8 @@ async def api_sites(request: Request) -> Response:
         online = (s["status"] in ("active", "partial") and health.get(s["name"], False) if direct else
                   s["status"] in ("active", "partial") and 0 <= ago < HANDSHAKE_ONLINE)
         rows.append({
-            "name": s["name"], "transport": "direct" if direct else "wireguard",
+            "name": s["name"], "display_name": site_display_name(s["name"]),
+            "transport": "direct" if direct else "wireguard",
             "address": s.get("address") if direct else None,
             "pubkey": "-" if direct else (s.get("pubkey") or "")[:10] + "…=",
             "wg_ip": None if direct else s.get("wg_ip"), "handshake": ago,

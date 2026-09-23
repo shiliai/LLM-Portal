@@ -69,13 +69,13 @@
   function axisStyle(t) {
     return { axisLine: { lineStyle: { color: t.border } }, axisLabel: { color: t.muted, fontSize: 10, fontFamily: 'ui-monospace,Menlo,monospace' }, splitLine: { lineStyle: { color: t.panel2 } } };
   }
-  function baseGrid() { return { left: 44, right: 14, top: 26, bottom: 24 }; }
+  function baseGrid() { return { left: 44, right: 38, top: 26, bottom: 24 }; }
   function baseTooltip(t) {
     return { trigger: 'axis', backgroundColor: t.panel2, borderColor: t.border,
       textStyle: { color: t.text2, fontSize: 11, fontFamily: 'ui-monospace,Menlo,monospace' } };
   }
 
-  var st = { hours: 1, node: '', interval: 10, left: 10, ov: null, hist: {} };  // hist[site]={speed,pre,kv,gpu}
+  var st = { hours: 1, node: '', interval: 10, left: 10, ov: null, hist: {} };  // hist[site]={speed,pre,kv,gpu,temp,power}
 
   function visibleNodes() {
     var rows = (st.ov && st.ov.sites.rows) || [];
@@ -83,7 +83,7 @@
   }
 
   async function fetchHist(nodes, hours) {
-    var metrics = ['output_tok_s', 'input_tok_s', 'kv_cache_pct', 'gpu_util_pct'];
+    var metrics = ['output_tok_s', 'input_tok_s', 'kv_cache_pct', 'gpu_util_pct', 'gpu_temp_c', 'power_w'];
     var jobs = [];
     nodes.forEach(function (s) {
       metrics.forEach(function (m) {
@@ -93,10 +93,12 @@
     var out = await Promise.all(jobs);
     nodes.forEach(function (s, i) {
       st.hist[s.name] = {
-        speed: (out[i * 4] || {}).points || [],
-        pre: (out[i * 4 + 1] || {}).points || [],
-        kv: (out[i * 4 + 2] || {}).points || [],
-        gpu: (out[i * 4 + 3] || {}).points || []
+        speed: (out[i * 6] || {}).points || [],
+        pre: (out[i * 6 + 1] || {}).points || [],
+        kv: (out[i * 6 + 2] || {}).points || [],
+        gpu: (out[i * 6 + 3] || {}).points || [],
+        temp: (out[i * 6 + 4] || {}).points || [],
+        power: (out[i * 6 + 5] || {}).points || []
       };
     });
   }
@@ -121,7 +123,7 @@
     return '<div class="pf-card pf-node-block">' +
       '<div class="pf-node-head">' +
         '<span class="pf-dot ' + (online ? 'ok' : revoked ? 'gray' : 'warn') + '"></span>' +
-        '<span class="pf-node-name" style="color:' + color + '">' + esc(s.name) + '</span>' +
+        '<span class="pf-node-name" style="color:' + color + '">' + esc(s.display_name || s.name) + '</span>' +
         '<span class="pf-chip gray">' + esc(m.runtime || 'runtime —') + '</span>' +
         '<span class="pf-chip gray">' + esc(addr) + '</span>' +
         (online ? '<span class="pf-chip ok"><span class="pf-dot ok" style="margin-right:0"></span>up</span>'
@@ -135,6 +137,7 @@
       '<div class="pf-grid" style="grid-template-columns:1fr 1fr">' +
         '<div><div class="pf-desc" style="font-size:11px;margin:2px 0 4px">吞吐趋势 · 输出 / Prefill tok/s</div><div id="ch-nd-tps-' + esc(s.name) + '" class="pf-chart h200"></div></div>' +
         '<div><div class="pf-desc" style="font-size:11px;margin:2px 0 4px">资源趋势 · KV / GPU %</div><div id="ch-nd-res-' + esc(s.name) + '" class="pf-chart h200"></div></div>' +
+        '<div style="grid-column:1 / -1"><div class="pf-desc" style="font-size:11px;margin:2px 0 4px">温度 / 功耗趋势 · °C / W</div><div id="ch-nd-thermal-' + esc(s.name) + '" class="pf-chart h200"></div></div>' +
       '</div>' +
     '</div>';
   }
@@ -174,7 +177,7 @@
     ].join('');
   }
 
-  function lineChart(id, seriesDefs, yMax) {
+  function lineChart(id, seriesDefs, yMax, yAxes) {
     var ch = getChart(id); if (!ch) return;
     var t = TC();
     ch.setOption({
@@ -182,7 +185,7 @@
       legend: { textStyle: { color: t.text2, fontSize: 10 }, top: 0, icon: 'roundRect', itemWidth: 10, itemHeight: 3 },
       grid: baseGrid(),
       xAxis: Object.assign({ type: 'time', axisLabel: { formatter: tsLabel, color: t.muted, fontSize: 10, hideOverlap: true } }, axisStyle(t)),
-      yAxis: Object.assign({ type: 'value', max: yMax, minInterval: yMax ? 1 : null }, axisStyle(t)),
+      yAxis: yAxes || Object.assign({ type: 'value', max: yMax, minInterval: yMax ? 1 : null }, axisStyle(t)),
       series: seriesDefs
     }, { notMerge: true });
   }
@@ -205,9 +208,12 @@
       var toXY = function (pts) { return pts.map(function (p) { return [p[0] * 1000, Math.round(p[1] * 10) / 10]; }); };
       lineChart('ch-nd-tps-' + s.name, [
         { name: '输出 tok/s', type: 'line', smooth: true, symbol: 'none', data: toXY(hist.speed),
-          lineStyle: { width: 1.5, color: color }, itemStyle: { color: color }, areaStyle: { color: color, opacity: 0.12 } },
+          yAxisIndex: 0, lineStyle: { width: 1.5, color: color }, itemStyle: { color: color }, areaStyle: { color: color, opacity: 0.12 } },
         { name: 'Prefill tok/s', type: 'line', smooth: true, symbol: 'none', data: toXY(hist.pre),
-          lineStyle: { width: 1.5, color: TC().s.violet }, itemStyle: { color: TC().s.violet } }
+          yAxisIndex: 1, lineStyle: { width: 1.5, color: TC().s.violet }, itemStyle: { color: TC().s.violet } }
+      ], null, [
+        Object.assign({ type: 'value', name: '输出 tok/s', nameTextStyle: { color: color, fontSize: 10 }, splitNumber: 4 }, axisStyle(TC())),
+        Object.assign({ type: 'value', name: 'Prefill', position: 'right', nameTextStyle: { color: TC().s.violet, fontSize: 10 }, splitNumber: 4 }, axisStyle(TC()))
       ]);
       lineChart('ch-nd-res-' + s.name, [
         { name: 'KV Cache %', type: 'line', smooth: true, symbol: 'none', data: toXY(hist.kv),
@@ -215,6 +221,15 @@
         { name: 'GPU 活跃 %', type: 'line', smooth: true, symbol: 'none', data: toXY(hist.gpu),
           lineStyle: { width: 1.4, color: TC().s.green }, itemStyle: { color: TC().s.green } }
       ], 100);
+      lineChart('ch-nd-thermal-' + s.name, [
+        { name: 'GPU 温度 °C', type: 'line', smooth: true, symbol: 'none', data: toXY(hist.temp),
+          yAxisIndex: 0, lineStyle: { width: 1.4, color: TC().s.amber }, itemStyle: { color: TC().s.amber } },
+        { name: 'GPU 功耗 W', type: 'line', smooth: true, symbol: 'none', data: toXY(hist.power),
+          yAxisIndex: 1, lineStyle: { width: 1.4, color: TC().s.red }, itemStyle: { color: TC().s.red } }
+      ], null, [
+        Object.assign({ type: 'value', name: '°C', nameTextStyle: { color: TC().s.amber, fontSize: 10 }, splitNumber: 4 }, axisStyle(TC())),
+        Object.assign({ type: 'value', name: 'W', position: 'right', nameTextStyle: { color: TC().s.red, fontSize: 10 }, splitNumber: 4 }, axisStyle(TC()))
+      ]);
     });
   }
 
@@ -222,7 +237,7 @@
     var f = document.getElementById('nd-node'), old = f.value;
     var rows = (st.ov && st.ov.sites.rows) || [];
     f.innerHTML = '<option value="">全部节点</option>' + rows.map(function (s) {
-      return '<option value="' + esc(s.name) + '">' + esc(s.name) + '</option>'; }).join('');
+      return '<option value="' + esc(s.name) + '">' + esc(s.display_name || s.name) + '</option>'; }).join('');
     if (Array.from(f.options).some(function (o) { return o.value === old; })) f.value = old;
   }
 

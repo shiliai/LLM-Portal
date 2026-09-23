@@ -53,7 +53,7 @@ async function installFixtures(page, seen) {
     seen.range = seen.range || [];
     seen.range.push(params.get('metric') + '@' + params.get('site') + 'h' + params.get('hours'));
     const base = { output_tok_s: 40, input_tok_s: 200, requests_active: 4,
-      kv_cache_pct: 60, gpu_util_pct: 80 }[params.get('metric')] || 0;
+      kv_cache_pct: 60, gpu_util_pct: 80, gpu_temp_c: 68, power_w: 300 }[params.get('metric')] || 0;
     return route.fulfill({ json: { metric: params.get('metric'), site: params.get('site'),
       step: 60, points: rangePoints(base) } });
   });
@@ -150,6 +150,9 @@ async function installFixtures(page, seen) {
   await page.locator('#nd-win button[data-h="6"]').click();
   await page.waitForTimeout(600);
   if (!seen.range.every(x => x.endsWith('h6'))) throw new Error('nodes page must request hours=6: ' + seen.range.join(','));
+  if (!seen.range.some(x => x.startsWith('gpu_temp_c@')) || !seen.range.some(x => x.startsWith('power_w@'))) {
+    throw new Error('nodes page must query temperature and power history: ' + seen.range.join(','));
+  }
   console.log('nodes range:', seen.range[0]);
   await page.screenshot({ path: '/tmp/e2e/r106-nodes.png', fullPage: false });
 
