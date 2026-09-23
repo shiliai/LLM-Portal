@@ -1544,6 +1544,62 @@ def test_finish_metrics_accepts_legacy_llamacpp_cache_counter_name(console_admin
     assert out["cache_hit_pct"] == pytest.approx(20.0)
 
 
+def test_site_metrics_aggregates_distinct_upstream_endpoints(console_admin, monkeypatch):
+    class _Resp:
+        def __init__(self, text):
+            self.status_code = 200
+            self.text = text
+
+    host = "test-node"
+    metrics = {
+        f"http://{host}:8004/metrics": """\
+llamacpp:requests_processing 1
+llamacpp:requests_deferred 0
+llamacpp:predicted_tokens_seconds 10
+llamacpp:prompt_tokens_seconds 20
+llamacpp:prompt_tokens_cached_total 10
+llamacpp:prompt_tokens_total 10
+""",
+        f"http://{host}:8890/metrics": """\
+llamacpp:requests_processing 2
+llamacpp:requests_deferred 3
+llamacpp:predicted_tokens_seconds 30
+llamacpp:prompt_tokens_seconds 40
+llamacpp:prompt_tokens_cached_total 20
+llamacpp:prompt_tokens_total 20
+""",
+    }
+    calls = []
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            return False
+        async def get(self, url, **kwargs):
+            calls.append(url)
+            return _Resp(metrics[url])
+
+    monkeypatch.setattr(console_admin, "VM_URL", "")
+    monkeypatch.setattr(console_admin.httpx, "AsyncClient", _Client)
+    site = {"name": "gb10", "transport": "wireguard", "wg_ip": host}
+    deps = [
+        {"litellm_params": {"api_base": f"http://{host}:8004/v1"}},
+        # Same endpoint under another model name must only be scraped once.
+        {"litellm_params": {"api_base": f"http://{host}:8004/v1"}},
+        {"litellm_params": {"api_base": f"http://{host}:8890/v1"}},
+    ]
+    out = asyncio.run(console_admin.site_metrics(site, deps))
+    assert out["requests_running"] == 3
+    assert out["requests_waiting"] == 3
+    assert out["output_tok_s"] == 40
+    assert out["input_tok_s"] == 60
+    assert out["cache_hit_pct"] == pytest.approx(50.0)
+    assert calls == [f"http://{host}:8004/metrics", f"http://{host}:8890/metrics"]
+
+
 def test_workstation_display_name_is_x570(console_admin):
     assert console_admin.site_display_name("workstation") == "x570"
     assert console_admin.site_display_name("m2s2NasUbuntuVM-shili-dev") == "m2s2NasUbuntuVM-shili-dev"
