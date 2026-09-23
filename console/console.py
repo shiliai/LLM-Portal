@@ -937,11 +937,21 @@ async def site_metrics(site: dict, deps: list[dict]) -> dict:
              for d in deps if dep_of_site_row(d, site)]
     if site.get("transport", "wireguard") == "direct" and site.get("address"):
         bases.insert(0, str(site["address"]))
+    # Several model deployments can share one upstream endpoint (for example
+    # multiple model names on a single llama.cpp port).  Fetch each endpoint
+    # once, then aggregate all distinct endpoints belonging to this site.  The
+    # old first-success break made requests on a later deployment invisible in
+    # the activity/queue tiles.
+    seen_urls: set[str] = set()
+    direct_vals: dict[str, float] = {}
     out: dict = {}
     for base in bases:
         url = base.rstrip("/")
         if url.endswith("/v1"):
             url = url[:-3]
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
         try:
             async with httpx.AsyncClient(timeout=2, follow_redirects=False) as client:
                 r = await client.get(url + "/metrics")
@@ -953,14 +963,14 @@ async def site_metrics(site: dict, deps: list[dict]) -> dict:
                     continue
                 name, raw = line.split(None, 1)
                 try:
-                    vals[name.split("{")[0]] = float(raw)
+                    metric_name = name.split("{")[0]
+                    direct_vals[metric_name] = direct_vals.get(metric_name, 0.0) + float(raw)
                 except ValueError:
                     continue
-            out = _finish_metrics(vals)
-            if out:
-                break
         except (httpx.HTTPError, ValueError):
             pass
+    if direct_vals:
+        out = _finish_metrics(direct_vals)
     # Direct node access is useful for low-latency values, but the central
     # VictoriaMetrics store is the authoritative fallback for nodes whose
     # model endpoint is not reachable from consoled (for example gb10).
