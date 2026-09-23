@@ -1523,7 +1523,7 @@ def test_finish_metrics_maps_aliases_and_derives_ratios(console_admin):
     assert out["requests_running"] == 3
     assert out["requests_waiting"] == 1
     assert out["spec_accept_pct"] == pytest.approx(62.0)
-    assert out["cache_hit_pct"] == pytest.approx(64.0)
+    assert out["cache_hit_pct"] == pytest.approx(39.0)
     assert out["gpu_util_pct"] == 82.0
     assert out["gpu_temp_c"] == 64.0
     assert out["power_w"] == 285.0
@@ -1541,7 +1541,7 @@ def test_finish_metrics_accepts_legacy_llamacpp_cache_counter_name(console_admin
         "llamacpp:prompt_tokens_cached": 250,
         "llamacpp:prompt_tokens_total": 1000,
     })
-    assert out["cache_hit_pct"] == pytest.approx(25.0)
+    assert out["cache_hit_pct"] == pytest.approx(20.0)
 
 
 def test_workstation_display_name_is_x570(console_admin):

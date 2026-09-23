@@ -883,10 +883,15 @@ def _derive_metrics(vals: dict) -> dict:
                       "vllm:spec_decode_num_draft_tokens_total")
     if spec is not None:
         out["spec_accept_pct"] = round(spec, 1)
-    hit = _ratio(vals, "llamacpp:prompt_tokens_cached_total", "llamacpp:prompt_tokens_total")
-    if hit is None:
+    cached = vals.get("llamacpp:prompt_tokens_cached_total")
+    uncached = vals.get("llamacpp:prompt_tokens_total")
+    if cached is None:
         # Older llama.cpp builds used the short cached-token name.
-        hit = _ratio(vals, "llamacpp:prompt_tokens_cached", "llamacpp:prompt_tokens_total")
+        cached = vals.get("llamacpp:prompt_tokens_cached")
+    # llama.cpp's prompt_tokens_total excludes cached tokens, so the hit
+    # denominator is cached + uncached prompt tokens.
+    hit = (cached / (cached + uncached) * 100
+           if cached is not None and uncached is not None and cached + uncached > 0 else None)
     if hit is None:
         hit = _ratio(vals, "vllm:prefix_cache_hits_total", "vllm:prefix_cache_queries_total")
     if hit is not None:
@@ -963,8 +968,12 @@ async def site_metrics(site: dict, deps: list[dict]) -> dict:
         vm_out = await vm_site_metrics(str(site.get("name") or "").strip())
         if vm_out:
             # VM 独有字段（DCGM 温度/功耗/利用率只经 node-agent 入库）与直连值合并；
-            # 直连值更新鲜，同名字段以直连为准
-            vm_out.update(out or {})
+            # 直连值更新鲜，同名字段以直连为准；llama.cpp 空闲时吞吐 gauge
+            # 会归零，此时保留 VM 端由计数器 rate 派生的值。
+            for key, value in (out or {}).items():
+                if key in {"output_tok_s", "input_tok_s"} and value == 0 and vm_out.get(key) is not None:
+                    continue
+                vm_out[key] = value
             return vm_out
     return out or {}
 
