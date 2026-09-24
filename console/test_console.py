@@ -1561,12 +1561,10 @@ llamacpp:prompt_tokens_cached_total 10
 llamacpp:prompt_tokens_total 10
 """,
         f"http://{host}:8890/metrics": """\
-llamacpp:requests_processing 2
-llamacpp:requests_deferred 3
-llamacpp:predicted_tokens_seconds 30
-llamacpp:prompt_tokens_seconds 40
-llamacpp:prompt_tokens_cached_total 20
-llamacpp:prompt_tokens_total 20
+vllm:num_requests_running{model_name="m1"} 2
+vllm:num_requests_waiting{model_name="m1"} 3
+generation_tokens_per_second 30
+prompt_tokens_per_second 40
 """,
     }
     calls = []

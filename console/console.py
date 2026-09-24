@@ -917,7 +917,20 @@ def _finish_metrics(vals: dict) -> dict:
         "DCGM_FI_DEV_GPU_TEMP": "gpu_temp_c",
         "DCGM_FI_DEV_POWER_USAGE": "power_w",
     }
-    out = {dst: round(vals[src] * (100 if dst == "kv_cache_pct" and vals[src] <= 1 else 1), 2) for src, dst in aliases.items() if src in vals}
+    additive = {"output_tok_s", "input_tok_s", "requests_running", "requests_waiting"}
+    out: dict[str, float] = {}
+    for src, dst in aliases.items():
+        if src not in vals:
+            continue
+        value = vals[src] * (100 if dst == "kv_cache_pct" and vals[src] <= 1 else 1)
+        # A site may expose llama.cpp and vLLM endpoints at the same time.
+        # Their additive gauges must be combined; otherwise a zero-valued
+        # llama.cpp alias later in this mapping hides active vLLM requests.
+        if dst in additive and dst in out:
+            out[dst] += value
+        else:
+            out[dst] = value
+    out = {key: round(value, 2) for key, value in out.items()}
     out.update(_derive_metrics(vals))
     if out:
         out["runtime"] = "vllm" if any(k.startswith("vllm:") for k in vals) else \
