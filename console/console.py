@@ -842,15 +842,25 @@ SITE_DISPLAY_NAMES = {"workstation": "x570"}
 def site_display_name(name: str) -> str:
     return SITE_DISPLAY_NAMES.get(str(name), str(name))
 
+# vmagent 每 15 秒抓取一次节点指标。吞吐使用 irate 读取最近两个采样点，
+# 1 分钟只作为容错回看范围（允许一次抓取延迟/丢失），不再对过去 5 分钟做平滑平均。
 # 趋势查询的逻辑名 → PromQL 片段列表（{M} 为标签匹配占位符；同一节点的
 # llama.cpp / vLLM 两路片段用 or 合并，实际只有一路有数据）
+_TPS_RATE_FUNCTION = "irate"
+_TPS_RATE_WINDOW = "1m"
+
+
+def _tps_rate(metric: str) -> str:
+    return f"sum({_TPS_RATE_FUNCTION}({metric}{{M}}[{_TPS_RATE_WINDOW}]))"
+
+
 LOGICAL_RANGE_METRICS: dict[str, list[str]] = {
-    "output_tok_s": ["sum(rate(llamacpp:tokens_predicted_total{M}[5m]))",
+    "output_tok_s": [_tps_rate("llamacpp:tokens_predicted_total"),
                      "llamacpp:predicted_tokens_seconds{M}",
-                     "sum(rate(vllm:generation_tokens_total{M}[5m]))"],
-    "input_tok_s": ["sum(rate(llamacpp:prompt_tokens_total{M}[5m]))",
+                     _tps_rate("vllm:generation_tokens_total")],
+    "input_tok_s": [_tps_rate("llamacpp:prompt_tokens_total"),
                     "llamacpp:prompt_tokens_seconds{M}",
-                    "sum(rate(vllm:prompt_tokens_total{M}[5m]))"],
+                    _tps_rate("vllm:prompt_tokens_total")],
     "requests_running": ["avg(llamacpp:requests_processing{M})",
                          "avg(vllm:num_requests_running{M})"],
     "requests_waiting": ["avg(llamacpp:requests_deferred{M})",
@@ -1038,26 +1048,30 @@ async def vm_site_metrics(site_name: str) -> dict:
             # 兜底：实例标签=站点名（如 instance="gb10-head" 的非 -llm 命名）
             vals = await vm_query_instant(
                 '{__name__=~"' + _VM_METRIC_RE + '",instance=~"^{name}(-llm)?$"}'.replace("{name}", site_name))
-        # 用计数器的 5m rate 作为 VM 即时吞吐，避免 llama.cpp 的滚动 gauge
-        # 在采集间隔内归零造成卡片和曲线看起来没有变化。
+        # 用计数器最近两个采样点的即时速率作为 VM 吞吐，避免 llama.cpp
+        # 的滚动 gauge 在采集间隔内归零造成卡片和曲线看起来没有变化。
         if vals and "llamacpp:tokens_predicted_total" in vals:
-            rate = await vm_query_instant("sum(rate(llamacpp:tokens_predicted_total" +
-                                          matcher[matcher.index("{"):] + "[5m]))")
+            rate = await vm_query_instant(
+                "sum(" + _TPS_RATE_FUNCTION + "(llamacpp:tokens_predicted_total" +
+                matcher[matcher.index("{"):] + "[" + _TPS_RATE_WINDOW + "]))")
             if rate:
                 vals["llamacpp:predicted_tokens_seconds"] = next(iter(rate.values()))
         if vals and "vllm:generation_tokens_total" in vals:
-            rate = await vm_query_instant("sum(rate(vllm:generation_tokens_total" +
-                                          matcher[matcher.index("{"):] + "[5m]))")
+            rate = await vm_query_instant(
+                "sum(" + _TPS_RATE_FUNCTION + "(vllm:generation_tokens_total" +
+                matcher[matcher.index("{"):] + "[" + _TPS_RATE_WINDOW + "]))")
             if rate:
                 vals["generation_tokens_per_second"] = next(iter(rate.values()))
         if vals and "llamacpp:prompt_tokens_total" in vals:
-            rate_in = await vm_query_instant("sum(rate(llamacpp:prompt_tokens_total" +
-                                             matcher[matcher.index("{"):] + "[5m]))")
+            rate_in = await vm_query_instant(
+                "sum(" + _TPS_RATE_FUNCTION + "(llamacpp:prompt_tokens_total" +
+                matcher[matcher.index("{"):] + "[" + _TPS_RATE_WINDOW + "]))")
             if rate_in:
                 vals["llamacpp:prompt_tokens_seconds"] = next(iter(rate_in.values()))
         if vals and "vllm:prompt_tokens_total" in vals:
-            rate_in = await vm_query_instant("sum(rate(vllm:prompt_tokens_total" +
-                                             matcher[matcher.index("{"):] + "[5m]))")
+            rate_in = await vm_query_instant(
+                "sum(" + _TPS_RATE_FUNCTION + "(vllm:prompt_tokens_total" +
+                matcher[matcher.index("{"):] + "[" + _TPS_RATE_WINDOW + "]))")
             if rate_in:
                 vals["prompt_tokens_per_second"] = next(iter(rate_in.values()))
     except (httpx.HTTPError, ValueError, TypeError, KeyError):
