@@ -79,10 +79,22 @@
         <span class="pf-logo-mark" aria-hidden="true"><svg width="26" height="26" viewBox="0 0 26 26" fill="none"><rect x="1" y="1" width="24" height="24" rx="6" fill="var(--accent-soft)" stroke="var(--accent)"/><path d="M7 9.5h12M7 13h8M7 16.5h5" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round"/></svg></span>
         <span class="pf-logo-text">LLM Portal</span>
       </div>
-      <nav class="pf-nav" aria-label="原型导航">
-        <div class="pf-nav-group">PROTOTYPE</div>
-        <div class="pf-nav-item active" aria-current="page"><span aria-hidden="true">◈</span> Conversation Monitor</div>
-        <div class="pf-nav-item" style="opacity:.45;cursor:default"><span aria-hidden="true">◌</span> 其他控制台页面</div>
+      <nav class="pf-nav" aria-label="控制台导航">
+        <div class="pf-nav-group">监控</div>
+        <div class="pf-nav-item" data-demo-nav="总览"><span aria-hidden="true">▦</span> 总览</div>
+        <div class="pf-nav-item" data-demo-nav="节点性能"><span aria-hidden="true">◌</span> 节点性能</div>
+        <div class="pf-nav-item" data-demo-nav="请求与用量"><span aria-hidden="true">▥</span> 请求与用量</div>
+        <div class="pf-nav-item active" aria-current="page"><span aria-hidden="true">◈</span> 对话监控</div>
+        <div class="pf-nav-group">资源</div>
+        <div class="pf-nav-item" data-demo-nav="站点与公钥"><span aria-hidden="true">⌘</span> 站点与公钥</div>
+        <div class="pf-nav-item" data-demo-nav="分组"><span aria-hidden="true">▱</span> 分组</div>
+        <div class="pf-nav-item" data-demo-nav="模型与别名"><span aria-hidden="true">⇄</span> 模型与别名</div>
+        <div class="pf-nav-item" data-demo-nav="用户 Key"><span aria-hidden="true">⌘</span> 用户 Key</div>
+        <div class="pf-nav-item" data-demo-nav="MCP 管理"><span aria-hidden="true">&lt;/&gt;</span> MCP 管理</div>
+        <div class="pf-nav-group">系统</div>
+        <div class="pf-nav-item" data-demo-nav="安全设置"><span aria-hidden="true">♢</span> 安全设置</div>
+        <div class="pf-nav-group">个人</div>
+        <div class="pf-nav-item" data-demo-nav="我的用量"><span aria-hidden="true">♙</span> 我的用量</div>
       </nav>
       <div class="pf-sidebar-foot">
         <span class="pf-avatar sm">P</span><div><div class="pf-admin-name">Prototype user</div><div class="pf-admin-sub">mock session</div></div>
@@ -164,6 +176,7 @@
   function openDrawer(id){ var r=records.find(function(x){return x.id===id;}); if(!r) return; state.selected=r; $('drawer-subtitle').textContent='OPF-safe event · '+r.id; $('drawer-body').innerHTML='<dl class="cm-detail-meta"><dt>Request ID</dt><dd class="cm-mono">'+esc(r.id)+'</dd><dt>Time</dt><dd class="cm-mono">'+esc(r.time)+'</dd><dt>Key</dt><dd><span class="pf-key">'+esc(r.key)+'</span></dd><dt>Model</dt><dd>'+esc(r.model)+'</dd><dt>Protocol</dt><dd>'+esc(protocolLabel(r.protocol))+'</dd><dt>Status</dt><dd>'+statusChip(r.status)+'</dd><dt>Redaction</dt><dd>'+redactionLabel(r.redaction)+'</dd></dl><div class="cm-detail-section"><h3>Request</h3><pre class="cm-detail-code">'+esc(r.request)+'</pre></div><div class="cm-detail-section"><h3>Response</h3><pre class="cm-detail-code">'+esc(r.response)+'</pre></div><div class="cm-detail-section"><h3>Tool calls</h3><pre class="cm-detail-code">'+esc(r.tool)+'</pre></div><div class="cm-detail-section"><h3>Usage</h3><pre class="cm-detail-code">'+esc(r.usage)+'\nlatency '+(r.latency?r.latency+' ms':'not captured')+'</pre></div>'; $('detail-drawer').classList.add('open'); $('drawer-overlay').classList.add('open'); $('detail-drawer').setAttribute('aria-hidden','false'); }
   function closeDrawer(){ $('detail-drawer').classList.remove('open'); $('drawer-overlay').classList.remove('open'); $('detail-drawer').setAttribute('aria-hidden','true'); }
   function toast(msg){ var el=$('toast'); el.textContent=msg; el.classList.add('show'); clearTimeout(window.__toastTimer); window.__toastTimer=setTimeout(function(){el.classList.remove('show');},1800); }
+  document.querySelectorAll('[data-demo-nav]').forEach(function(item){ item.addEventListener('click',function(){ toast(item.dataset.demoNav+' · 原型导航占位'); }); });
   function setMode(mode){ state.mode=mode; document.querySelectorAll('#capture-mode button').forEach(function(b){b.classList.toggle('on',b.dataset.mode===mode);}); $('capture-chip').textContent=mode; $('status-capture').textContent=mode; if(mode==='off'){ $('capture-chip').parentElement.className='pf-chip gray'; $('status-capture').className='pf-chip gray'; } else { $('capture-chip').parentElement.className='pf-chip accent'; $('status-capture').className='pf-chip accent'; } toast('Capture mode → '+mode); }
   function setSse(on){ state.sse=on; $('sse-toggle').textContent=on?'Pause stream':'Resume stream'; $('sse-status').textContent=on?'SSE connected':'SSE paused'; $('sse-dot').className='cm-status-dot '+(on?'':'paused'); $('sse-dot').parentElement.className='pf-chip '+(on?'ok':'warn')+' cm-status'; $('policy-sse-chip').textContent=on?'connected':'paused'; $('policy-sse-chip').className='pf-chip '+(on?'ok':'warn'); drawLive(); toast(on?'SSE stream resumed':'SSE stream paused'); }
   document.querySelectorAll('#monitor-tabs .pf-tab').forEach(function(tab){tab.addEventListener('click',function(){document.querySelectorAll('#monitor-tabs .pf-tab').forEach(function(t){t.classList.toggle('active',t===tab);});document.querySelectorAll('.pf-tabpane').forEach(function(p){p.classList.toggle('active',p.dataset.tab===tab.dataset.tab);});});});
