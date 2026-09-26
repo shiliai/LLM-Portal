@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Conversation Monitor · Prototype</title>
+  <link rel="stylesheet" href="assets/portal.css">
+  <style>
+    .cm-prototype { border-left: 3px solid var(--amber); }
+    .cm-page-head { align-items: flex-start; }
+    .cm-page-head h1 { font-size: 19px; letter-spacing: .1px; }
+    .cm-page-head .pf-desc { max-width: 780px; }
+    .cm-head-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .cm-status { display:inline-flex; align-items:center; gap:7px; white-space:nowrap; }
+    .cm-status-dot { width:8px; height:8px; border-radius:50%; background:var(--green); box-shadow:var(--dot-glow) var(--green); }
+    .cm-status-dot.paused { background:var(--amber); box-shadow:var(--dot-glow) var(--amber); }
+    .cm-status-dot.off { background:var(--muted); box-shadow:none; }
+    .cm-status-dot.error { background:var(--red); box-shadow:var(--dot-glow) var(--red); }
+    .cm-kpi-accent { color:var(--accent); }
+    .cm-kpi-green { color:var(--green); }
+    .cm-kpi-amber { color:var(--amber); }
+    .cm-kpi-red { color:var(--red); }
+    .cm-kpi-violet { color:var(--violet); }
+    .cm-live-card { min-height: 244px; }
+    .cm-live-row { display:grid; grid-template-columns: 92px minmax(0,1fr) 124px 90px; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--border); }
+    .cm-live-row:last-child { border-bottom:0; }
+    .cm-live-time,.cm-live-id { color:var(--muted); font:11px var(--mono); }
+    .cm-live-main { min-width:0; }
+    .cm-live-title { color:var(--heading); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .cm-live-sub { margin-top:2px; color:var(--muted); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .cm-live-right { text-align:right; }
+    .cm-stream-empty { display:flex; align-items:center; justify-content:center; min-height:160px; color:var(--muted); border:1px dashed var(--border2); border-radius:5px; }
+    .cm-filter-toolbar { align-items:flex-end; }
+    .cm-filter-toolbar .pf-tb-item { align-items:flex-start; flex-direction:column; gap:4px; }
+    .cm-filter-toolbar .pf-tb-item label { font-size:10px; color:var(--muted); letter-spacing:.4px; }
+    .cm-filter-toolbar .pf-tb-right { margin-left:auto; align-items:center; }
+    .cm-table-wrap { overflow-x:auto; }
+    .cm-table th, .cm-table td { white-space:nowrap; }
+    .cm-table tbody tr { cursor:pointer; }
+    .cm-table .request-id { color:var(--accent); font-family:var(--mono); font-size:11px; }
+    .cm-redacted { color:var(--violet); font-family:var(--mono); font-size:11px; }
+    .cm-policy-grid { display:grid; grid-template-columns: 1.1fr 1fr; gap:12px; }
+    .cm-policy-row { display:grid; grid-template-columns: 132px minmax(0,1fr); align-items:center; gap:12px; padding:11px 0; border-bottom:1px solid var(--border); }
+    .cm-policy-row:last-child { border-bottom:0; }
+    .cm-policy-label { color:var(--text2); }
+    .cm-policy-control { display:flex; align-items:center; gap:10px; min-width:0; }
+    .cm-policy-control .pf-desc { margin:0; }
+    .cm-mode-seg { display:flex; flex-wrap:wrap; }
+    .cm-mode-seg button { min-width:82px; }
+    .cm-key-policy td { vertical-align:middle; }
+    .cm-key-policy .pf-switch { margin-top:2px; }
+    .cm-helper { padding:10px 12px; border-left:2px solid var(--accent); background:var(--accent-soft); color:var(--text2); border-radius:0 4px 4px 0; font-size:12px; }
+    .cm-drawer { width:560px; max-width:94vw; }
+    .cm-detail-meta { display:grid; grid-template-columns: 116px minmax(0,1fr); gap:7px 12px; margin-bottom:16px; }
+    .cm-detail-meta dt { color:var(--muted); }
+    .cm-detail-meta dd { margin:0; color:var(--text); min-width:0; word-break:break-word; }
+    .cm-detail-section { margin-top:18px; }
+    .cm-detail-section h3 { margin-bottom:8px; font-size:12px; color:var(--heading); }
+    .cm-detail-code { max-height:190px; overflow:auto; background:var(--panel3); border:1px solid var(--border); border-radius:5px; padding:10px 12px; color:var(--text2); font:11px/1.55 var(--mono); white-space:pre-wrap; word-break:break-word; }
+    .cm-drawer-overlay { position:fixed; inset:0; background:rgba(0,0,0,.34); z-index:899; opacity:0; visibility:hidden; transition:opacity .2s,visibility .2s; }
+    .cm-drawer-overlay.open { opacity:1; visibility:visible; }
+    .cm-footnote { margin-top:4px; color:var(--muted); font-size:11px; }
+    .cm-mono { font-family:var(--mono); }
+    .cm-count { color:var(--muted); font:11px var(--mono); }
+    .cm-pager-row { display:flex; align-items:center; gap:12px; padding:9px 12px; }
+    .cm-pager-row .pf-pager { margin-left:auto; padding:0; }
+    .cm-pager-size { display:flex; align-items:center; gap:7px; }
+    .cm-no-results { padding:28px 16px; text-align:center; color:var(--muted); }
+    .cm-toast { position:fixed; right:20px; top:60px; z-index:960; padding:9px 13px; border:1px solid var(--border2); border-left:3px solid var(--accent); background:var(--panel2); color:var(--text); border-radius:5px; box-shadow:0 4px 16px rgba(0,0,0,.25); opacity:0; transform:translateY(-5px); pointer-events:none; transition:.2s; }
+    .cm-toast.show { opacity:1; transform:translateY(0); }
+    @media (max-width: 920px) { .cm-policy-grid { grid-template-columns:1fr; } .cm-live-row { grid-template-columns:78px minmax(0,1fr) 100px; } .cm-live-right { display:none; } }
+    @media (max-width: 720px) { .cm-head-actions { width:100%; } .cm-page-head h1 { font-size:17px; } .cm-filter-toolbar .pf-tb-right { margin-left:0; } .cm-policy-row { grid-template-columns:1fr; gap:5px; } .cm-drawer { width:100%; max-width:100%; } .cm-live-row { grid-template-columns:1fr auto; gap:4px 9px; } .cm-live-time { grid-column:1; } .cm-live-main { grid-column:1; } .cm-live-row .pf-chip { grid-column:2; grid-row:1 / span 2; } }
+  </style>
+</head>
+<body>
+  <div class="pf-layout">
+    <aside class="pf-sidebar">
+      <div class="pf-logo">
+        <span class="pf-logo-mark" aria-hidden="true"><svg width="26" height="26" viewBox="0 0 26 26" fill="none"><rect x="1" y="1" width="24" height="24" rx="6" fill="var(--accent-soft)" stroke="var(--accent)"/><path d="M7 9.5h12M7 13h8M7 16.5h5" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round"/></svg></span>
+        <span class="pf-logo-text">LLM Portal</span>
+      </div>
+      <nav class="pf-nav" aria-label="原型导航">
+        <div class="pf-nav-group">PROTOTYPE</div>
+        <div class="pf-nav-item active" aria-current="page"><span aria-hidden="true">◈</span> Conversation Monitor</div>
+        <div class="pf-nav-item" style="opacity:.45;cursor:default"><span aria-hidden="true">◌</span> 其他控制台页面</div>
+      </nav>
+      <div class="pf-sidebar-foot">
+        <span class="pf-avatar sm">P</span><div><div class="pf-admin-name">Prototype user</div><div class="pf-admin-sub">mock session</div></div>
+      </div>
+    </aside>
+    <main class="pf-main">
+      <header class="pf-topbar"><div class="pf-topbar-title">Conversation Monitor</div><div class="pf-topbar-right"><span class="pf-build">prototype · mock data</span><button class="pf-theme-btn" id="theme-btn" title="切换主题" type="button">☼</button><span class="pf-avatar">P</span></div></header>
+      <section class="pf-content">
+        <div class="pf-banner cm-prototype"><strong>Prototype</strong><span>此页面仅用于 #130 设计评审，所有请求、响应与指标均为 mock data，不连接真实 API，也未加入线上导航。</span></div>
+        <div class="pf-page-head cm-page-head">
+          <div><h1>对话采集与回放监控</h1><div class="pf-desc">查看采集链路健康度、实时 SSE 流和已脱敏记录。Portal capture 与 collector redaction 分开控制。</div></div>
+          <div class="cm-head-actions"><span class="pf-chip accent">Portal capture · <b id="capture-chip">persist</b></span><span class="pf-chip ok cm-status"><i class="cm-status-dot" id="sse-dot"></i><span id="sse-status">SSE connected</span></span><button class="pf-btn sm" id="sse-toggle" type="button">Pause stream</button></div>
+        </div>
+
+        <div class="pf-tabs" id="monitor-tabs"><button class="pf-tab active" data-tab="overview" type="button">Overview</button><button class="pf-tab" data-tab="records" type="button">Records</button><button class="pf-tab" data-tab="policy" type="button">Policy</button></div>
+
+        <section class="pf-tabpane active" data-tab="overview">
+          <div class="pf-kpi-row" style="grid-template-columns:repeat(5,1fr)">
+            <div class="pf-kpi"><div class="k-label">今日采集</div><div class="k-val cm-kpi-accent" id="k-captured">1,284</div><div class="k-sub">requests · 68 / min</div></div>
+            <div class="pf-kpi"><div class="k-label">已脱敏</div><div class="k-val cm-kpi-green" id="k-redacted">1,271</div><div class="k-sub">99.0% of captured</div></div>
+            <div class="pf-kpi"><div class="k-label">已丢弃</div><div class="k-val cm-kpi-amber" id="k-dropped">13</div><div class="k-sub">queue full / policy</div></div>
+            <div class="pf-kpi"><div class="k-label">保留容量</div><div class="k-val cm-kpi-violet">62<span class="unit">%</span></div><div class="k-sub">31.0k / 50k records</div></div>
+            <div class="pf-kpi"><div class="k-label">SSE lag</div><div class="k-val cm-kpi-green">420<span class="unit">ms</span></div><div class="k-sub">last event · 10:42:16</div></div>
+          </div>
+
+          <div class="pf-grid main-side">
+            <div class="pf-card cm-live-card"><div class="pf-card-head"><div class="pf-card-title">Live stream</div><div class="pf-card-extra"><span class="cm-count" id="live-count">3 events / 30s</span></div></div><div id="live-stream"></div></div>
+            <div class="pf-card"><div class="pf-card-head"><div class="pf-card-title">链路状态</div><div class="pf-card-extra"><span class="pf-chip ok">healthy</span></div></div><div class="pf-kv"><div class="pf-kv-k">Portal capture</div><div class="pf-kv-v"><span class="pf-chip accent" id="status-capture">persist</span></div><div class="pf-kv-k">SSE client</div><div class="pf-kv-v"><span class="pf-chip ok">connected</span></div><div class="pf-kv-k">Collector redaction</div><div class="pf-kv-v"><span class="pf-chip ok">on</span></div><div class="pf-kv-k">Store</div><div class="pf-kv-v">SQLite · local volume</div><div class="pf-kv-k">Last-Event-ID</div><div class="pf-kv-v cm-mono">evt_0001842</div></div><div class="cm-helper" style="margin-top:14px">采集写入失败只计入 dropped，并不会阻断模型请求。</div></div>
+          </div>
+          <div class="pf-card"><div class="pf-card-head"><div class="pf-card-title">最近活动</div><div class="pf-card-extra">筛选后显示最近 10 条</div></div><div class="cm-table-wrap"><table class="pf-table cm-table"><thead><tr><th>时间</th><th>Request ID</th><th>Key</th><th>模型</th><th>协议</th><th>结果</th><th>脱敏</th><th class="num">总时延</th></tr></thead><tbody id="recent-tbody"></tbody></table></div></div>
+        </section>
+
+        <section class="pf-tabpane" data-tab="records">
+          <div class="pf-toolbar cm-filter-toolbar"><div class="pf-tb-item"><label for="filter-time">时间</label><select class="pf-select" id="filter-time"><option value="today">今天</option><option value="24h">近 24 小时</option><option value="7d">近 7 天</option></select></div><div class="pf-tb-item"><label for="filter-key">Key</label><select class="pf-select" id="filter-key"><option value="all">全部 Key</option><option value="prod-app">prod-app••••1a</option><option value="eval-bot">eval-bot••••77</option><option value="ops-cli">ops-cli••••09</option></select></div><div class="pf-tb-item"><label for="filter-model">模型</label><select class="pf-select" id="filter-model"><option value="all">全部模型</option><option value="qwen3-32b">qwen3-32b</option><option value="deepseek-v3">deepseek-v3</option><option value="gpt-oss-120b">gpt-oss-120b</option></select></div><div class="pf-tb-item"><label for="filter-protocol">协议</label><select class="pf-select" id="filter-protocol"><option value="all">全部协议</option><option value="openai-chat">OpenAI chat</option><option value="openai-responses">Responses</option></select></div><div class="pf-tb-item"><label for="filter-status">状态</label><select class="pf-select" id="filter-status"><option value="all">全部状态</option><option value="ok">成功</option><option value="error">失败</option><option value="dropped">丢弃</option></select></div><div class="pf-tb-item"><label for="filter-search">搜索</label><input class="pf-input" id="filter-search" placeholder="request id / model" type="search"></div><div class="pf-tb-right"><span class="cm-count" id="record-count"></span><button class="pf-btn" id="filter-reset" type="button">重置</button></div></div>
+          <div class="pf-card flush"><div class="pf-card-head"><div class="pf-card-title">脱敏采集记录</div><div class="pf-card-extra"><span class="pf-chip violet">OPF-safe view</span><span>点击行查看详情</span></div></div><div class="cm-table-wrap"><table class="pf-table cm-table"><thead><tr><th>时间</th><th>Request ID</th><th>Key</th><th>模型</th><th>协议</th><th>状态</th><th>脱敏</th><th class="num">Tokens</th><th class="num">延迟</th></tr></thead><tbody id="records-tbody"></tbody></table></div><div class="cm-pager-row"><div class="cm-pager-size"><span class="pf-desc">每页</span><div class="pf-seg" id="page-size"><button type="button" data-size="5" class="on">5</button><button type="button" data-size="10">10</button></div></div><div class="pf-pager" id="records-pager"></div></div></div>
+        </section>
+
+        <section class="pf-tabpane" data-tab="policy">
+          <div class="cm-policy-grid"><div class="pf-card"><div class="pf-card-head"><div class="pf-card-title">Capture policy</div><div class="pf-card-extra"><span class="pf-chip gray">Portal</span></div></div><div class="cm-policy-row"><div class="cm-policy-label">Capture mode</div><div class="cm-policy-control"><div class="pf-seg cm-mode-seg" id="capture-mode"><button type="button" data-mode="off">off</button><button type="button" data-mode="stream">stream</button><button type="button" data-mode="persist" class="on">persist</button></div></div></div><div class="cm-policy-row"><div class="cm-policy-label">SSE connection</div><div class="cm-policy-control"><span class="pf-chip ok" id="policy-sse-chip">connected</span><span class="pf-desc">collector client uses Last-Event-ID</span></div></div><div class="cm-policy-row"><div class="cm-policy-label">Redaction</div><div class="cm-policy-control"><label class="pf-switch"><input id="redaction-toggle" type="checkbox" checked><span></span></label><span id="redaction-label">on</span><span class="pf-desc">collector side · required for persist</span></div></div><div class="cm-policy-row"><div class="cm-policy-label">Retention</div><div class="cm-policy-control"><select class="pf-select" id="retention-select"><option value="7">7 days</option><option value="14" selected>14 days</option><option value="30">30 days</option></select><span class="pf-desc">TTL starts at ingest time</span></div></div><div class="cm-policy-row"><div class="cm-policy-label">Capacity</div><div class="cm-policy-control"><select class="pf-select" id="capacity-select"><option>10,000 records</option><option selected>50,000 records</option><option>100,000 records</option></select></div></div></div><div class="pf-card"><div class="pf-card-head"><div class="pf-card-title">Key allowlist</div><div class="pf-card-extra">selective capture</div></div><div class="cm-helper" style="margin-bottom:12px">默认关闭；只有启用的 Key 进入 capture path。Key 值在界面中始终脱敏显示。</div><div class="cm-table-wrap"><table class="pf-table cm-key-policy"><thead><tr><th>Key</th><th>Scope</th><th>Capture</th><th>Last event</th></tr></thead><tbody><tr><td><span class="pf-key">prod-app••••1a</span></td><td>production</td><td><label class="pf-switch"><input type="checkbox" class="key-toggle" data-key="prod-app" checked><span></span></label></td><td class="cm-mono">10:42:16</td></tr><tr><td><span class="pf-key">eval-bot••••77</span></td><td>evaluation</td><td><label class="pf-switch"><input type="checkbox" class="key-toggle" data-key="eval-bot" checked><span></span></label></td><td class="cm-mono">10:41:52</td></tr><tr><td><span class="pf-key">ops-cli••••09</span></td><td>operations</td><td><label class="pf-switch"><input type="checkbox" class="key-toggle" data-key="ops-cli"><span></span></label></td><td class="cm-mono">—</td></tr></tbody></table></div><div class="cm-footnote">Policy changes apply to new requests. Existing records retain their original capture decision.</div></div></div>
+          <div class="pf-card"><div class="pf-card-head"><div class="pf-card-title">职责边界</div><div class="pf-card-extra">design contract</div></div><div class="pf-grid cols-3"><div><span class="pf-chip accent">Portal</span><p class="pf-desc" style="margin-top:8px">决定是否 capture、按 Key 选择、提供 SSE/REST 查询与容量/TTL 策略。Portal 不内置 OPF。</p></div><div><span class="pf-chip violet">Collector client</span><p class="pf-desc" style="margin-top:8px">通过 SSE 接收事件，完成脱敏后再写入自己的分析或审计系统。</p></div><div><span class="pf-chip gray">OPF</span><p class="pf-desc" style="margin-top:8px">外部脱敏/策略能力，可被 collector 调用；不属于 Portal runtime，也不阻断主模型请求。</p></div></div></div>
+        </section>
+      </section>
+    </main>
+  </div>
+  <div class="cm-drawer-overlay" id="drawer-overlay"></div>
+  <aside class="pf-drawer cm-drawer" id="detail-drawer" aria-hidden="true"><div class="pf-drawer-head"><div><div class="pf-drawer-title">Record detail</div><div class="pf-desc" id="drawer-subtitle">OPF-safe event</div></div><button class="pf-x" id="drawer-close" type="button" aria-label="关闭">×</button></div><div class="pf-drawer-body" id="drawer-body"></div><div class="pf-drawer-foot"><button class="pf-btn" id="drawer-close-foot" type="button">Close</button><button class="pf-btn primary" id="drawer-copy" type="button">Copy request ID</button></div></aside>
+  <div class="cm-toast" id="toast" role="status"></div>
+<script>
+(function () {
+  'use strict';
+  var records = [
+    {time:'10:42:16', id:'req_0001842', key:'prod-app••••1a', keyId:'prod-app', model:'qwen3-32b', protocol:'openai-chat', status:'ok', redaction:'complete', tokens:1842, latency:820, request:'请将本次请求视为脱敏示例。', response:'[REDACTED_RESPONSE] · 2,104 output tokens', tool:'none', usage:'input 1,024 · output 818 · total 1,842'},
+    {time:'10:41:52', id:'req_0001841', key:'eval-bot••••77', keyId:'eval-bot', model:'deepseek-v3', protocol:'openai-responses', status:'ok', redaction:'complete', tokens:4210, latency:1240, request:'[REDACTED_PROMPT] · 3 message parts', response:'[REDACTED_RESPONSE] · 1,988 output tokens', tool:'search_catalog · 2 calls', usage:'input 2,222 · output 1,988 · total 4,210'},
+    {time:'10:41:28', id:'req_0001840', key:'prod-app••••1a', keyId:'prod-app', model:'gpt-oss-120b', protocol:'openai-chat', status:'error', redaction:'complete', tokens:0, latency:310, request:'[REDACTED_PROMPT] · 1 message part', response:'[REDACTED_ERROR] · upstream timeout', tool:'none', usage:'input 512 · output 0 · total 512'},
+    {time:'10:40:59', id:'req_0001839', key:'eval-bot••••77', keyId:'eval-bot', model:'qwen3-32b', protocol:'openai-chat', status:'ok', redaction:'complete', tokens:2320, latency:940, request:'[REDACTED_PROMPT] · 4 message parts', response:'[REDACTED_RESPONSE] · 1,010 output tokens', tool:'none', usage:'input 1,310 · output 1,010 · total 2,320'},
+    {time:'10:40:21', id:'req_0001838', key:'ops-cli••••09', keyId:'ops-cli', model:'deepseek-v3', protocol:'openai-responses', status:'dropped', redaction:'not-run', tokens:0, latency:0, request:'capture disabled for key', response:'[NOT_CAPTURED]', tool:'not captured', usage:'not captured'},
+    {time:'10:39:44', id:'req_0001837', key:'prod-app••••1a', keyId:'prod-app', model:'qwen3-32b', protocol:'openai-chat', status:'ok', redaction:'complete', tokens:980, latency:650, request:'[REDACTED_PROMPT] · 2 message parts', response:'[REDACTED_RESPONSE] · 356 output tokens', tool:'none', usage:'input 624 · output 356 · total 980'},
+    {time:'10:38:17', id:'req_0001836', key:'eval-bot••••77', keyId:'eval-bot', model:'gpt-oss-120b', protocol:'openai-chat', status:'ok', redaction:'complete', tokens:3110, latency:1870, request:'[REDACTED_PROMPT] · 5 message parts', response:'[REDACTED_RESPONSE] · 1,330 output tokens', tool:'browser.fetch · 1 call', usage:'input 1,780 · output 1,330 · total 3,110'},
+    {time:'10:36:02', id:'req_0001835', key:'prod-app••••1a', keyId:'prod-app', model:'deepseek-v3', protocol:'openai-responses', status:'ok', redaction:'complete', tokens:1540, latency:720, request:'[REDACTED_PROMPT] · 2 message parts', response:'[REDACTED_RESPONSE] · 612 output tokens', tool:'none', usage:'input 928 · output 612 · total 1,540'},
+    {time:'10:34:48', id:'req_0001834', key:'eval-bot••••77', keyId:'eval-bot', model:'qwen3-32b', protocol:'openai-chat', status:'ok', redaction:'complete', tokens:2040, latency:1110, request:'[REDACTED_PROMPT] · 3 message parts', response:'[REDACTED_RESPONSE] · 840 output tokens', tool:'none', usage:'input 1,200 · output 840 · total 2,040'},
+    {time:'10:32:27', id:'req_0001833', key:'prod-app••••1a', keyId:'prod-app', model:'qwen3-32b', protocol:'openai-chat', status:'ok', redaction:'complete', tokens:870, latency:540, request:'[REDACTED_PROMPT] · 1 message part', response:'[REDACTED_RESPONSE] · 302 output tokens', tool:'none', usage:'input 568 · output 302 · total 870'},
+    {time:'10:30:16', id:'req_0001832', key:'eval-bot••••77', keyId:'eval-bot', model:'deepseek-v3', protocol:'openai-responses', status:'error', redaction:'complete', tokens:640, latency:480, request:'[REDACTED_PROMPT] · 2 message parts', response:'[REDACTED_ERROR] · policy rejected', tool:'none', usage:'input 640 · output 0 · total 640'},
+    {time:'10:28:50', id:'req_0001831', key:'prod-app••••1a', keyId:'prod-app', model:'gpt-oss-120b', protocol:'openai-chat', status:'ok', redaction:'complete', tokens:2780, latency:1430, request:'[REDACTED_PROMPT] · 4 message parts', response:'[REDACTED_RESPONSE] · 1,094 output tokens', tool:'code_runner · 1 call', usage:'input 1,686 · output 1,094 · total 2,780'}
+  ];
+  var live = [records[0], records[1], records[3]];
+  var state = { page:1, pageSize:5, mode:'persist', sse:true, redaction:true, selected:null };
+  function $(id){ return document.getElementById(id); }
+  function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+  function statusChip(status){ var map={ok:['ok','成功'],error:['err','失败'],dropped:['warn','丢弃']}; var x=map[status] || ['gray',status]; return '<span class="pf-chip '+x[0]+'">'+x[1]+'</span>'; }
+  function protocolLabel(p){ return p === 'openai-responses' ? 'Responses' : 'OpenAI chat'; }
+  function redactionLabel(r){ return r === 'complete' ? '<span class="pf-chip violet">complete</span>' : '<span class="pf-chip gray">not run</span>'; }
+  function recordRow(r){ return '<tr data-id="'+esc(r.id)+'"><td class="cm-mono">'+esc(r.time)+'</td><td><span class="request-id">'+esc(r.id)+'</span></td><td><span class="pf-key">'+esc(r.key)+'</span></td><td>'+esc(r.model)+'</td><td>'+esc(protocolLabel(r.protocol))+'</td><td>'+statusChip(r.status)+'</td><td>'+redactionLabel(r.redaction)+'</td><td class="num cm-mono">'+(r.tokens ? r.tokens.toLocaleString('en-US') : '—')+'</td><td class="num cm-mono">'+(r.latency ? r.latency+' ms' : '—')+'</td></tr>'; }
+  function drawRecent(){ $('recent-tbody').innerHTML=records.slice(0,5).map(recordRow).join(''); bindRows('recent-tbody'); }
+  function getFiltered(){ var key=$('filter-key').value, model=$('filter-model').value, protocol=$('filter-protocol').value, status=$('filter-status').value, search=$('filter-search').value.trim().toLowerCase(); return records.filter(function(r){ return (key==='all'||r.keyId===key) && (model==='all'||r.model===model) && (protocol==='all'||r.protocol===protocol) && (status==='all'||r.status===status) && (!search || (r.id+' '+r.model+' '+r.key).toLowerCase().indexOf(search)>=0); }); }
+  function drawRecords(){ var filtered=getFiltered(); var pages=Math.max(1, Math.ceil(filtered.length/state.pageSize)); if(state.page>pages) state.page=pages; var start=(state.page-1)*state.pageSize; var pageRows=filtered.slice(start,start+state.pageSize); $('record-count').textContent=filtered.length+' records'; $('records-tbody').innerHTML=pageRows.length ? pageRows.map(recordRow).join('') : '<tr><td colspan="9"><div class="cm-no-results">没有匹配的记录</div></td></tr>'; bindRows('records-tbody'); drawPager(pages); }
+  function drawPager(pages){ var html='<span class="pf-pager-total">page '+state.page+' / '+pages+'</span><button type="button" data-page="prev" '+(state.page===1?'disabled':'')+'>‹</button>'; for(var i=1;i<=pages;i++){ html+='<button type="button" data-page="'+i+'" class="'+(i===state.page?'cur':'')+'">'+i+'</button>'; } html+='<button type="button" data-page="next" '+(state.page===pages?'disabled':'')+'>›</button>'; $('records-pager').innerHTML=html; $('records-pager').querySelectorAll('button').forEach(function(b){ b.addEventListener('click',function(){ var p=b.dataset.page; if(p==='prev') state.page=Math.max(1,state.page-1); else if(p==='next') state.page=Math.min(pages,state.page+1); else state.page=Number(p); drawRecords(); }); }); }
+  function drawLive(){ $('live-count').textContent=state.sse ? live.length+' events / 30s' : 'stream paused'; $('live-stream').innerHTML=state.sse ? live.map(function(r){ return '<div class="cm-live-row"><div class="cm-live-time">'+r.time+'</div><div class="cm-live-main"><div class="cm-live-title">'+r.model+' · '+r.id+'</div><div class="cm-live-sub">'+r.key+' · '+protocolLabel(r.protocol)+'</div></div><div>'+statusChip(r.status)+'</div><div class="cm-live-right cm-mono">'+(r.latency?r.latency+' ms':'—')+'</div></div>'; }).join('') : '<div class="cm-stream-empty">SSE paused · Resume to receive new events</div>'; }
+  function bindRows(id){ $(id).querySelectorAll('tr[data-id]').forEach(function(row){ row.addEventListener('click',function(){ openDrawer(row.dataset.id); }); }); }
+  function openDrawer(id){ var r=records.find(function(x){return x.id===id;}); if(!r) return; state.selected=r; $('drawer-subtitle').textContent='OPF-safe event · '+r.id; $('drawer-body').innerHTML='<dl class="cm-detail-meta"><dt>Request ID</dt><dd class="cm-mono">'+esc(r.id)+'</dd><dt>Time</dt><dd class="cm-mono">'+esc(r.time)+'</dd><dt>Key</dt><dd><span class="pf-key">'+esc(r.key)+'</span></dd><dt>Model</dt><dd>'+esc(r.model)+'</dd><dt>Protocol</dt><dd>'+esc(protocolLabel(r.protocol))+'</dd><dt>Status</dt><dd>'+statusChip(r.status)+'</dd><dt>Redaction</dt><dd>'+redactionLabel(r.redaction)+'</dd></dl><div class="cm-detail-section"><h3>Request</h3><pre class="cm-detail-code">'+esc(r.request)+'</pre></div><div class="cm-detail-section"><h3>Response</h3><pre class="cm-detail-code">'+esc(r.response)+'</pre></div><div class="cm-detail-section"><h3>Tool calls</h3><pre class="cm-detail-code">'+esc(r.tool)+'</pre></div><div class="cm-detail-section"><h3>Usage</h3><pre class="cm-detail-code">'+esc(r.usage)+'\nlatency '+(r.latency?r.latency+' ms':'not captured')+'</pre></div>'; $('detail-drawer').classList.add('open'); $('drawer-overlay').classList.add('open'); $('detail-drawer').setAttribute('aria-hidden','false'); }
+  function closeDrawer(){ $('detail-drawer').classList.remove('open'); $('drawer-overlay').classList.remove('open'); $('detail-drawer').setAttribute('aria-hidden','true'); }
+  function toast(msg){ var el=$('toast'); el.textContent=msg; el.classList.add('show'); clearTimeout(window.__toastTimer); window.__toastTimer=setTimeout(function(){el.classList.remove('show');},1800); }
+  function setMode(mode){ state.mode=mode; document.querySelectorAll('#capture-mode button').forEach(function(b){b.classList.toggle('on',b.dataset.mode===mode);}); $('capture-chip').textContent=mode; $('status-capture').textContent=mode; if(mode==='off'){ $('capture-chip').parentElement.className='pf-chip gray'; $('status-capture').className='pf-chip gray'; } else { $('capture-chip').parentElement.className='pf-chip accent'; $('status-capture').className='pf-chip accent'; } toast('Capture mode → '+mode); }
+  function setSse(on){ state.sse=on; $('sse-toggle').textContent=on?'Pause stream':'Resume stream'; $('sse-status').textContent=on?'SSE connected':'SSE paused'; $('sse-dot').className='cm-status-dot '+(on?'':'paused'); $('sse-dot').parentElement.className='pf-chip '+(on?'ok':'warn')+' cm-status'; $('policy-sse-chip').textContent=on?'connected':'paused'; $('policy-sse-chip').className='pf-chip '+(on?'ok':'warn'); drawLive(); toast(on?'SSE stream resumed':'SSE stream paused'); }
+  document.querySelectorAll('#monitor-tabs .pf-tab').forEach(function(tab){tab.addEventListener('click',function(){document.querySelectorAll('#monitor-tabs .pf-tab').forEach(function(t){t.classList.toggle('active',t===tab);});document.querySelectorAll('.pf-tabpane').forEach(function(p){p.classList.toggle('active',p.dataset.tab===tab.dataset.tab);});});});
+  ['filter-time','filter-key','filter-model','filter-protocol','filter-status'].forEach(function(id){$(id).addEventListener('change',function(){state.page=1;drawRecords();});}); $('filter-search').addEventListener('input',function(){state.page=1;drawRecords();}); $('filter-reset').addEventListener('click',function(){['filter-key','filter-model','filter-protocol','filter-status'].forEach(function(id){$(id).value='all';});$('filter-search').value='';state.page=1;drawRecords();toast('Filters reset');});
+  document.querySelectorAll('#page-size button').forEach(function(b){b.addEventListener('click',function(){state.pageSize=Number(b.dataset.size);document.querySelectorAll('#page-size button').forEach(function(x){x.classList.toggle('on',x===b);});state.page=1;drawRecords();});});
+  $('sse-toggle').addEventListener('click',function(){setSse(!state.sse);}); $('drawer-close').addEventListener('click',closeDrawer); $('drawer-close-foot').addEventListener('click',closeDrawer); $('drawer-overlay').addEventListener('click',closeDrawer); document.addEventListener('keydown',function(e){if(e.key==='Escape')closeDrawer();}); $('drawer-copy').addEventListener('click',function(){if(state.selected){navigator.clipboard?.writeText(state.selected.id);toast('Copied '+state.selected.id);}});
+  document.querySelectorAll('#capture-mode button').forEach(function(b){b.addEventListener('click',function(){setMode(b.dataset.mode);});}); $('redaction-toggle').addEventListener('change',function(){state.redaction=this.checked;$('redaction-label').textContent=this.checked?'on':'off';toast('Collector redaction → '+(this.checked?'on':'off'));}); $('retention-select').addEventListener('change',function(){toast('Retention → '+this.value+' days');}); $('capacity-select').addEventListener('change',function(){toast('Capacity → '+this.value);}); document.querySelectorAll('.key-toggle').forEach(function(b){b.addEventListener('change',function(){toast(b.dataset.key+' capture '+(b.checked?'enabled':'disabled'));});});
+  $('theme-btn').addEventListener('click',function(){var next=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=next;});
+  drawRecent(); drawRecords(); drawLive();
+}());
+</script>
+</body>
+</html>
