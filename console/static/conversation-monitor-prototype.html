@@ -83,8 +83,7 @@
         <div class="pf-nav-group">监控</div>
         <div class="pf-nav-item" data-demo-nav="总览"><span aria-hidden="true">▦</span> 总览</div>
         <div class="pf-nav-item" data-demo-nav="节点性能"><span aria-hidden="true">◌</span> 节点性能</div>
-        <div class="pf-nav-item" data-demo-nav="请求与用量"><span aria-hidden="true">▥</span> 请求与用量</div>
-        <div class="pf-nav-item active" aria-current="page"><span aria-hidden="true">◈</span> 对话监控</div>
+        <div class="pf-nav-item active" aria-current="page"><span aria-hidden="true">▥</span> 请求与用量</div>
         <div class="pf-nav-group">资源</div>
         <div class="pf-nav-item" data-demo-nav="站点与公钥"><span aria-hidden="true">⌘</span> 站点与公钥</div>
         <div class="pf-nav-item" data-demo-nav="分组"><span aria-hidden="true">▱</span> 分组</div>
@@ -101,15 +100,15 @@
       </div>
     </aside>
     <main class="pf-main">
-      <header class="pf-topbar"><div class="pf-topbar-title">Conversation Monitor</div><div class="pf-topbar-right"><span class="pf-build">prototype · mock data</span><button class="pf-theme-btn" id="theme-btn" title="切换主题" type="button">☼</button><span class="pf-avatar">P</span></div></header>
+      <header class="pf-topbar"><div class="pf-topbar-title">请求与用量 / 对话监控</div><div class="pf-topbar-right"><span class="pf-build">prototype · mock data</span><button class="pf-theme-btn" id="theme-btn" title="切换主题" type="button">☼</button><span class="pf-avatar">P</span></div></header>
       <section class="pf-content">
         <div class="pf-banner cm-prototype"><strong>Prototype</strong><span>此页面仅用于 #130 设计评审，所有请求、响应与指标均为 mock data，不连接真实 API，也未加入线上导航。</span></div>
         <div class="pf-page-head cm-page-head">
-          <div><h1>对话采集与回放监控</h1><div class="pf-desc">查看采集链路健康度、实时 SSE 流和已脱敏记录。Portal capture 与 collector redaction 分开控制。</div></div>
+          <div><h1>请求与用量</h1><div class="pf-desc">趋势、请求明细与对话监控共享同一套筛选、分页和详情交互。当前页签展示采集链路健康度、实时 SSE 流和已脱敏记录。</div></div>
           <div class="cm-head-actions"><span class="pf-chip accent">Portal capture · <b id="capture-chip">persist</b></span><span class="pf-chip ok cm-status"><i class="cm-status-dot" id="sse-dot"></i><span id="sse-status">SSE connected</span></span><button class="pf-btn sm" id="sse-toggle" type="button">Pause stream</button></div>
         </div>
 
-        <div class="pf-tabs" id="monitor-tabs"><button class="pf-tab active" data-tab="overview" type="button">Overview</button><button class="pf-tab" data-tab="records" type="button">Records</button><button class="pf-tab" data-tab="policy" type="button">Policy</button></div>
+        <div class="pf-tabs" id="usage-tabs"><button class="pf-tab" data-demo-nav="用量趋势" type="button">用量趋势</button><button class="pf-tab" data-demo-nav="请求明细" type="button">请求明细</button><button class="pf-tab active" data-tab="overview" type="button">对话监控</button></div>
 
         <section class="pf-tabpane active" data-tab="overview">
           <div class="pf-kpi-row" style="grid-template-columns:repeat(5,1fr)">
@@ -179,7 +178,7 @@
   document.querySelectorAll('[data-demo-nav]').forEach(function(item){ item.addEventListener('click',function(){ toast(item.dataset.demoNav+' · 原型导航占位'); }); });
   function setMode(mode){ state.mode=mode; document.querySelectorAll('#capture-mode button').forEach(function(b){b.classList.toggle('on',b.dataset.mode===mode);}); $('capture-chip').textContent=mode; $('status-capture').textContent=mode; if(mode==='off'){ $('capture-chip').parentElement.className='pf-chip gray'; $('status-capture').className='pf-chip gray'; } else { $('capture-chip').parentElement.className='pf-chip accent'; $('status-capture').className='pf-chip accent'; } toast('Capture mode → '+mode); }
   function setSse(on){ state.sse=on; $('sse-toggle').textContent=on?'Pause stream':'Resume stream'; $('sse-status').textContent=on?'SSE connected':'SSE paused'; $('sse-dot').className='cm-status-dot '+(on?'':'paused'); $('sse-dot').parentElement.className='pf-chip '+(on?'ok':'warn')+' cm-status'; $('policy-sse-chip').textContent=on?'connected':'paused'; $('policy-sse-chip').className='pf-chip '+(on?'ok':'warn'); drawLive(); toast(on?'SSE stream resumed':'SSE stream paused'); }
-  document.querySelectorAll('#monitor-tabs .pf-tab').forEach(function(tab){tab.addEventListener('click',function(){document.querySelectorAll('#monitor-tabs .pf-tab').forEach(function(t){t.classList.toggle('active',t===tab);});document.querySelectorAll('.pf-tabpane').forEach(function(p){p.classList.toggle('active',p.dataset.tab===tab.dataset.tab);});});});
+  document.querySelectorAll('#usage-tabs .pf-tab[data-tab]').forEach(function(tab){tab.addEventListener('click',function(){document.querySelectorAll('#usage-tabs .pf-tab').forEach(function(t){t.classList.toggle('active',t===tab);});document.querySelectorAll('.pf-tabpane').forEach(function(p){p.classList.toggle('active',p.dataset.tab===tab.dataset.tab);});});});
   ['filter-time','filter-key','filter-model','filter-protocol','filter-status'].forEach(function(id){$(id).addEventListener('change',function(){state.page=1;drawRecords();});}); $('filter-search').addEventListener('input',function(){state.page=1;drawRecords();}); $('filter-reset').addEventListener('click',function(){['filter-key','filter-model','filter-protocol','filter-status'].forEach(function(id){$(id).value='all';});$('filter-search').value='';state.page=1;drawRecords();toast('Filters reset');});
   document.querySelectorAll('#page-size button').forEach(function(b){b.addEventListener('click',function(){state.pageSize=Number(b.dataset.size);document.querySelectorAll('#page-size button').forEach(function(x){x.classList.toggle('on',x===b);});state.page=1;drawRecords();});});
   $('sse-toggle').addEventListener('click',function(){setSse(!state.sse);}); $('drawer-close').addEventListener('click',closeDrawer); $('drawer-close-foot').addEventListener('click',closeDrawer); $('drawer-overlay').addEventListener('click',closeDrawer); document.addEventListener('keydown',function(e){if(e.key==='Escape')closeDrawer();}); $('drawer-copy').addEventListener('click',function(){if(state.selected){navigator.clipboard?.writeText(state.selected.id);toast('Copied '+state.selected.id);}});

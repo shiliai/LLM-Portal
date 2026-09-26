@@ -40,7 +40,17 @@ flowchart LR
 - **Portal 标准能力**：旁路创建最小事件；按 `off|stream|persist` 和 Key allowlist 决定采集；提供授权的 SSE 订阅、REST 查询、连接状态、TTL/容量清理。Portal 不集成 OPF SDK，不把 OPF 作为同步依赖。
 - **SSE client**：通过 SSE 接收 Portal 事件；携带 `Last-Event-ID` 断点续传；收到后执行脱敏，再写入自己的审计或分析系统。用户要求的顺序是“client 通过 SSE 接收后再脱敏”。
 - **OPF**：外部能力，由 collector 或下游数据管线调用；不属于 Portal runtime。
-- **Console**：消费 REST/SSE 结果。此 PR 只交付独立原型，不接生产 API。
+- **Console**：在现有“请求与用量”页面中消费 REST/SSE 结果。本设计不新增一级导航，复用现有请求明细的筛选、KPI、分页、详情抽屉和自动刷新；此 PR 只交付原型，不接生产 API。
+
+### 信息架构决策
+
+对话监控不单独占用侧栏一级菜单，而是作为“请求与用量”的第三个页签：
+
+1. **用量趋势**：沿用现有请求数、输入/输出/cache token、TTFT 和总时延趋势；
+2. **请求明细**：沿用现有逐请求筛选、游标分页和详情抽屉；
+3. **对话监控**：新增采集健康度、SSE Live stream、脱敏记录和 Capture policy。
+
+这样 Key、模型、协议、状态、时间范围和详情交互只有一套来源，避免为相同请求数据复制导航和筛选状态。原型侧栏选中“请求与用量”，页签选中“对话监控”。
 
 ### 与相邻任务的边界
 
