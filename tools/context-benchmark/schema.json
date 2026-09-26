@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/llm-portal/context-benchmark/v1",
+  "title": "LLM Portal context benchmark sample",
+  "type": "object",
+  "required": ["schema_version", "sample_id", "protocol", "redaction", "metadata", "aggregate", "replay"],
+  "properties": {
+    "schema_version": {"const": "context-benchmark/v1"},
+    "sample_id": {"type": "string", "pattern": "^ctx-[0-9a-f]{16}$"},
+    "protocol": {"enum": ["openai_chat", "anthropic_messages"]},
+    "redaction": {
+      "type": "object",
+      "required": ["status", "opf"],
+      "properties": {
+        "status": {"enum": ["opf", "assumed_input_redacted"]},
+        "opf": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
+    "metadata": {"type": "object"},
+    "aggregate": {
+      "type": "object",
+      "required": ["message_count", "role_counts", "tool_result_count", "raw_request_bytes", "redacted_request_bytes"],
+      "properties": {
+        "message_count": {"type": "integer", "minimum": 0},
+        "role_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "tool_result_count": {"type": "integer", "minimum": 0},
+        "tool_result_chars": {"type": "integer", "minimum": 0},
+        "max_tool_result_bytes": {"type": "integer", "minimum": 0},
+        "content_type_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "text_slot_count": {"type": "integer", "minimum": 0},
+        "redacted_slot_count": {"type": "integer", "minimum": 0},
+        "has_cache_control": {"type": "boolean"},
+        "long_session": {"type": "boolean"},
+        "raw_request_bytes": {"type": "integer", "minimum": 0},
+        "redacted_request_bytes": {"type": "integer", "minimum": 0},
+        "request_bytes_saved": {"type": "integer"},
+        "text_bytes": {"type": "integer", "minimum": 0},
+        "redacted_text_bytes": {"type": "integer", "minimum": 0},
+        "image_blocks": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "replay": {
+      "type": "object",
+      "required": ["endpoint", "body"],
+      "properties": {
+        "endpoint": {"type": "string", "pattern": "^(/[^ ]*)?$"},
+        "body": {"type": "object"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
