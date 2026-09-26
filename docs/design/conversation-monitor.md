@@ -44,13 +44,13 @@ flowchart LR
 
 ### 信息架构决策
 
-对话监控不单独占用侧栏一级菜单，而是作为“请求与用量”的第三个页签：
+对话监控不单独占用侧栏一级菜单，也不复制一张明细表，而是直接附着在“请求与用量”的请求明细中：
 
 1. **用量趋势**：沿用现有请求数、输入/输出/cache token、TTFT 和总时延趋势；
-2. **请求明细**：沿用现有逐请求筛选、游标分页和详情抽屉；
-3. **对话监控**：新增采集健康度、SSE Live stream、原文记录和 Capture policy。
+2. **请求明细**：沿用现有逐请求筛选、游标分页和详情抽屉；每一行增加“详情”入口，打开原始对话内容、tool calls、usage、延迟和 capture 状态；
+3. **采集策略**：作为请求明细页内的辅助面板，管理 capture mode、Key allowlist、原文访问权限、TTL 和容量；
 
-这样 Key、模型、协议、状态、时间范围和详情交互只有一套来源，避免为相同请求数据复制导航和筛选状态。原型侧栏选中“请求与用量”，页签选中“对话监控”。
+这样 Key、模型、协议、状态、时间范围、分页和详情交互只有一套来源，避免为相同请求数据复制导航和筛选状态。原型侧栏选中“请求与用量”，默认打开“请求明细”；对话监控通过行级详情和页内采集策略进入。
 
 ### 与相邻任务的边界
 
@@ -65,10 +65,10 @@ flowchart LR
 
 打开 `console/static/conversation-monitor-prototype.html` 可直接预览。它引用现有 `portal.css`，不加载 `portal.js`，不发起认证或 API 请求。
 
-- **Overview**：`capture` 模式、SSE 状态、今日采集/原文可用/丢弃/容量/lag、Live stream、最近活动。
-- **Records**：时间、Key、模型、协议、状态筛选；request id/model 搜索；分页、每页数量、详情抽屉。
-- **Policy**：Portal capture `off|stream|persist`、原文访问权限、Key allowlist、retention TTL、capacity。
-- **详情抽屉**：原始 request、response、tool calls、usage、latency、status；示例只使用 synthetic text。
+- **用量汇总**：`capture` 模式、SSE 状态、今日采集/原文可用/丢弃/容量/lag、Live stream、最近活动。
+- **请求明细**：时间、Key、模型、协议、状态筛选；request id/model 搜索；分页、每页数量；每行的“详情”按钮打开侧边栏。
+- **详情抽屉**：显示 Portal 原始 request、response、tool calls、usage、latency、status 和 content mode；示例只使用 synthetic text。
+- **采集策略**：从页面头部按钮展开，不占用新的主页签；配置 Portal capture `off|stream|persist`、原文访问权限、Key allowlist、retention TTL、capacity。
 - **SSE 控件**：Pause/Resume 只模拟 mock stream 状态；说明真实客户端使用 `Last-Event-ID`。
 
 ## 策略与生命周期
