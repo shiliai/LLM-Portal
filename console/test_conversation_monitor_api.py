@@ -87,6 +87,8 @@ def test_key_rows_and_policy_panel_use_sha256_identity_only(tmp_path):
         "source.onerror", "SSE 连接失败，已暂停", "handleMonitorEvent",
         "ug-health-captured", "ug-health-persisted", "ug-health-dropped",
         "ug-health-clients", "ug-health-retention", "恢复实时流", "暂停实时流",
+        "if (!ugMonitor.connecting) $('ug-monitor-sse-toggle').disabled = false;",
+        "function toggleMonitorStream()", "startMonitorStream().catch",
     ):
         assert required in source
     assert "keys: Array.from(new Set(hashes))" in source

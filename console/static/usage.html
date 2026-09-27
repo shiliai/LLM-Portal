@@ -420,7 +420,7 @@
   }
 
   /* ══════════ 采集健康 / SSE ══════════ */
-  var ugMonitor = { source: null, lastEventId: '', paused: true, loading: false, refreshTimer: null };
+  var ugMonitor = { source: null, lastEventId: '', paused: true, loading: false, connecting: false, refreshTimer: null };
 
   function monitorHealthStatus(message, kind) {
     var el = $('ug-health-status');
@@ -454,6 +454,7 @@
     try {
       var data = await window.pfApi('GET', '/conversation-monitor/summary');
       renderMonitorHealth(data);
+      if (!ugMonitor.connecting) $('ug-monitor-sse-toggle').disabled = false;
       if (!ugMonitor.source && ugMonitor.paused) monitorHealthStatus('已暂停', '');
     } catch (e) {
       monitorHealthStatus(monitorHealthError(e), 'error');
@@ -495,6 +496,7 @@
       ugMonitor.source = null;
     }
     ugMonitor.paused = true;
+    ugMonitor.connecting = false;
     var toggle = $('ug-monitor-sse-toggle');
     toggle.textContent = '恢复实时流';
     toggle.disabled = false;
@@ -504,6 +506,7 @@
   async function startMonitorStream() {
     if (ugMonitor.source) return;
     monitorHealthStatus('正在连接…');
+    ugMonitor.connecting = true;
     $('ug-monitor-sse-toggle').disabled = true;
     try {
       /* 先用 REST 验证当前会话，EventSource 本身不会暴露 401/403 响应体。 */
@@ -512,8 +515,15 @@
       stopMonitorStream(monitorHealthError(e), 'error');
       return;
     }
+    ugMonitor.connecting = false;
     var query = ugMonitor.lastEventId ? '?last_event_id=' + encodeURIComponent(ugMonitor.lastEventId) : '';
-    var source = new EventSource('/console/api/conversation-monitor/stream' + query, { withCredentials: true });
+    var source;
+    try {
+      source = new EventSource('/console/api/conversation-monitor/stream' + query, { withCredentials: true });
+    } catch (e) {
+      stopMonitorStream('SSE 初始化失败，已暂停（请点击恢复）', 'error');
+      return;
+    }
     ugMonitor.source = source;
     ugMonitor.paused = false;
     $('ug-monitor-sse-toggle').textContent = '暂停实时流';
@@ -533,8 +543,13 @@
   }
 
   function toggleMonitorStream() {
-    if (ugMonitor.source) stopMonitorStream('已暂停');
-    else startMonitorStream();
+    if (ugMonitor.source || ugMonitor.connecting) {
+      stopMonitorStream('已暂停');
+      return;
+    }
+    startMonitorStream().catch(function () {
+      stopMonitorStream('SSE 连接失败，已暂停（请点击恢复）', 'error');
+    });
   }
 
   /* ══════════ 汇总状态 ══════════ */
