@@ -41,6 +41,10 @@ def test_admin_policy_records_and_detail_are_protected(tmp_path, monkeypatch):
     with TestClient(mod.app) as client:
         assert client.get("/console/api/conversation-monitor/policy").status_code == 401
         assert client.post("/console/api/login", json={"key": MASTER}, headers=XRW).status_code == 200
+        bad_policy = client.put("/console/api/conversation-monitor/policy",
+                                json={"mode": "persist", "keys": ["sk-unit-1234"],
+                                      "ttl_days": 7, "capacity": 10_000}, headers=XRW)
+        assert bad_policy.status_code == 400
         policy = client.put("/console/api/conversation-monitor/policy",
                             json={"mode": "persist", "keys": [key_hash], "ttl_days": 7, "capacity": 10_000},
                             headers=XRW)
@@ -57,3 +61,28 @@ def test_admin_policy_records_and_detail_are_protected(tmp_path, monkeypatch):
         detail = client.get("/console/api/conversation-monitor/records/req-api")
         assert detail.status_code == 200
         assert detail.json()["payload"]["response"]["ok"] is True
+
+
+def test_key_rows_and_policy_panel_use_sha256_identity_only(tmp_path):
+    mod = load_console(tmp_path)
+    token = "sk-policy-ui-key"
+    row = mod.key_row({"token": token, "key_alias": "billing", "metadata": {"group": "prod"}})
+    assert row["key_hash"] == __import__("hashlib").sha256(token.encode()).hexdigest()
+    assert len(row["key_hash"]) == 64
+    hashed = "AB" * 32
+    assert mod.key_row({"token": hashed})["key_hash"] == hashed.lower()
+
+    source = (Path(__file__).parent / "static" / "usage.html").read_text()
+    for required in (
+        "id=\"ug-policy-open\"", "id=\"ug-policy-drawer\"", "采集策略",
+        "window.pfApi('GET', '/conversation-monitor/policy')",
+        "window.pfApi('GET', '/keys')",
+        "window.pfApi('PUT', '/conversation-monitor/policy', payload)",
+        "mode: $('ug-policy-mode').value", "ttl_days: Number($('ug-policy-ttl').value)",
+        "capacity: Number($('ug-policy-capacity').value)", "data-key-hash",
+        "row.key_hash", "Portal 保存原文", "collector 自行调用 OPF",
+        "不阻断主请求", "提交内容只包含 SHA-256 hash",
+    ):
+        assert required in source
+    assert "keys: Array.from(new Set(hashes))" in source
+    assert "row.token" not in source

@@ -2409,7 +2409,15 @@ async def api_models_alias(request: Request) -> Response:
 
 def key_row(k: dict) -> dict:
     meta = k.get("metadata") or {}
-    return {"token": k.get("token"), "alias": k.get("key_alias") or "(未命名)",
+    token = str(k.get("token") or "")
+    # The conversation monitor policy only accepts stable SHA-256 identities.
+    # LiteLLM can return either a plaintext token or an already-hashed 64-char
+    # hex token, so normalize both forms without putting the plaintext into
+    # the policy payload or monitor database.
+    key_hash = token.lower() if re.fullmatch(r"[0-9a-fA-F]{64}", token) else (
+        hashlib.sha256(token.encode()).hexdigest() if token else "")
+    return {"token": k.get("token"), "key_hash": key_hash,
+            "alias": k.get("key_alias") or "(未命名)",
             "key_last4": "…" + str(k.get("key_name") or k.get("token") or "")[-4:],
             "group": meta.get("group") or "default",
             "models": k.get("models") or [],

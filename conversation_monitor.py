@@ -12,6 +12,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -207,8 +208,11 @@ class ConversationMonitor:
         mode = str(mode).lower()
         if mode not in MODES:
             raise ValueError("mode must be off, stream, or persist")
-        if not isinstance(keys, list) or any(not isinstance(x, str) or len(x) > 128 for x in keys):
-            raise ValueError("keys must be a list of key hashes")
+        if not isinstance(keys, list) or any(
+                not isinstance(x, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", x)
+                for x in keys):
+            raise ValueError("keys must be a list of SHA-256 hashes")
+        keys = [x.lower() for x in keys]
         ttl_days = int(ttl_days)
         capacity = int(capacity)
         if ttl_days not in (7, 14, 30):
