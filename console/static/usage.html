@@ -79,9 +79,9 @@
   .ug-health-note::before { content: 'i'; display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border: 1px solid var(--border2); border-radius: 50%; color: var(--accent); font: 10px var(--mono); flex: none; }
   .ug-health-recent { margin-top: 7px; color: var(--text2); font: 11px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ug-detail-btn { min-width: 46px; }
-  .ug-request-row { cursor: pointer; }
+  .ug-request-row { cursor: default; }
   .ug-request-row:hover td { background: var(--hover); }
-  .ug-request-row:focus-visible td { box-shadow: inset 0 0 0 1px var(--accent); }
+  .ug-detail-col { width: 58px; text-align: center !important; white-space: nowrap; }
   @media (max-width: 900px) { .ug-health-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
   @media (max-width: 560px) { .ug-health-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .ug-health-controls { flex-wrap: wrap; justify-content: flex-end; } .ug-policy-mode-grid, .ug-policy-grid { grid-template-columns: 1fr; } }
 </style>
@@ -202,9 +202,9 @@
     </div>
     <div class="pf-card flush">
       <table class="pf-table"><thead><tr>
-        <th>时间</th><th>Key / 用户</th><th>模型</th><th>节点</th><th>IP</th><th>端点</th>
+        <th>时间</th><th class="ug-detail-col">详情</th><th>Key / 用户</th><th>模型</th><th>节点</th><th>IP</th><th>端点</th>
         <th class="num">读 Token</th><th class="num">写 Token</th><th class="num">缓存 Token</th>
-        <th class="num">首字延迟</th><th class="num">总时延</th><th>状态</th><th>详情</th>
+        <th class="num">首字延迟</th><th class="num">总时延</th><th>状态</th>
       </tr></thead><tbody id="ug-tbody"></tbody></table>
       <div style="display:flex;align-items:center;padding:9px 12px;gap:12px">
         <div class="pf-tb-item"><label>每页</label><div class="pf-seg" id="ug-per">
@@ -1013,9 +1013,10 @@
 
   function unavailableDetail(row, message) {
     row = row || {};
+    message = message || 'Portal 未保存该请求的原文：对应 Key 未加入采集 allowlist，或记录已按 TTL / 容量清理。';
     $('ug-detail-title').textContent = '请求详情 · ' + (row.request_id || '');
     $('ug-detail-body').innerHTML =
-      '<div class="ug-detail-notice">' + esc(message || '此请求当前没有可读取的 Portal 原文。') + ' 请求明细仍保留完整的账单元数据。</div>' +
+      '<div class="ug-detail-notice">' + esc(message) + ' 请求明细仍保留完整的账单元数据。</div>' +
       '<dl class="ug-detail-meta">' +
         '<dt>Request ID</dt><dd class="mono">' + esc(row.request_id) + '</dd>' +
         '<dt>时间</dt><dd>' + esc(row.ts) + '</dd>' +
@@ -1026,7 +1027,7 @@
         '<dt>Token</dt><dd class="mono">读 ' + esc(fmt(row.prompt_tokens)) + ' · 写 ' + esc(fmt(row.completion_tokens)) + ' · 缓存 ' + esc(fmt(row.cached_tokens)) + '</dd>' +
       '</dl>' +
       (row.error ? '<section class="ug-detail-section"><h3>错误</h3>' + detailCode(row.error) + '</section>' : '') +
-      '<section class="ug-detail-section"><h3>原文状态</h3>' + detailState('采集模式为 stream/off，或记录已按 TTL / 容量清理；请在采集策略中启用 persist 以便之后从 Portal 读取原文。') + '</section>';
+      '<section class="ug-detail-section"><h3>原文状态</h3>' + detailState('请在“采集策略”中确认该 Key 已加入 allowlist；只有后续请求才会按当前策略保存原文。') + '</section>';
   }
 
   function renderConversationDetail(detail) {
@@ -1077,7 +1078,7 @@
       var message;
       if (e && e.status === 401) message = '登录已失效，请重新登录。';
       else if (e && e.status === 403) message = '当前账号没有查看原文的权限。';
-      else if (e && e.status === 404) { unavailableDetail(row, e.error || '此请求未采集原文，或已按 TTL / 容量清理。'); return; }
+      else if (e && e.status === 404) { unavailableDetail(row); return; }
       else message = (e && e.error) || '请求详情加载失败，请稍后重试。';
       $('ug-detail-body').innerHTML = detailState(message, 'error');
     }
@@ -1170,8 +1171,9 @@
     $('ug-tbody').innerHTML = slice.map(function (r) {
       var fail = r.status === 'failure';
       var exp = rl.expanded[r.request_id];
-      var tr = '<tr data-rid="' + esc(r.request_id) + '" class="ug-request-row ' + (fail ? 'pf-err-row' : '') + '" tabindex="0" role="button" aria-label="打开请求 ' + esc(r.request_id) + ' 详情">' +
+      var tr = '<tr data-rid="' + esc(r.request_id) + '" class="ug-request-row ' + (fail ? 'pf-err-row' : '') + '">' +
         '<td class="mono" style="font-size:11px">' + esc((r.ts || '').replace('T', ' ')) + '</td>' +
+        '<td class="ug-detail-col"><button class="pf-btn sm ug-detail-btn" type="button" data-rid="' + esc(r.request_id) + '">详情</button></td>' +
         '<td><span class="mono" style="font-size:11px">…' + esc(r.key) + '</span><div style="font-size:11px;color:var(--muted)">' + esc(r.alias) + ' · ' + esc(r.group || 'default') + '</div></td>' +
         '<td class="mono" style="font-size:11px">' + esc(r.model) + '</td>' +
         '<td class="mono" style="font-size:11px">' + esc(r.node || '—') + '</td>' +
@@ -1185,7 +1187,6 @@
         '<td>' + (fail
           ? '<span class="pf-chip err"><span class="pf-dot err" style="margin-right:0"></span>失败</span> <button class="pf-btn-icon ug-error-toggle" type="button" aria-label="展开错误详情" title="展开错误详情">' + (exp ? '▾' : '▸') + '</button>'
           : '<span class="pf-chip ok"><span class="pf-dot ok" style="margin-right:0"></span>成功</span>') + '</td>' +
-        '<td><button class="pf-btn sm ug-detail-btn" type="button" data-rid="' + esc(r.request_id) + '">详情</button></td>' +
       '</tr>';
       if (fail && exp) {
         tr += '<tr class="pf-err-row"><td colspan="13"><div class="pf-err-detail">' +
@@ -1414,13 +1415,6 @@
         renderRecTable();
         return;
       }
-      openConversationDetail(tr.dataset.rid, rl.logs.find(function (row) { return row.request_id === tr.dataset.rid; }));
-    });
-    $('ug-tbody').addEventListener('keydown', function (e) {
-      if (e.key !== 'Enter' && e.key !== ' ') return;
-      var tr = e.target.closest('tr[data-rid]'); if (!tr) return;
-      e.preventDefault();
-      openConversationDetail(tr.dataset.rid, rl.logs.find(function (row) { return row.request_id === tr.dataset.rid; }));
     });
 
     /* 主题切换 → 图表重渲染 */

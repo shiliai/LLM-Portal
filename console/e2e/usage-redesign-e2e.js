@@ -163,6 +163,11 @@ async function installFixtures(page) {
   await page.screenshot({ path: '/tmp/e2e/r106-records.png', fullPage: false });
 
   console.log('== 7. 请求详情抽屉：原文对话 + 元数据:');
+  await page.locator('#ug-tbody tr[data-rid="req-idx-0001"] td:nth-child(3)').click();
+  await page.waitForTimeout(150);
+  if (await page.locator('#ug-detail-drawer').evaluate(el => el.classList.contains('open'))) {
+    throw new Error('request row body must not open detail drawer without the explicit button');
+  }
   await page.locator('#ug-tbody tr[data-rid="req-idx-0001"] .ug-detail-btn').click();
   await page.waitForTimeout(300);
   if (!(await page.locator('#ug-detail-drawer').evaluate(el => el.classList.contains('open')))) {
