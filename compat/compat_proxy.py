@@ -26,16 +26,23 @@ import hashlib
 import json
 import os
 import re
+import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 import httpx
 import uvicorn
+try:
+    from conversation_monitor import MONITOR, extract_credential, max_capture_bytes, schedule_capture
+except ModuleNotFoundError:  # local `python compat_proxy.py` from the compat directory
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from conversation_monitor import MONITOR, extract_credential, max_capture_bytes, schedule_capture
 from starlette.applications import Starlette
 from starlette.background import BackgroundTask
 from starlette.datastructures import Headers
 from starlette.requests import Request
-from starlette.responses import Response, StreamingResponse
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://litellm:4000").rstrip("/")
@@ -331,6 +338,33 @@ async def _passthrough(chunks: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
         yield chunk
 
 
+async def _captured_stream(chunks: AsyncIterator[bytes], *, request_id: str,
+                           request_raw: bytes, headers: Any, path: str,
+                           status_code: int, model: str, protocol: str,
+                           started: float, credential: str,
+                           response_content_type: str) -> AsyncIterator[bytes]:
+    """Tee a completed upstream stream into capture without delaying chunks."""
+    captured = bytearray()
+    capture_limit = max_capture_bytes()
+    truncated = False
+    try:
+        async for chunk in chunks:
+            if len(captured) < capture_limit:
+                room = capture_limit - len(captured)
+                captured.extend(chunk[:room])
+                truncated = truncated or len(chunk) > room
+            else:
+                truncated = True
+            yield chunk
+    finally:
+        schedule_capture(request_id=request_id, request_raw=request_raw,
+                         response_raw=bytes(captured), headers=headers, path=path,
+                         status_code=status_code, model=model, protocol=protocol,
+                         started=started, credential=credential,
+                         response_content_type=response_content_type,
+                         response_truncated=truncated)
+
+
 async def _openai_sse_rewritten(chunks: AsyncIterator[bytes], endpoint: str) -> AsyncIterator[bytes]:
     fixer = OpenAIStreamFixer()
     splitter = _LineSplitter()
@@ -363,6 +397,9 @@ async def compat_proxy(request: Request) -> Response:
     proto = "anthropic" if path.startswith("/v1/messages") else "openai"
     url = LITELLM_BASE + path + (f"?{query}" if query else "")
     raw = await request.body()
+    started = time.monotonic()
+    credential = extract_credential(request.headers)
+    request_id = request.headers.get("x-request-id") or request.headers.get("x-litellm-call-id") or f"req_{time.time_ns()}"
 
     out_body = raw
     try:
@@ -409,17 +446,44 @@ async def compat_proxy(request: Request) -> Response:
         if isinstance(value, dict) and normalize_dsml_response(value):
             metric("compat.dsml_args_normalized", endpoint=path, side="response", calls=1)
             raw_response = json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
+        capture_limit = max_capture_bytes()
+        schedule_capture(request_id=request_id, request_raw=raw, response_raw=raw_response[:capture_limit],
+                         headers=request.headers, path=path, status_code=upstream.status_code,
+                         model=str((parsed or {}).get("model") or ""), protocol=proto,
+                         started=started, credential=credential,
+                         response_content_type=content_type,
+                         response_truncated=len(raw_response) > capture_limit)
         return Response(raw_response, status_code=upstream.status_code, headers=headers)
     if content_type == "text/event-stream" and path == "/v1/chat/completions":
-        body_stream = _openai_sse_rewritten(upstream.aiter_raw(), path)
+        body_stream = _captured_stream(
+            _openai_sse_rewritten(upstream.aiter_raw(), path), request_id=request_id,
+            request_raw=raw, headers=request.headers, path=path,
+            status_code=upstream.status_code, model=str((parsed or {}).get("model") or ""),
+            protocol=proto, started=started, credential=credential,
+            response_content_type=content_type)
     else:
-        body_stream = _passthrough(upstream.aiter_raw())
+        body_stream = _captured_stream(
+            _passthrough(upstream.aiter_raw()), request_id=request_id,
+            request_raw=raw, headers=request.headers, path=path,
+            status_code=upstream.status_code, model=str((parsed or {}).get("model") or ""),
+            protocol=proto, started=started, credential=credential,
+            response_content_type=content_type)
     return StreamingResponse(
         body_stream,
         status_code=upstream.status_code,
         headers=headers,
         background=BackgroundTask(upstream.aclose),
     )
+
+
+async def conversation_monitor_stream(request: Request) -> Response:
+    """Collector-only SSE endpoint; OPF/redaction remains outside Portal."""
+    if not MONITOR.authorize_sse(request.headers):
+        return JSONResponse({"error": "conversation monitor collector authorization required"}, status_code=401)
+    return StreamingResponse(
+        MONITOR.sse(request.headers.get("last-event-id", "") or request.query_params.get("last_event_id", "")),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 client = httpx.AsyncClient(
@@ -432,6 +496,7 @@ ROUTES = [
     Route(p, compat_proxy, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
     for p in PROXY_PATHS
 ]
+ROUTES.append(Route("/api/v1/conversation-monitor/stream", conversation_monitor_stream, methods=["GET"]))
 
 
 @asynccontextmanager

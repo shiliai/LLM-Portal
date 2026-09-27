@@ -44,7 +44,12 @@ if ! [[ "$WG_SUBNET" =~ ^([0-9]{1,3}\.){3}0/24$ ]]; then
 fi
 export WG_SUBNET_PREFIX="${WG_SUBNET%.*}"
 STATE_DIR=/var/lib/private-llm
+CONVERSATION_MONITOR_DIR="$STATE_DIR/conversation-monitor"
 ETC_DIR=/etc/private-llm
+
+# compat runs as uid 10001 and writes the capture database; console shares it.
+mkdir -p "$CONVERSATION_MONITOR_DIR"
+chown 10001:10001 "$CONVERSATION_MONITOR_DIR" 2>/dev/null || true
 
 echo "== [1/7] 一次性迁移：退役宿主机 systemd 部署（容器接管；仅首次需要 sudo）"
 for unit in console mcp-hub onboardd; do

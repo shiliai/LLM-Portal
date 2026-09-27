@@ -70,7 +70,9 @@ import stat
 import struct
 import subprocess
 import sys
+import threading
 import time
+import weakref
 import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -81,10 +83,15 @@ import uvicorn
 from usage_db import aggregate as usage_aggregate, logs as usage_logs, window as usage_window
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from starlette.routing import Route
 from urllib.parse import quote
 from urllib.parse import urlsplit, urlunsplit
+try:
+    from conversation_monitor import MONITOR
+except ModuleNotFoundError:  # local `python console.py` from the console directory
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from conversation_monitor import MONITOR
 
 LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://127.0.0.1:4000")
 ONBOARD_URL = os.environ.get("ONBOARDD_URL", "http://127.0.0.1:8100")
@@ -159,14 +166,26 @@ HANDSHAKE_ONLINE = 180  # 最近握手 3 分钟内视为在线
 PASS_THROUGH_OPENAI_PARAMS = ["reasoning_effort"]
 USAGE_KEY_CACHE_TTL = 60
 _usage_alias_cache: tuple[float, dict[str, str]] = (0, {})
-MCP_CONFIG_LOCK = asyncio.Lock()
+_MCP_CONFIG_LOCK_GUARD = threading.Lock()
+_MCP_CONFIG_LOCKS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _mcp_config_lock() -> asyncio.Lock:
+    """Return a lock bound lazily to the currently running event loop."""
+    loop = asyncio.get_running_loop()
+    with _MCP_CONFIG_LOCK_GUARD:
+        lock = _MCP_CONFIG_LOCKS.get(loop)
+        if lock is None:
+            lock = asyncio.Lock()
+            _MCP_CONFIG_LOCKS[loop] = lock
+        return lock
 
 
 def serialized_mcp_mutation(fn):
     """Keep all registry reads through rollback in one ordered critical section."""
     @functools.wraps(fn)
     async def wrapped(*args, **kwargs):
-        async with MCP_CONFIG_LOCK:
+        async with _mcp_config_lock():
             return await fn(*args, **kwargs)
     return wrapped
 
@@ -1844,6 +1863,86 @@ async def api_usage_logs(request: Request) -> Response:
     return JSONResponse({"logs": rows[:2000], "count": len(rows),
                          "next_cursor": next_cursor, "has_more": bool(next_cursor)})
 
+
+# ---------------------------------------------------------------- 对话监控（#130）
+
+async def _monitor_require(request: Request) -> dict | JSONResponse:
+    sess = await require(request, role="admin")
+    if isinstance(sess, JSONResponse):
+        return sess
+    if request.method in ("PUT", "PATCH") and request.headers.get("x-requested-with") != "XMLHttpRequest":
+        return jerr("missing X-Requested-With", 403)
+    return sess
+
+
+async def api_conversation_monitor_policy(request: Request) -> Response:
+    sess = await _monitor_require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    if request.method == "GET":
+        return JSONResponse(MONITOR.policy())
+    try:
+        body = await request.json()
+        policy = await MONITOR.update_policy(
+            mode=body.get("mode", "off"), keys=body.get("keys", []),
+            ttl_days=body.get("ttl_days", 14), capacity=body.get("capacity", 50_000))
+    except (ValueError, TypeError, AttributeError) as exc:
+        return jerr(str(exc) or "bad policy", 400)
+    except Exception:
+        return jerr("conversation monitor unavailable", 503)
+    return JSONResponse(policy)
+
+
+async def api_conversation_monitor_summary(request: Request) -> Response:
+    sess = await _monitor_require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    return JSONResponse(await MONITOR.summary())
+
+
+async def api_conversation_monitor_records(request: Request) -> Response:
+    sess = await _monitor_require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    query = request.query_params
+    try:
+        result = await MONITOR.list_records(
+            limit=query.get("limit", "50"), cursor=query.get("cursor", ""),
+            key=query.get("key", ""), model=query.get("model", ""),
+            protocol=query.get("protocol", ""), status=query.get("status", ""),
+            from_ts=_monitor_query_time(query.get("from", "")),
+            to_ts=_monitor_query_time(query.get("to", "")))
+    except (ValueError, TypeError):
+        return jerr("bad records query", 400)
+    if result.get("error"):
+        return jerr(result["error"], 400)
+    return JSONResponse(result)
+
+
+async def api_conversation_monitor_detail(request: Request) -> Response:
+    sess = await _monitor_require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    detail = await MONITOR.detail(request.path_params.get("request_id", ""))
+    return JSONResponse(detail) if detail is not None else jerr("record not found", 404)
+
+
+async def api_conversation_monitor_stream(request: Request) -> Response:
+    sess = await _monitor_require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    return StreamingResponse(
+        MONITOR.sse(request.headers.get("last-event-id", "") or request.query_params.get("last_event_id", "")),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+def _monitor_query_time(value: str) -> float | None:
+    if not value:
+        return None
+    parsed = _aware_dt(value)
+    return parsed.timestamp() if parsed else None
+
 async def api_sites_revoke(request: Request) -> Response:
     sess = await require(request)
     if isinstance(sess, JSONResponse):
@@ -3239,6 +3338,11 @@ api_routes = [
     Route("/console/api/metrics/range", api_metrics_range, methods=["GET"]),
     Route("/console/api/usage", api_usage, methods=["GET"]),
     Route("/console/api/usage/logs", api_usage_logs, methods=["GET"]),
+    Route("/console/api/conversation-monitor/policy", api_conversation_monitor_policy, methods=["GET", "PUT"]),
+    Route("/console/api/conversation-monitor/summary", api_conversation_monitor_summary, methods=["GET"]),
+    Route("/console/api/conversation-monitor/records", api_conversation_monitor_records, methods=["GET"]),
+    Route("/console/api/conversation-monitor/records/{request_id}", api_conversation_monitor_detail, methods=["GET"]),
+    Route("/console/api/conversation-monitor/stream", api_conversation_monitor_stream, methods=["GET"]),
     Route("/console/api/sites", api_sites, methods=["GET"]),
     Route("/console/api/sites/token", api_sites_token, methods=["POST"]),
     Route("/console/api/sites/direct", api_sites_direct, methods=["POST"]),
