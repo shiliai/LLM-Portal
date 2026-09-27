@@ -19,6 +19,8 @@
   .ug-detail-section { margin-top: 16px; }
   .ug-detail-section h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 7px; color: var(--heading); font-size: 12px; }
   .ug-detail-section h3::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .ug-detail-format { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--muted); font-size: 10px; font-weight: 400; white-space: nowrap; cursor: pointer; }
+  .ug-detail-format input { margin: 0; accent-color: var(--accent); }
   .ug-detail-code { max-height: 260px; overflow: auto; margin: 0; padding: 10px 12px; white-space: pre-wrap; word-break: break-word; background: var(--panel3); border: 1px solid var(--border); border-radius: 5px; color: var(--text2); font: 11px/1.55 var(--mono); }
   .ug-detail-state { color: var(--muted); padding: 24px 0; text-align: center; }
   .ug-detail-conversation { display: grid; gap: 8px; }
@@ -53,6 +55,11 @@
   .ug-policy-key-name { color: var(--text); }
   .ug-policy-key-ref { margin-left: 7px; color: var(--muted); font: 11px var(--mono); }
   .ug-policy-key-hash { color: var(--muted); font: 10px var(--mono); white-space: nowrap; }
+  .ug-policy-key-tools { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
+  .ug-policy-key-tools .pf-btn { flex: none; }
+  .ug-policy-key-select-all { display: inline-flex; align-items: center; gap: 5px; color: var(--text2); font-size: 11px; white-space: nowrap; cursor: pointer; }
+  .ug-policy-key-select-all input { margin: 0; accent-color: var(--accent); }
+  .ug-policy-key-count { margin-left: auto; color: var(--muted); font: 10px var(--mono); white-space: nowrap; }
   .ug-policy-empty { padding: 14px; color: var(--muted); font-size: 11px; text-align: center; }
   .ug-policy-status { min-height: 18px; margin-top: 10px; color: var(--muted); font-size: 11px; line-height: 1.5; }
   .ug-policy-status.error { color: var(--red); }
@@ -406,6 +413,12 @@
         '<div class="ug-policy-help">达到上限时优先清理最早记录。</div></div></div>' +
       '<div class="ug-policy-field"><label for="ug-policy-key-search">Key allowlist</label>' +
         '<input class="pf-input" id="ug-policy-key-search" type="search" placeholder="按名称或尾号筛选 Key" autocomplete="off">' +
+        '<div class="ug-policy-key-tools">' +
+          '<label class="ug-policy-key-select-all"><input type="checkbox" id="ug-policy-select-all">全选当前筛选</label>' +
+          '<button class="pf-btn sm" id="ug-policy-select-visible" type="button">全选</button>' +
+          '<button class="pf-btn sm" id="ug-policy-clear-visible" type="button">清空</button>' +
+          '<span class="ug-policy-key-count" id="ug-policy-key-count">已选 0/0</span>' +
+        '</div>' +
         '<div class="ug-policy-keys" id="ug-policy-key-list">' + keyMarkup + '</div>' +
         '<div class="ug-policy-help">提交内容只包含 SHA-256 hash；Portal 不把原始 Key 写入采集策略或监控数据库。</div></div>' +
       '<div class="ug-policy-status" id="ug-policy-status"></div>';
@@ -418,12 +431,49 @@
         document.querySelectorAll('#ug-policy-body .ug-policy-mode').forEach(function (item) { item.classList.toggle('selected', item === card); });
       });
     });
+    function visiblePolicyInputs() {
+      return Array.from(document.querySelectorAll('#ug-policy-key-list .ug-policy-key:not([hidden]) input[data-key-hash]'));
+    }
+    function allPolicyInputs() {
+      return Array.from(document.querySelectorAll('#ug-policy-key-list input[data-key-hash]'));
+    }
+    function updatePolicyKeySelection() {
+      var visible = visiblePolicyInputs();
+      var all = allPolicyInputs();
+      var selected = all.filter(function (input) { return input.checked; }).length;
+      var visibleSelected = visible.filter(function (input) { return input.checked; }).length;
+      var master = $('ug-policy-select-all');
+      if (master) {
+        master.checked = visible.length > 0 && visibleSelected === visible.length;
+        master.indeterminate = visibleSelected > 0 && visibleSelected < visible.length;
+        master.disabled = visible.length === 0;
+      }
+      var count = $('ug-policy-key-count');
+      if (count) count.textContent = '已选 ' + selected + '/' + all.length + ' · 当前显示 ' + visible.length;
+    }
     $('ug-policy-key-search').addEventListener('input', function () {
       var query = this.value.trim().toLowerCase();
       document.querySelectorAll('#ug-policy-key-list .ug-policy-key').forEach(function (row) {
         row.hidden = !!query && row.textContent.toLowerCase().indexOf(query) < 0;
       });
+      updatePolicyKeySelection();
     });
+    document.querySelectorAll('#ug-policy-key-list input[data-key-hash]').forEach(function (input) {
+      input.addEventListener('change', updatePolicyKeySelection);
+    });
+    $('ug-policy-select-all').addEventListener('change', function () {
+      visiblePolicyInputs().forEach(function (input) { input.checked = $('ug-policy-select-all').checked; });
+      updatePolicyKeySelection();
+    });
+    $('ug-policy-select-visible').addEventListener('click', function () {
+      visiblePolicyInputs().forEach(function (input) { input.checked = true; });
+      updatePolicyKeySelection();
+    });
+    $('ug-policy-clear-visible').addEventListener('click', function () {
+      visiblePolicyInputs().forEach(function (input) { input.checked = false; });
+      updatePolicyKeySelection();
+    });
+    updatePolicyKeySelection();
     $('ug-policy-save').disabled = false;
     policyStatus('当前策略版本 ' + String(policy.version == null ? '—' : policy.version) + ' · 更新时间 ' + (policy.updated_at || '—'));
   }
@@ -812,13 +862,98 @@
              node: 'all', ep: 'all', status: '', q: '', page: 1, per: 20, logs: [], expanded: {} };
   var recEpoch = 0;
   var detailEpoch = 0;
+  var activeDetailValues = { request: null, response: null };
 
   function detailValue(value) {
     if (value === undefined || value === null || value === '') return '—';
+    if (typeof value === 'string') return value;
     try { return JSON.stringify(value, null, 2); } catch (e) { return String(value); }
   }
 
   function detailCode(value) { return '<pre class="ug-detail-code">' + esc(detailValue(value)) + '</pre>'; }
+
+  function parseJsonText(value) {
+    if (typeof value !== 'string') return value;
+    var text = value.trim();
+    if (!text) return value;
+    try { return JSON.parse(text); } catch (e) {}
+    if (text.indexOf('\\"') >= 0 || text.indexOf('\\n') >= 0) {
+      try { return JSON.parse(text.replace(/\\"/g, '"').replace(/\\n/g, '\n')); } catch (e2) {}
+    }
+    return value;
+  }
+
+  function parseSseEvents(value) {
+    if (typeof value !== 'string' || value.indexOf('data:') < 0) return [];
+    return value.replace(/\r\n?/g, '\n').split('\n').reduce(function (events, line) {
+      var item = line.trim();
+      if (item.toLowerCase().indexOf('data:') !== 0) return events;
+      var data = item.slice(5).trim();
+      if (!data || data === '[DONE]') return events;
+      var parsed = parseJsonText(data);
+      events.push(parsed);
+      return events;
+    }, []).filter(function (item) { return item && typeof item === 'object'; });
+  }
+
+  function aggregateSseResponse(events) {
+    var output = {}, choices = {};
+    events.forEach(function (event) {
+      if (!event || typeof event !== 'object') return;
+      ['id', 'object', 'created', 'model', 'system_fingerprint'].forEach(function (key) {
+        if (event[key] !== undefined && output[key] === undefined) output[key] = event[key];
+      });
+      if (event.usage && typeof event.usage === 'object') output.usage = event.usage;
+      (Array.isArray(event.choices) ? event.choices : []).forEach(function (choice) {
+        if (!choice || typeof choice !== 'object') return;
+        var index = Number(choice.index || 0);
+        var current = choices[index] || { index: index, message: { role: 'assistant', content: '' } };
+        var part = choice.delta || choice.message || {};
+        if (part.role) current.message.role = part.role;
+        if (part.content !== undefined && part.content !== null) current.message.content += messageText(part.content);
+        if (Array.isArray(part.tool_calls)) {
+          current.message.tool_calls = (current.message.tool_calls || []).concat(part.tool_calls);
+        }
+        if (choice.finish_reason !== undefined && choice.finish_reason !== null) current.finish_reason = choice.finish_reason;
+        choices[index] = current;
+      });
+    });
+    if (Object.keys(choices).length) output.choices = Object.keys(choices).sort(function (a, b) { return Number(a) - Number(b); }).map(function (key) { return choices[key]; });
+    return output;
+  }
+
+  function structuredDetailValue(value, kind) {
+    var parsed = parseJsonText(value);
+    if (kind === 'response' && typeof parsed === 'string') {
+      var events = parseSseEvents(parsed);
+      if (events.length) return aggregateSseResponse(events);
+      parsed = parseJsonText(parsed);
+    }
+    return parsed;
+  }
+
+  function formattedDetailValue(value, kind) {
+    var parsed = structuredDetailValue(value, kind);
+    if (typeof parsed === 'string') return parsed;
+    try { return JSON.stringify(parsed, null, 2); } catch (e) { return String(parsed); }
+  }
+
+  function detailFormatSection(title, id, value, kind) {
+    return '<section class="ug-detail-section"><h3>' + esc(title) +
+      '<label class="ug-detail-format"><input type="checkbox" data-detail-format="' + esc(kind) + '" data-detail-format-target="' + esc(id) + '">格式化</label></h3>' +
+      '<pre class="ug-detail-code" id="' + esc(id) + '">' + esc(detailValue(value)) + '</pre></section>';
+  }
+
+  function bindDetailFormatters() {
+    document.querySelectorAll('#ug-detail-body input[data-detail-format]').forEach(function (input) {
+      input.addEventListener('change', function () {
+        var kind = input.dataset.detailFormat;
+        var pre = $(input.dataset.detailFormatTarget);
+        if (!pre) return;
+        pre.textContent = input.checked ? formattedDetailValue(activeDetailValues[kind], kind) : detailValue(activeDetailValues[kind]);
+      });
+    });
+  }
 
   function detailState(message, kind) {
     return '<div class="ug-detail-state ' + (kind || '') + '">' + esc(message) + '</div>';
@@ -839,7 +974,7 @@
 
   function conversationHtml(payload) {
     var request = payload && payload.request;
-    var response = payload && payload.response;
+    var response = structuredDetailValue(payload && payload.response, 'response');
     var messages = request && Array.isArray(request.messages) ? request.messages : [];
     var choices = response && Array.isArray(response.choices) ? response.choices : [];
     var blocks = [];
@@ -870,6 +1005,9 @@
         });
       }
     });
+    if (!choices.length && typeof response === 'string' && response) {
+      blocks.push('<div class="ug-message"><div class="ug-message-role">response · raw</div><div class="ug-message-content">' + esc(response) + '</div></div>');
+    }
     return blocks.length ? blocks.join('') : '<div class="ug-detail-state">请求或响应中没有可解析的 messages/content，完整原文见下方 JSON。</div>';
   }
 
@@ -895,6 +1033,7 @@
     var payload = detail.payload || {};
     var usage = payload.usage || {};
     var tools = payload.tool_calls || [];
+    activeDetailValues = { request: payload.request, response: payload.response };
     var truncated = payload.capture_truncated ? '<div class="ug-detail-notice">原文 capture 达到 Portal 字节上限，当前内容带有截断标记。</div>' : '';
     $('ug-detail-title').textContent = '请求详情 · ' + (detail.request_id || '');
     $('ug-detail-body').innerHTML =
@@ -916,10 +1055,11 @@
         '<dt>总时延</dt><dd>' + esc(String(payload.latency_ms == null ? '—' : payload.latency_ms) + (payload.latency_ms == null ? '' : ' ms')) + '</dd>' +
       '</dl>' +
       '<section class="ug-detail-section"><h3>原文对话</h3><div class="ug-detail-conversation">' + conversationHtml(payload) + '</div></section>' +
-      '<section class="ug-detail-section"><h3>原始 request</h3>' + detailCode(payload.request) + '</section>' +
-      '<section class="ug-detail-section"><h3>原始 response</h3>' + detailCode(payload.response) + '</section>' +
+      detailFormatSection('原始 request', 'ug-detail-request-code', payload.request, 'request') +
+      detailFormatSection('原始 response', 'ug-detail-response-code', payload.response, 'response') +
       '<section class="ug-detail-section"><h3>Tool calls</h3>' + detailCode(tools) + '</section>' +
       '<section class="ug-detail-section"><h3>Usage</h3>' + detailCode(usage) + '</section>';
+    bindDetailFormatters();
   }
 
   async function openConversationDetail(requestId, row) {

@@ -11,7 +11,7 @@ const ROWS = [
     requests: 25, failures: 0, prompt_tokens: 80000, completion_tokens: 26000, cached_tokens: 41000, avg_ms: 3600 },
   { key: '9c1b', alias: 'lisi-dev', group: '研发', model: 'deepseek-v3.1', node: 'dell', endpoint: '/v1/chat/completions',
     requests: 18, failures: 1, prompt_tokens: 95000, completion_tokens: 30000, cached_tokens: 52000, avg_ms: 5100 },
-  { key: '77e0', alias: 'wangwu-da', group: '数据分析', model: 'glm-4.5-air', node: 'm2s2', endpoint: '/v1/embeddings',
+  { key: '77e0', alias: 'analytics-da', group: '数据分析', model: 'glm-4.5-air', node: 'm2s2', endpoint: '/v1/embeddings',
     requests: 45, failures: 0, prompt_tokens: 8000, completion_tokens: 0, cached_tokens: 0, avg_ms: 210 }
 ];
 const TOTALS = {
@@ -25,13 +25,27 @@ const HOURLY = Array.from({ length: 24 }, (_, i) => ({
 }));
 
 async function installFixtures(page) {
+  const keyRows = [
+    { key_hash: 'a'.repeat(64), key_last4: '…aaaa', alias: 'alpha' },
+    { key_hash: 'b'.repeat(64), key_last4: '…bbbb', alias: 'dsh-benchmark' },
+    { key_hash: 'c'.repeat(64), key_last4: '…cccc', alias: 'gamma' }
+  ];
+  await page.route('**/console/api/conversation-monitor/policy', async route => {
+    if (route.request().method() === 'PUT') return route.fulfill({ json: {
+      mode: 'persist', keys: [], ttl_days: 14, capacity: 50000, version: 2, updated_at: '2026-09-14T10:00:00Z'
+    } });
+    return route.fulfill({ json: {
+      mode: 'persist', keys: [keyRows[1].key_hash], ttl_days: 14, capacity: 50000, version: 1, updated_at: '2026-09-14T09:00:00Z'
+    } });
+  });
+  await page.route('**/console/api/keys', route => route.fulfill({ json: { keys: keyRows } }));
   await page.route('**/console/api/conversation-monitor/summary', route => route.fulfill({ json: {
     capture_mode: 'persist', captured: 12, persisted: 12, dropped: 0,
     sse_clients: 1, ttl_days: 14, capacity: 50000, last_event_id: 'evt-12'
   } }));
   await page.route('**/console/api/usage?**', route => route.fulfill({ json: {
     rows: ROWS, errors: [], totals: TOTALS, hourly: HOURLY,
-    per_key: [['zhangsan-dev', 65], ['lisi-dev', 18], ['wangwu-da', 45]] } }));
+    per_key: [['zhangsan-dev', 65], ['lisi-dev', 18], ['analytics-da', 45]] } }));
   await page.route('**/console/api/usage/logs?**', route => {
     const params = new URL(route.request().url()).searchParams;
     const per = Number(params.get('limit') || 2000);
@@ -66,6 +80,17 @@ async function installFixtures(page) {
       ] },
       response: { choices: [{ message: { role: 'assistant', content: 'The deployment is healthy.' } }] },
       tool_calls: [], usage: { prompt_tokens: 901, completion_tokens: 301 }
+    }
+  } }));
+  await page.route('**/console/api/conversation-monitor/records/req-idx-0002', route => route.fulfill({ json: {
+    request_id: 'req-idx-0002', created_at: '2026-09-14T10:57:00Z', key_ref: '…3f2a',
+    model: 'qwen3-32b-instruct', protocol: 'openai', status: 'ok',
+    capture_mode: 'persist', content_mode: 'original',
+    payload: {
+      endpoint: '/v1/chat/completions', response_content_type: 'text/event-stream',
+      request: '{"model":"qwen3-32b-instruct","messages":[{"role":"user","content":"Say hello"}]}',
+      response: 'data: {"id":"chatcmpl-stream","object":"chat.completion.chunk","model":"qwen3-32b-instruct","choices":[{"index":0,"delta":{"role":"assistant","content":"streamed "},"finish_reason":null}]}\n\ndata: {"id":"chatcmpl-stream","object":"chat.completion.chunk","model":"qwen3-32b-instruct","choices":[{"index":0,"delta":{"content":"response"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+      tool_calls: [], usage: { prompt_tokens: 12, completion_tokens: 2 }
     }
   } }));
 }
@@ -150,7 +175,37 @@ async function installFixtures(page) {
   }
   await page.locator('#ug-detail-drawer [data-close]').first().click();
 
-  console.log('== 8. 分页:');
+  console.log('== 8. raw / 格式化切换 + SSE response 聚合:');
+  await page.locator('#ug-tbody tr[data-rid="req-idx-0002"] .ug-detail-btn').click();
+  await page.waitForTimeout(250);
+  if (await page.locator('#ug-detail-request-code').innerText() !== '{"model":"qwen3-32b-instruct","messages":[{"role":"user","content":"Say hello"}]}') {
+    throw new Error('request detail must default to raw text');
+  }
+  if (!(await page.locator('#ug-detail-response-code').innerText()).includes('data: {"id"')) throw new Error('response raw view must retain SSE data lines');
+  await page.locator('input[data-detail-format="request"]').check();
+  if (!(await page.locator('#ug-detail-request-code').innerText()).includes('\n  "model"')) throw new Error('request format toggle must pretty print JSON');
+  await page.locator('input[data-detail-format="response"]').check();
+  const formattedResponse = await page.locator('#ug-detail-response-code').innerText();
+  if (!formattedResponse.includes('"content": "streamed response"') || formattedResponse.includes('data:')) {
+    throw new Error('response format toggle must aggregate SSE choices');
+  }
+  await page.locator('#ug-detail-drawer [data-close]').first().click();
+
+  console.log('== 9. 采集策略 filter + 全选当前/清空:');
+  await page.locator('#ug-policy-open').click();
+  await page.waitForSelector('#ug-policy-key-list input[data-key-hash]');
+  await page.fill('#ug-policy-key-search', 'alpha');
+  if (await page.locator('#ug-policy-key-list .ug-policy-key:not([hidden])').count() !== 1) throw new Error('policy filter must narrow visible keys');
+  await page.click('#ug-policy-select-all');
+  if (await page.locator('#ug-policy-key-list input[data-key-hash]:checked').count() !== 2) throw new Error('select all current filter must preserve existing selection and select visible key');
+  await page.fill('#ug-policy-key-search', '');
+  await page.click('#ug-policy-select-visible');
+  if (await page.locator('#ug-policy-key-list input[data-key-hash]:checked').count() !== 3) throw new Error('select all must select all keys');
+  await page.click('#ug-policy-clear-visible');
+  if (await page.locator('#ug-policy-key-list input[data-key-hash]:checked').count() !== 0) throw new Error('clear visible must clear all keys');
+  await page.locator('#ug-policy-drawer [data-close]').first().click();
+
+  console.log('== 10. 分页:');
   const firstPageFirst = await page.locator('#ug-tbody tr td').first().innerText();
   await page.locator('#ug-pager button[data-pg="2"]').click();
   await page.waitForTimeout(200);
@@ -158,7 +213,7 @@ async function installFixtures(page) {
   if (firstPageFirst === secondPageFirst) throw new Error('pagination must change rows');
   console.log('翻页后首行时间变化: true');
 
-  console.log('== 9. 失败行展开错误详情:');
+  console.log('== 11. 失败行展开错误详情:');
   await page.locator('#ug-f-status').selectOption('failure');
   await page.waitForTimeout(500);
   if (!/status=failure/.test(lastLogsUrl)) throw new Error('status filter must be sent server-side');
@@ -168,7 +223,7 @@ async function installFixtures(page) {
   if (!errDetail) throw new Error('failed row must expand error detail');
   console.log('失败行展开:', errDetail, '| 详情含 request_id:', (await page.locator('.pf-err-detail').innerText()).includes('request_id:'));
 
-  console.log('== 10. 导出 CSV:');
+  console.log('== 12. 导出 CSV:');
   const [download] = await Promise.all([
     page.waitForEvent('download'),
     page.locator('#ug-csv').click()
