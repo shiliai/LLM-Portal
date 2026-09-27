@@ -3,6 +3,6 @@ FROM python:3.14-slim
 WORKDIR /app
 COPY compat/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY conversation_monitor.py compat_proxy.py ./
+COPY conversation_monitor.py compat/compat_proxy.py ./
 EXPOSE 8400
 CMD ["python", "compat_proxy.py"]
