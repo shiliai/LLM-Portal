@@ -1,39 +1,20 @@
-# Context optimization offline evaluation
+# 上下文优化离线评估
 
-This report records the first offline comparison for issue #127. It uses three
-OPF-redacted snapshots collected on nasubuntu during the current benchmark run. No request body,
-response body, credential, or PII is included here.
+这是 #127 的第一轮离线对照结果。数据来自 nasubuntu 上三份经过 OPF 脱敏的快照；仓库和报告均不包含请求正文、响应正文、凭证或 PII。
 
-The evaluator compares the stored redacted body (`raw`), an unchanged control
-(`off`), `safe` rules (ANSI removal and consecutive duplicate-line folding in
-tool results), and `bounded` rules (safe plus head/tail truncation for tool
-results above 8 KiB). Candidates that are not smaller than the input fall back
-to the original body.
+评估比较四种模式：`raw` 是当前脱敏 replay body，`off` 是关闭优化的对照，`safe` 只对工具结果文本做 ANSI 控制符剥离和连续重复行折叠，`bounded` 在此基础上对超过 8 KiB 的工具结果保留头尾。候选结果没有变小就回退到原文。
 
-| Dataset | Samples | Raw bytes | Safe saved | Safe total | Bounded saved | Bounded total | Bounded tool output |
+| 数据集 | 样本 | 原始字节 | safe 节省 | safe 总体 | bounded 节省 | bounded 总体 | bounded 工具输出 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | dsh-benchmark | 64 | 17,197,508 | 816 | 0.005% | 368,574 | 2.143% | 7.110% |
 | dsh-macmini tool-v2 | 78 | 15,336,114 | 35,013 | 0.228% | 2,194,337 | 14.308% | 35.345% |
 | portal-context | 87 | 19,218,546 | 4,892 | 0.025% | 387,907 | 2.018% | 7.019% |
-| **Total** | **229** | **51,752,168** | **40,721** | **0.079%** | **2,950,818** | **5.702%** | **17.441%** |
+| **合计** | **229** | **51,752,168** | **40,721** | **0.079%** | **2,950,818** | **5.702%** | **17.441%** |
 
-The evaluator recomputed tool counts from `replay.body`, because older snapshots
-have incomplete aggregate tool fields. The combined set contains 12,560 tool
-calls and 12,560 tool results. `safe` matched 2,586 ANSI sequences and folded
-196 repeated-line groups. `bounded` truncated 304 oversized tool results.
+评估器从 `replay.body` 重新统计消息、tool call 和 tool result，避免旧快照的 aggregate 字段不完整影响结论。合计包含 12,560 个 tool call 和 12,560 个 tool result。`safe` 命中 2,586 个 ANSI 序列并折叠 196 组重复行；`bounded` 截断了 304 个超大工具结果。
 
-All 229 samples evaluated successfully. Message shape, tool-call structure and
-IDs, structural fields, JSON/code/system content, and image placeholders passed
-all invariants; there were no invariant failures. The input-size estimate is
-`UTF-8 bytes / 4`, not a model tokenizer count: the combined estimate falls
-from 12,937,952 to 12,200,244, a reduction of about 737,628 estimated tokens.
+229 条样本全部评估成功。消息结构、tool-call 结构和 ID、结构字段、JSON/代码/system 内容以及图片占位符均通过不变量检查，没有失败。输入 token 使用 `UTF-8 字节数 / 4` 粗估，并非模型 tokenizer 精确值：合计从 12,937,952 降至 12,200,244，约减少 737,628 个估算 token。
 
-This offline pass does not measure TTFT, total latency, cache behavior, model
-quality, tool-call success, or recovery needs. The result supports keeping
-`safe` as a low-risk candidate with limited expected savings. `bounded` has
-meaningful savings in the tool-heavy macmini set, but its truncation policy
-requires tokenizer-aware replay and task-quality checks before any canary or
-default activation.
+本轮是离线大小评估，尚未测量 TTFT、总延迟、缓存行为、模型质量、tool-call 成功率或恢复原文的需求。当前结论是：`safe` 风险较低，但收益很小；`bounded` 在工具密集的 dsh-macmini 数据上收益明显，但在进入 canary 或默认开启前，仍需要 tokenizer-aware replay、延迟测量和任务质量回归。
 
-Reproduce the report with `tools/context-benchmark/evaluate.py`; keep the
-redacted snapshots outside the repository as described in the collector README.
+评估器位于 `tools/context-benchmark/evaluate.py`，运行方式见采集 README。脱敏快照应保留在仓库外的临时目录。

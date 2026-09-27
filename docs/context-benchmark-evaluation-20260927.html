@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>上下文优化离线评估 · #127</title>
+  <style>
+    :root {
+      --bg: #101216;
+      --surface: #181b21;
+      --surface-2: #20242c;
+      --border: #303640;
+      --text: #eef2f7;
+      --muted: #929baa;
+      --blue: #77b9ff;
+      --blue-dim: rgba(119,185,255,.14);
+      --green: #69d7a2;
+      --green-dim: rgba(105,215,162,.14);
+      --amber: #f4c267;
+      --amber-dim: rgba(244,194,103,.14);
+      --red: #ff8e91;
+      --shadow: 0 18px 60px rgba(0,0,0,.28);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0; min-height: 100vh; color: var(--text); background:
+        radial-gradient(circle at 10% -10%, rgba(77,126,194,.22), transparent 36rem),
+        radial-gradient(circle at 100% 0%, rgba(48,142,117,.15), transparent 30rem), var(--bg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.55;
+    }
+    a { color: var(--blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .page { max-width: 1180px; margin: 0 auto; padding: 22px 22px 72px; }
+    .topbar { position: sticky; top: 14px; z-index: 4; display: flex; align-items: center; gap: 16px;
+      margin-bottom: 28px; padding: 12px 16px; border: 1px solid var(--border); border-radius: 14px;
+      background: rgba(24,27,33,.86); backdrop-filter: blur(16px); box-shadow: var(--shadow); }
+    .brand { display: flex; align-items: center; gap: 10px; white-space: nowrap; font-weight: 700; }
+    .brand-mark { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px;
+      color: #081018; background: linear-gradient(135deg, var(--blue), #c2e2ff); font-size: 14px; }
+    .crumb { color: var(--muted); font-size: 13px; }
+    .toplinks { margin-left: auto; display: flex; gap: 8px; }
+    .toplinks a { padding: 7px 10px; border-radius: 8px; color: var(--muted); font-size: 13px; }
+    .toplinks a:hover { color: var(--text); background: var(--surface-2); text-decoration: none; }
+    .hero { display: grid; grid-template-columns: 1.5fr .85fr; gap: 20px; margin-bottom: 20px; }
+    .hero-main, .hero-side, .panel { border: 1px solid var(--border); border-radius: 18px; background: rgba(24,27,33,.9); box-shadow: var(--shadow); }
+    .hero-main { padding: 34px 36px; overflow: hidden; position: relative; }
+    .hero-main:after { content: ""; position: absolute; width: 260px; height: 260px; right: -100px; bottom: -130px;
+      border-radius: 50%; background: radial-gradient(circle, rgba(119,185,255,.18), transparent 68%); pointer-events: none; }
+    .eyebrow { display: flex; align-items: center; gap: 9px; margin-bottom: 16px; color: var(--blue); font-size: 13px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 5px var(--green-dim); }
+    h1 { margin: 0; font-size: clamp(30px, 4vw, 48px); line-height: 1.1; letter-spacing: -.04em; }
+    .hero-copy { max-width: 660px; margin: 18px 0 22px; color: #bcc4d0; font-size: 16px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip { display: inline-flex; align-items: center; padding: 6px 10px; border-radius: 999px; color: var(--blue); background: var(--blue-dim); border: 1px solid rgba(119,185,255,.2); font-size: 12px; }
+    .hero-side { padding: 24px; display: flex; flex-direction: column; justify-content: space-between; }
+    .side-label { color: var(--muted); font-size: 12px; }
+    .side-value { margin-top: 5px; font-size: 28px; font-weight: 750; letter-spacing: -.04em; }
+    .side-note { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+    .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+    .kpi { padding: 18px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+    .kpi-label { color: var(--muted); font-size: 12px; }
+    .kpi-value { margin: 7px 0 2px; font-size: 26px; font-weight: 750; letter-spacing: -.04em; }
+    .kpi-note { color: var(--muted); font-size: 12px; }
+    .section-head { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin: 34px 0 12px; }
+    h2 { margin: 0; font-size: 20px; letter-spacing: -.02em; }
+    .section-sub { color: var(--muted); font-size: 13px; }
+    .panel { padding: 22px; }
+    .switcher { display: inline-flex; padding: 4px; gap: 4px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+    .switcher button { border: 0; border-radius: 7px; padding: 7px 11px; color: var(--muted); background: transparent; cursor: pointer; font: inherit; font-size: 12px; }
+    .switcher button.active { color: var(--text); background: var(--surface-2); box-shadow: 0 0 0 1px var(--border); }
+    .policy-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .policy { padding: 18px; border: 1px solid var(--border); border-radius: 13px; background: var(--surface); }
+    .policy.featured { border-color: rgba(244,194,103,.52); background: linear-gradient(145deg, rgba(244,194,103,.1), var(--surface) 55%); }
+    .policy-title { display: flex; justify-content: space-between; align-items: center; font-weight: 700; }
+    .policy-tag { padding: 4px 7px; border-radius: 6px; color: var(--amber); background: var(--amber-dim); font-size: 10px; font-weight: 700; }
+    .policy-desc { min-height: 44px; margin: 12px 0; color: var(--muted); font-size: 13px; }
+    .metric-line { display: flex; justify-content: space-between; gap: 12px; margin-top: 9px; font-size: 12px; }
+    .metric-line span:first-child { color: var(--muted); }
+    .metric-line span:last-child { font-weight: 700; }
+    .bar { height: 7px; margin-top: 8px; overflow: hidden; border-radius: 99px; background: var(--surface-2); }
+    .bar i { display: block; height: 100%; border-radius: inherit; background: var(--blue); }
+    .bar.green i { background: var(--green); }
+    .bar.amber i { background: var(--amber); }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; min-width: 760px; }
+    th, td { padding: 13px 12px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; font-size: 13px; }
+    th { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+    th:first-child, td:first-child { text-align: left; }
+    tbody tr:hover { background: rgba(119,185,255,.04); }
+    td strong { font-weight: 700; }
+    .dataset { display: flex; align-items: center; gap: 9px; }
+    .dataset-mark { width: 8px; height: 8px; border-radius: 50%; background: var(--blue); }
+    .dataset-mark.green { background: var(--green); }
+    .dataset-mark.amber { background: var(--amber); }
+    .total-row { background: rgba(119,185,255,.055); }
+    .total-row td { border-bottom: 0; }
+    .lower-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .hit-list { display: grid; gap: 12px; }
+    .hit { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; }
+    .hit-name { font-size: 13px; }
+    .hit-value { color: var(--blue); font-size: 14px; font-weight: 700; }
+    .hit .bar { grid-column: 1 / -1; margin-top: -4px; }
+    .callout { display: flex; gap: 14px; padding: 17px; border: 1px solid rgba(105,215,162,.35); border-radius: 13px; background: var(--green-dim); }
+    .callout-icon { flex: 0 0 30px; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 9px; color: #08150f; background: var(--green); font-weight: 800; }
+    .callout strong { display: block; margin-bottom: 4px; }
+    .callout p { margin: 0; color: #c4dfd2; font-size: 13px; }
+    .limits { display: grid; gap: 9px; margin-top: 15px; }
+    .limit { display: flex; gap: 8px; color: var(--muted); font-size: 13px; }
+    .limit:before { content: "—"; color: var(--amber); }
+    footer { margin-top: 34px; color: var(--muted); text-align: center; font-size: 12px; }
+    @media (max-width: 860px) { .hero { grid-template-columns: 1fr; } .kpis { grid-template-columns: repeat(2, 1fr); } .lower-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 560px) { .page { padding: 12px 12px 48px; } .topbar { top: 8px; } .crumb { display: none; } .toplinks a { padding: 5px; font-size: 11px; } .hero-main { padding: 25px 22px; } .kpis, .policy-grid { grid-template-columns: 1fr; } .kpi-value { font-size: 24px; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <nav class="topbar" aria-label="页面导航">
+      <div class="brand"><span class="brand-mark">↗</span><span>LLM Portal · Benchmark</span></div>
+      <span class="crumb">/ 设计文档 / #127</span>
+      <div class="toplinks"><a href="/">目录</a><a href="/page/design/context-optimization-evaluation-20260927.md">报告正文</a></div>
+    </nav>
+
+    <section class="hero">
+      <div class="hero-main">
+        <div class="eyebrow"><span class="dot"></span>Offline evaluation · 已完成</div>
+        <h1>上下文优化离线评估</h1>
+        <p class="hero-copy">基于 nasubuntu 上三份 OPF 脱敏快照，对工具输出的确定性压缩策略做第一轮对照。报告只呈现聚合统计，不包含请求正文、响应正文或凭证。</p>
+        <div class="chips"><span class="chip">#127</span><span class="chip">229 条样本</span><span class="chip">12,560 tool calls</span><span class="chip">0 invariant failures</span></div>
+      </div>
+      <aside class="hero-side">
+        <div><div class="side-label">当前推荐</div><div class="side-value">safe · 低风险候选</div></div>
+        <div class="side-note">bounded 在工具密集场景有明显收益，但需要真实模型 replay 验证质量与延迟后再进入 canary。</div>
+      </aside>
+    </section>
+
+    <section class="kpis" aria-label="关键指标">
+      <div class="kpi"><div class="kpi-label">评估样本</div><div class="kpi-value">229</div><div class="kpi-note">三份 OPF 脱敏快照</div></div>
+      <div class="kpi"><div class="kpi-label">bounded 总体节省</div><div class="kpi-value">5.702%</div><div class="kpi-note">2,950,818 bytes</div></div>
+      <div class="kpi"><div class="kpi-label">工具输出节省</div><div class="kpi-value">17.441%</div><div class="kpi-note">bounded · 合计</div></div>
+      <div class="kpi"><div class="kpi-label">结构校验</div><div class="kpi-value" style="color:var(--green)">通过</div><div class="kpi-note">229/229 · 0 failures</div></div>
+    </section>
+
+    <div class="section-head"><div><h2>策略对比</h2><div class="section-sub">切换指标，查看总体请求体或工具结果的节省比例</div></div><div class="switcher" role="tablist"><button class="active" data-metric="total">总体请求体</button><button data-metric="tool">工具结果</button></div></div>
+    <section class="panel">
+      <div class="policy-grid">
+        <article class="policy"><div class="policy-title"><span>off</span><span class="policy-tag" style="color:var(--muted);background:var(--surface-2)">对照</span></div><p class="policy-desc">关闭优化，保持当前脱敏 replay body。</p><div class="metric-line"><span>节省比例</span><strong data-total="0" data-tool="0">0%</strong></div><div class="bar"><i style="width:0%"></i></div></article>
+        <article class="policy"><div class="policy-title"><span>safe</span><span class="policy-tag" style="color:var(--green);background:var(--green-dim)">低风险</span></div><p class="policy-desc">剥离 ANSI，并折叠工具结果中的连续重复行。</p><div class="metric-line"><span>节省比例</span><strong data-total="0.079" data-tool="0.241">0.079%</strong></div><div class="bar green"><i style="width:3%"></i></div></article>
+        <article class="policy featured"><div class="policy-title"><span>bounded</span><span class="policy-tag">需 replay</span></div><p class="policy-desc">safe + 超大工具结果 head/tail 截断，默认上限 8 KiB。</p><div class="metric-line"><span>节省比例</span><strong data-total="5.702" data-tool="17.441">5.702%</strong></div><div class="bar amber"><i style="width:32%"></i></div></article>
+      </div>
+    </section>
+
+    <div class="section-head"><div><h2>数据集结果</h2><div class="section-sub">safe 与 bounded 的总体效果，以及 bounded 对工具输出的影响</div></div></div>
+    <section class="panel table-wrap">
+      <table>
+        <thead><tr><th>数据集</th><th>样本</th><th>原始字节</th><th>safe 节省</th><th>safe 总体</th><th>bounded 节省</th><th>bounded 总体</th><th>bounded 工具输出</th></tr></thead>
+        <tbody>
+          <tr><td><span class="dataset"><i class="dataset-mark"></i>dsh-benchmark</span></td><td>64</td><td>17,197,508</td><td>816</td><td>0.005%</td><td>368,574</td><td>2.143%</td><td>7.110%</td></tr>
+          <tr><td><span class="dataset"><i class="dataset-mark green"></i>dsh-macmini tool-v2</span></td><td>78</td><td>15,336,114</td><td>35,013</td><td>0.228%</td><td><strong>2,194,337</strong></td><td><strong>14.308%</strong></td><td><strong>35.345%</strong></td></tr>
+          <tr><td><span class="dataset"><i class="dataset-mark amber"></i>portal-context</span></td><td>87</td><td>19,218,546</td><td>4,892</td><td>0.025%</td><td>387,907</td><td>2.018%</td><td>7.019%</td></tr>
+          <tr class="total-row"><td><strong>合计</strong></td><td><strong>229</strong></td><td><strong>51,752,168</strong></td><td><strong>40,721</strong></td><td><strong>0.079%</strong></td><td><strong>2,950,818</strong></td><td><strong>5.702%</strong></td><td><strong>17.441%</strong></td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <div class="section-head"><div><h2>规则与验证</h2><div class="section-sub">所有候选策略都执行 never-worse 回退和结构不变量检查</div></div></div>
+    <section class="lower-grid">
+      <div class="panel"><h3 style="margin-top:0">规则命中</h3><div class="hit-list">
+        <div class="hit"><span class="hit-name">ANSI 控制序列剥离</span><span class="hit-value">2,586</span><div class="bar"><i style="width:86%"></i></div></div>
+        <div class="hit"><span class="hit-name">连续重复行折叠</span><span class="hit-value">196 组</span><div class="bar"><i style="width:42%"></i></div></div>
+        <div class="hit"><span class="hit-name">bounded 超大结果截断</span><span class="hit-value">304 次</span><div class="bar amber"><i style="width:56%"></i></div></div>
+      </div></div>
+      <div class="panel"><h3 style="margin-top:0">验证边界</h3><div class="callout"><div class="callout-icon">✓</div><div><strong>结构安全检查全部通过</strong><p>消息结构、tool-call ID、结构字段、JSON/代码/system 内容和图片占位符均保持不变。</p></div></div><div class="limits"><div class="limit">token 目前使用 UTF-8 bytes / 4 粗估，不是精确 tokenizer。</div><div class="limit">尚未测量 TTFT、总延迟、缓存命中、模型质量和任务成功率。</div><div class="limit">bounded 需要真实 replay 后才能进入 canary。</div></div></div>
+    </section>
+
+    <div class="section-head"><div><h2>建议</h2><div class="section-sub">从离线结果到可控上线的下一步</div></div></div>
+    <section class="panel"><div class="callout" style="border-color:rgba(119,185,255,.35);background:var(--blue-dim)"><div class="callout-icon" style="background:var(--blue)">→</div><div><strong>先保留 safe 作为低风险候选，单独 replay bounded</strong><p>为 bounded 补充 tokenizer-aware token、TTFT/总延迟、tool-call 成功率和任务质量回归；确认需要原始完整输出的比例后，再决定是否做 Key 级 canary。</p></div></div></section>
+
+    <footer>LLM Portal · Context Benchmark · #127 · 数据已脱敏，仅用于离线评估</footer>
+  </main>
+  <script>
+    const buttons = [...document.querySelectorAll('[data-metric]')];
+    const values = [...document.querySelectorAll('[data-total]')];
+    function select(metric) {
+      buttons.forEach(button => button.classList.toggle('active', button.dataset.metric === metric));
+      values.forEach(value => {
+        const number = Number(value.dataset[metric] || 0);
+        value.textContent = number + '%';
+        const bar = value.closest('.policy').querySelector('.bar i');
+        bar.style.width = Math.min(100, number * (metric === 'tool' ? 2.2 : 5.5)) + '%';
+      });
+    }
+    buttons.forEach(button => button.addEventListener('click', () => select(button.dataset.metric)));
+  </script>
+</body>
+</html>
