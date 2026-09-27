@@ -27,6 +27,10 @@ record has:
   redacted byte totals. Token counts are intentionally absent until a chosen
   tokenizer is recorded by the replay runner.
 
+OpenAI `tool_calls` and `role=tool` messages are counted separately in the
+aggregate (`tool_call_count`, `tool_message_count`, and argument/result sizes);
+Anthropic `tool_result` blocks remain covered by `tool_result_count`.
+
 The collector does not fabricate production data. The checked-in fixture is
 synthetic and may be run without network using `--assume-input-redacted`; use
 that flag only for synthetic or independently verified redacted inputs.

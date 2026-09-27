@@ -75,6 +75,26 @@ class CollectTest(unittest.TestCase):
         self.assertEqual(image["source"]["data"], "[IMAGE_OMITTED]")
         self.assertNotIn("CONTACT_TOKEN_B", json.dumps(result))
 
+    def test_openai_tool_calls_and_tool_messages_are_counted(self):
+        body = {
+            "model": "fixture",
+            "messages": [
+                {"role": "assistant", "tool_calls": [{
+                    "id": "call_1", "type": "function",
+                    "function": {"name": "lookup", "arguments": '{"q":"CONTACT_TOKEN_A"}'},
+                }]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "CONTACT_TOKEN_B"},
+            ],
+        }
+        result = collect.collect_record({"body": body}, FakeOpf(), 5, False)
+        aggregate = result["aggregate"]
+        self.assertEqual(aggregate["tool_call_count"], 1)
+        self.assertEqual(aggregate["tool_message_count"], 1)
+        self.assertEqual(aggregate["tool_result_count"], 1)
+        self.assertGreater(aggregate["tool_call_argument_chars"], 0)
+        self.assertNotIn("CONTACT_TOKEN_A", json.dumps(result))
+        self.assertNotIn("CONTACT_TOKEN_B", json.dumps(result))
+
     def test_size_guard_and_assumed_redacted_mode(self):
         client = collect.OpfClient("http://fixture.invalid")
         with self.assertRaises(collect.CollectionError):

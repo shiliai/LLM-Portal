@@ -284,10 +284,33 @@ def _aggregate(body: dict[str, Any], redacted_body: dict[str, Any], slots: list[
     roles = Counter(m.get("role", "unknown") for m in messages if isinstance(m, dict))
     types = Counter()
     tool_result_count = 0
+    tool_message_count = 0
+    tool_call_count = 0
     tool_chars = 0
     max_tool_bytes = 0
+    tool_call_argument_chars = 0
+    max_tool_call_bytes = 0
     cache_control = False
     for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "tool":
+            tool_message_count += 1
+            tool_result_count += 1
+            raw = json.dumps(message.get("content", ""), ensure_ascii=False)
+            size = len(raw.encode("utf-8"))
+            tool_chars += len(raw)
+            max_tool_bytes = max(max_tool_bytes, size)
+        calls = message.get("tool_calls")
+        if isinstance(calls, list):
+            tool_call_count += len(calls)
+            for call in calls:
+                function = call.get("function") if isinstance(call, dict) else None
+                arguments = function.get("arguments", "") if isinstance(function, dict) else ""
+                raw = json.dumps(arguments, ensure_ascii=False) if not isinstance(arguments, str) else arguments
+                size = len(raw.encode("utf-8"))
+                tool_call_argument_chars += len(raw)
+                max_tool_call_bytes = max(max_tool_call_bytes, size)
         content = message.get("content") if isinstance(message, dict) else None
         parts = content if isinstance(content, list) else [content]
         for part in parts:
@@ -306,8 +329,12 @@ def _aggregate(body: dict[str, Any], redacted_body: dict[str, Any], slots: list[
         "message_count": len(messages),
         "role_counts": dict(sorted(roles.items())),
         "tool_result_count": tool_result_count,
+        "tool_message_count": tool_message_count,
         "tool_result_chars": tool_chars,
         "max_tool_result_bytes": max_tool_bytes,
+        "tool_call_count": tool_call_count,
+        "tool_call_argument_chars": tool_call_argument_chars,
+        "max_tool_call_bytes": max_tool_call_bytes,
         "content_type_counts": dict(sorted(types.items())),
         "text_slot_count": len(slots),
         "redacted_slot_count": sum(a != b for a, b in zip((s.value for s in slots), replacements)),
@@ -389,7 +416,8 @@ def main(argv: list[str] | None = None) -> int:
                 target.flush()
                 passed += 1
                 for key in (
-                    "message_count", "tool_result_count", "tool_result_chars", "max_tool_result_bytes",
+                    "message_count", "tool_result_count", "tool_message_count", "tool_result_chars", "max_tool_result_bytes",
+                    "tool_call_count", "tool_call_argument_chars", "max_tool_call_bytes",
                     "text_slot_count", "redacted_slot_count", "raw_request_bytes", "redacted_request_bytes",
                     "request_bytes_saved", "text_bytes", "redacted_text_bytes", "image_blocks",
                 ):
