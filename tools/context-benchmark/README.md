@@ -80,3 +80,59 @@ internal topology. Include opaque labels such as `deployment_label` and
 API keys, or raw logs. The next stage can then replay the redacted samples for
 `off`/`safe`/`bounded` comparisons and add tokenizer, TTFT, total latency, cache,
 protocol, and quality fields.
+
+## Offline optimization evaluation
+
+`evaluate.py` compares four deterministic modes using only `replay.body` from a
+redacted snapshot. It never writes optimized request bodies to the report.
+
+- `raw`: the stored redacted body, serialized compactly as the baseline.
+- `off`: optimization disabled; it is intentionally identical to `raw`.
+- `safe`: strips ANSI control sequences and folds consecutive repeated lines in
+  tool-result text. User/assistant prose, system/developer content, structured
+  JSON, code, tool-call arguments, image blocks, and structural IDs are kept.
+- `bounded`: applies `safe`, then keeps the head and tail of a tool result when
+  its UTF-8 size exceeds the configured limit. The truncation marker includes
+  the omitted byte count.
+
+Every candidate is accepted only when its compact JSON is smaller than the raw
+body. Otherwise the complete body falls back to the raw body, so an evaluation
+cannot report a negative saving. The evaluator recomputes message, tool-call,
+and tool-result counts from the replay body because older snapshots may have
+incomplete aggregate tool fields. Each sample reports byte savings, tool-result
+byte savings, estimated input tokens as `bytes / 4`, rule hits, and structure
+invariants; the report contains no request or response content. The token field
+is a planning estimate, not an exact tokenizer count. Tokenizer-aware replay,
+TTFT, total latency, cache behavior, and response-quality checks are a later
+stage.
+
+Run the local synthetic regression fixture:
+
+```bash
+/usr/bin/python3 -m unittest \
+  tools/context-benchmark/test_collect.py \
+  tools/context-benchmark/test_evaluate.py
+```
+
+Evaluate existing redacted snapshots from nasubuntu after copying them to a
+local temporary directory (the snapshots themselves must remain outside the
+repository):
+
+```bash
+/usr/bin/python3 tools/context-benchmark/evaluate.py \
+  --input /tmp/context-benchmark-eval/dsh-benchmark-20260927.redacted.jsonl \
+  --input /tmp/context-benchmark-eval/dsh-macmini-20260927.tool-v2.redacted.jsonl \
+  --input /tmp/context-benchmark-eval/portal-context-20260927.redacted.jsonl \
+  --output /tmp/context-benchmark-eval.report.json
+```
+
+The default bounded policy is an 8 KiB tool-result limit with 4 KiB head and
+tail. Tune it explicitly for a comparison, for example:
+
+```bash
+/usr/bin/python3 tools/context-benchmark/evaluate.py \
+  --input snapshot.redacted.jsonl \
+  --max-tool-result-bytes 16384 \
+  --head-bytes 8192 --tail-bytes 4096 \
+  --output /tmp/context-benchmark-eval.report.json
+```
