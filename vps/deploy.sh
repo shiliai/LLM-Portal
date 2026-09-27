@@ -147,6 +147,13 @@ fi
 # --profile 是 compose 全局 flag，须置于子命令前（up 之后挂 --profile 在部分版本报 unknown flag）
 docker compose $COMPOSE_PROFILES up -d --build
 sleep 3
+# The console container runs as root and may create the shared monitor DB before
+# compat starts as uid 10001.  Keep the raw-content store writable only by the
+# capture worker and readable by the console container.
+if [ -f "$CONVERSATION_MONITOR_DIR/monitor.db" ]; then
+  docker run --rm -v "$CONVERSATION_MONITOR_DIR":/monitor alpine \
+    sh -ec 'chown 10001:10001 /monitor/monitor.db && chmod 600 /monitor/monitor.db'
+fi
 docker compose ps
 # Materialize the two supported cache-token shapes once.  Spend-log aggregates
 # then avoid decompressing metadata JSON for every historical row.
