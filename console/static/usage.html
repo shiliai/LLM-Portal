@@ -9,6 +9,17 @@
 <link rel="icon" href="assets/brand/favicon.svg" type="image/svg+xml" sizes="any">
 <link rel="apple-touch-icon" href="assets/brand/apple-touch-icon.png">
 <link rel="manifest" href="manifest.webmanifest">
+<style>
+  #ug-detail-drawer { width: 640px; max-width: 94vw; }
+  .ug-detail-notice { padding: 10px 12px; margin-bottom: 16px; border-left: 2px solid var(--accent); background: var(--accent-soft); color: var(--text2); font-size: 12px; line-height: 1.5; }
+  .ug-detail-meta { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 7px 12px; margin-bottom: 16px; }
+  .ug-detail-meta dt { color: var(--muted); }
+  .ug-detail-meta dd { margin: 0; color: var(--text); min-width: 0; word-break: break-word; }
+  .ug-detail-section { margin-top: 16px; }
+  .ug-detail-section h3 { margin: 0 0 7px; color: var(--heading); font-size: 12px; }
+  .ug-detail-code { max-height: 240px; overflow: auto; margin: 0; padding: 10px 12px; white-space: pre-wrap; word-break: break-word; background: var(--panel3); border: 1px solid var(--border); border-radius: 5px; color: var(--text2); font: 11px/1.55 var(--mono); }
+  .ug-detail-state { color: var(--muted); padding: 24px 0; text-align: center; }
+</style>
 </head>
 <body data-page="usage">
 <template id="page">
@@ -103,7 +114,7 @@
       <table class="pf-table"><thead><tr>
         <th>时间</th><th>Key / 用户</th><th>模型</th><th>节点</th><th>IP</th><th>端点</th>
         <th class="num">读 Token</th><th class="num">写 Token</th><th class="num">缓存 Token</th>
-        <th class="num">首字延迟</th><th class="num">总时延</th><th>状态</th>
+        <th class="num">首字延迟</th><th class="num">总时延</th><th>状态</th><th>详情</th>
       </tr></thead><tbody id="ug-tbody"></tbody></table>
       <div style="display:flex;align-items:center;padding:9px 12px;gap:12px">
         <div class="pf-tb-item"><label>每页</label><div class="pf-seg" id="ug-per">
@@ -112,6 +123,17 @@
         <div class="pf-pager" id="ug-pager" style="margin-left:auto;padding:0"></div>
       </div>
     </div>
+  </div>
+
+  <div class="pf-drawer" id="ug-detail-drawer" role="dialog" aria-modal="true" aria-labelledby="ug-detail-title">
+    <div class="pf-drawer-head">
+      <div class="pf-drawer-title" id="ug-detail-title">请求详情</div>
+      <button class="pf-x" type="button" data-close aria-label="关闭请求详情">×</button>
+    </div>
+    <div class="pf-drawer-body" id="ug-detail-body">
+      <div class="ug-detail-state">选择请求后加载 Portal 原文。</div>
+    </div>
+    <div class="pf-drawer-foot"><button class="pf-btn" type="button" data-close>关闭</button></div>
   </div>
 
 </template>
@@ -425,6 +447,66 @@
   var rl = { range: '0.9999', today: false, from: null, to: null, key: 'all', model: 'all',
              node: 'all', ep: 'all', status: '', q: '', page: 1, per: 20, logs: [], expanded: {} };
   var recEpoch = 0;
+  var detailEpoch = 0;
+
+  function detailValue(value) {
+    if (value === undefined || value === null || value === '') return '—';
+    try { return JSON.stringify(value, null, 2); } catch (e) { return String(value); }
+  }
+
+  function detailCode(value) { return '<pre class="ug-detail-code">' + esc(detailValue(value)) + '</pre>'; }
+
+  function detailState(message, kind) {
+    return '<div class="ug-detail-state ' + (kind || '') + '">' + esc(message) + '</div>';
+  }
+
+  function renderConversationDetail(detail) {
+    var payload = detail.payload || {};
+    var usage = payload.usage || {};
+    var tools = payload.tool_calls || [];
+    var truncated = payload.capture_truncated ? '<div class="ug-detail-notice">原文 capture 达到 Portal 字节上限，当前内容带有截断标记。</div>' : '';
+    $('ug-detail-title').textContent = '请求详情 · ' + (detail.request_id || '');
+    $('ug-detail-body').innerHTML =
+      '<div class="ug-detail-notice">以下内容是 Portal 保存的原文，仅对当前授权管理员可见。Portal 不调用 OPF；collector 的脱敏副本不会显示在此处。</div>' +
+      truncated +
+      '<dl class="ug-detail-meta">' +
+        '<dt>Request ID</dt><dd class="mono">' + esc(detail.request_id) + '</dd>' +
+        '<dt>时间</dt><dd>' + esc(detail.created_at) + '</dd>' +
+        '<dt>Key</dt><dd class="mono">' + esc(detail.key_ref) + '</dd>' +
+        '<dt>模型</dt><dd class="mono">' + esc(detail.model) + '</dd>' +
+        '<dt>协议</dt><dd class="mono">' + esc(detail.protocol) + '</dd>' +
+        '<dt>状态</dt><dd>' + esc(detail.status) + '</dd>' +
+        '<dt>Capture</dt><dd><span class="pf-chip accent">' + esc(detail.capture_mode) + '</span></dd>' +
+        '<dt>正文</dt><dd>' + esc(detail.content_mode || 'not-captured') + '</dd>' +
+        '<dt>保留期</dt><dd>' + esc(String(payload.retention_ttl_days == null ? '—' : payload.retention_ttl_days) + (payload.retention_ttl_days == null ? '' : ' 天（摄取时策略）')) + '</dd>' +
+        '<dt>总时延</dt><dd>' + esc(String(payload.latency_ms == null ? '—' : payload.latency_ms) + (payload.latency_ms == null ? '' : ' ms')) + '</dd>' +
+      '</dl>' +
+      '<section class="ug-detail-section"><h3>原始 request</h3>' + detailCode(payload.request) + '</section>' +
+      '<section class="ug-detail-section"><h3>原始 response</h3>' + detailCode(payload.response) + '</section>' +
+      '<section class="ug-detail-section"><h3>Tool calls</h3>' + detailCode(tools) + '</section>' +
+      '<section class="ug-detail-section"><h3>Usage</h3>' + detailCode(usage) + '</section>';
+  }
+
+  async function openConversationDetail(requestId) {
+    var epoch = ++detailEpoch;
+    $('ug-detail-title').textContent = '请求详情 · ' + requestId;
+    $('ug-detail-body').innerHTML = detailState('正在读取 Portal 原文…');
+    window.pfDrawer('ug-detail-drawer');
+    try {
+      var detail = await window.pfApi('GET', '/conversation-monitor/records/' + encodeURIComponent(requestId));
+      if (epoch !== detailEpoch) return;
+      if (!detail || !detail.payload) throw { status: 404, error: '此请求未采集原文，或已按 TTL / 容量清理。' };
+      renderConversationDetail(detail);
+    } catch (e) {
+      if (epoch !== detailEpoch) return;
+      var message;
+      if (e && e.status === 401) message = '登录已失效，请重新登录。';
+      else if (e && e.status === 403) message = '当前账号没有查看原文的权限。';
+      else if (e && e.status === 404) message = (e.error || '此请求未采集原文，或已按 TTL / 容量清理。');
+      else message = (e && e.error) || '请求详情加载失败，请稍后重试。';
+      $('ug-detail-body').innerHTML = detailState(message, 'error');
+    }
+  }
 
   function recQuery() {
     var q = '?days=' + encodeURIComponent(rl.today ? 1 : rl.range) + '&limit=2000';
@@ -528,16 +610,17 @@
         '<td>' + (fail
           ? '<span class="pf-chip err"><span class="pf-dot err" style="margin-right:0"></span>失败</span> <span style="font-size:11px;color:var(--muted)">' + (exp ? '▾' : '▸') + '</span>'
           : '<span class="pf-chip ok"><span class="pf-dot ok" style="margin-right:0"></span>成功</span>') + '</td>' +
+        '<td><button class="pf-btn sm ug-detail-btn" type="button" data-rid="' + esc(r.request_id) + '">详情</button></td>' +
       '</tr>';
       if (fail && exp) {
-        tr += '<tr class="pf-err-row"><td colspan="12"><div class="pf-err-detail">' +
+        tr += '<tr class="pf-err-row"><td colspan="13"><div class="pf-err-detail">' +
           'request_id: ' + esc(r.request_id) + '\n' +
           'error: ' + esc(r.error || 'failure') + '\n' +
           'node: ' + esc(r.node || '—') + ' · model: ' + esc(r.model) + ' · endpoint: ' + esc(r.endpoint || '—') + '\n' +
           'ip: ' + esc(r.ip || '—') + (r.effort ? ' · effort: ' + esc(r.effort) : '') + '</div></td></tr>';
       }
       return tr;
-    }).join('') || '<tr><td colspan="12" style="padding:10px" class="pf-desc">当前过滤条件下暂无请求</td></tr>';
+    }).join('') || '<tr><td colspan="13" style="padding:10px" class="pf-desc">当前过滤条件下暂无请求</td></tr>';
     $('ug-count').textContent = '共 ' + fmt(rows.length) + ' 条 · 第 ' + rl.page + '/' + pages + ' 页';
     /* 分页（窗口页码） */
     var pager = $('ug-pager');
@@ -722,6 +805,12 @@
     });
     $('ug-tbody').addEventListener('click', function (e) {
       var tr = e.target.closest('tr[data-rid]'); if (!tr) return;
+      var detailButton = e.target.closest('.ug-detail-btn');
+      if (detailButton) {
+        e.stopPropagation();
+        openConversationDetail(detailButton.dataset.rid || tr.dataset.rid);
+        return;
+      }
       rl.expanded[tr.dataset.rid] = !rl.expanded[tr.dataset.rid];
       renderRecTable();
     });

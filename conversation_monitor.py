@@ -73,6 +73,22 @@ def _parse_body(raw: bytes) -> Any:
         return raw.decode("utf-8", errors="replace")
 
 
+def _upstream_id(response: Any) -> str:
+    if isinstance(response, dict) and isinstance(response.get("id"), str):
+        return response["id"][:256]
+    if isinstance(response, str):
+        for line in response.splitlines():
+            if not line.startswith("data:"):
+                continue
+            try:
+                value = json.loads(line[5:].strip())
+            except (ValueError, TypeError):
+                continue
+            if isinstance(value, dict) and isinstance(value.get("id"), str):
+                return value["id"][:256]
+    return ""
+
+
 def _safe_path(path: str) -> str:
     return path if isinstance(path, str) and len(path) <= 128 else ""
 
@@ -249,6 +265,7 @@ class ConversationMonitor:
                 return
             req = _parse_body(request_raw)
             response = _parse_body(response_raw)
+            upstream_id = _upstream_id(response)
             usage: dict = {}
             tool_calls: list = []
             if isinstance(response, dict):
@@ -277,6 +294,8 @@ class ConversationMonitor:
                     "endpoint": _safe_path(path),
                     "response_content_type": response_content_type[:120],
                     "capture_truncated": bool(response_truncated),
+                    "upstream_request_id": upstream_id,
+                    "retention_ttl_days": int(self._policy["ttl_days"]),
                 },
             }
             event = self._event("conversation.capture", event_data, request_id=request_id)
@@ -375,7 +394,8 @@ class ConversationMonitor:
     def _detail(self, request_id: str) -> dict | None:
         with self._connect() as conn:
             row = conn.execute("SELECT event_id,request_id,created_at,created_ts,key_hash,key_ref,model,protocol,status,capture_mode,content_mode,payload_json "
-                               "FROM conversation_events WHERE request_id=? ORDER BY seq DESC LIMIT 1", (request_id,)).fetchone()
+                               "FROM conversation_events WHERE request_id=? OR json_extract(payload_json, '$.upstream_request_id')=? "
+                               "ORDER BY seq DESC LIMIT 1", (request_id, request_id)).fetchone()
             if row is None: return None
             return {"id": row[0], "request_id": row[1], "created_at": row[2], "created_ts": row[3],
                     "key_hash": row[4], "key_ref": row[5], "model": row[6], "protocol": row[7],

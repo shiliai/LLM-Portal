@@ -391,6 +391,15 @@ def error_response(reject: CompatReject, proto: str) -> Response:
     )
 
 
+def forwarded_headers(headers: Any, request_id: str) -> list[tuple[str, str]]:
+    """Copy request headers and establish the LiteLLM request correlation ID."""
+    fwd = [(k, v) for k, v in headers.items() if k.lower() not in REQ_DROP]
+    if not any(k.lower() == "x-request-id" for k, _ in fwd):
+        fwd.append(("x-request-id", request_id))
+    fwd.append(("accept-encoding", "identity"))
+    return fwd
+
+
 async def compat_proxy(request: Request) -> Response:
     path = request.url.path
     query = request.url.query
@@ -423,8 +432,7 @@ async def compat_proxy(request: Request) -> Response:
             if dsml_info:
                 metric("compat.dsml_args_normalized", endpoint=path, side="request", **dsml_info)
 
-    fwd = [(k, v) for k, v in request.headers.items() if k.lower() not in REQ_DROP]
-    fwd.append(("accept-encoding", "identity"))  # 响应不压缩：字节透传 + SSE 行改写的前提
+    fwd = forwarded_headers(request.headers, request_id)
     upstream_request = client.build_request(request.method, url, headers=fwd, content=out_body)
     try:
         upstream = await client.send(upstream_request, stream=True)

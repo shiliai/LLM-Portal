@@ -50,6 +50,31 @@ def test_persist_detail_and_pagination_hides_payload_from_list(tmp_path: Path):
     detail = run(monitor.detail(result["records"][0]["request_id"]))
     assert detail["payload"]["request"]["messages"][0]["content"] == "secret"
     assert detail["payload"]["usage"]["total_tokens"] == 2
+    assert detail["payload"]["retention_ttl_days"] == 14
+
+
+def test_detail_can_resolve_upstream_response_id(tmp_path: Path):
+    monitor = ConversationMonitor(tmp_path / "monitor.db")
+    key_hash, _ = key_identity("sk-unit-1234")
+    run(monitor.update_policy(mode="persist", keys=[key_hash], ttl_days=14, capacity=50_000))
+    run(monitor.capture(request_id="req_internal", request_raw=b"{}", response_raw=b'{"id":"chatcmpl_unit","choices":[]}',
+                        headers={}, path="/v1/chat/completions", status_code=200, model="m",
+                        protocol="openai-chat", started=0, credential="sk-unit-1234"))
+    detail = run(monitor.detail("chatcmpl_unit"))
+    assert detail["request_id"] == "req_internal"
+    assert detail["payload"]["upstream_request_id"] == "chatcmpl_unit"
+
+
+def test_static_console_and_edge_contracts_wire_detail_and_sse():
+    usage = (Path(__file__).parent / "console/static/usage.html").read_text()
+    assert "conversation-monitor/records/" in usage
+    assert "ug-detail-drawer" in usage
+    assert "detailButton" in usage
+    for name in ("private-llm.conf", "private-llm-offload.conf"):
+        config = (Path(__file__).parent / "vps/nginx" / name).read_text()
+        assert "location = /api/v1/conversation-monitor/stream" in config
+        assert "proxy_buffering off;" in config
+        assert "proxy_read_timeout 3600s;" in config
 
 
 def test_sse_replays_from_last_event_id(tmp_path: Path):
