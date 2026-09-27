@@ -44,7 +44,16 @@ if ! [[ "$WG_SUBNET" =~ ^([0-9]{1,3}\.){3}0/24$ ]]; then
 fi
 export WG_SUBNET_PREFIX="${WG_SUBNET%.*}"
 STATE_DIR=/var/lib/private-llm
+CONVERSATION_MONITOR_DIR="$STATE_DIR/conversation-monitor"
 ETC_DIR=/etc/private-llm
+
+# compat runs as uid 10001 and writes the capture database; console shares it.
+mkdir -p "$CONVERSATION_MONITOR_DIR"
+chown 10001:10001 "$CONVERSATION_MONITOR_DIR" 2>/dev/null || true
+lock_conversation_monitor_db() {
+  docker run --rm -v "$CONVERSATION_MONITOR_DIR":/monitor alpine \
+    sh -ec 'if [ -f /monitor/monitor.db ]; then chown 10001:10001 /monitor/monitor.db && chmod 600 /monitor/monitor.db; fi'
+}
 
 echo "== [1/7] 一次性迁移：退役宿主机 systemd 部署（容器接管；仅首次需要 sudo）"
 for unit in console mcp-hub onboardd; do
@@ -142,6 +151,10 @@ fi
 # --profile 是 compose 全局 flag，须置于子命令前（up 之后挂 --profile 在部分版本报 unknown flag）
 docker compose $COMPOSE_PROFILES up -d --build
 sleep 3
+# The console container runs as root and may create the shared monitor DB before
+# compat starts as uid 10001.  Keep the raw-content store writable only by the
+# capture worker and readable by the console container.
+lock_conversation_monitor_db
 docker compose ps
 # Materialize the two supported cache-token shapes once.  Spend-log aggregates
 # then avoid decompressing metadata JSON for every historical row.
@@ -255,6 +268,7 @@ for _ in $(seq 1 30); do
     && [ "$(http_code http://127.0.0.1:8300/console/api/me)" = "401" ] && break
   sleep 2
 done
+lock_conversation_monitor_db
 echo "-- litellm health:"; [ "$(http_code http://127.0.0.1:4000/health/liveliness)" = "200" ] || fail_smoke "litellm health failed"
 echo "-- compat-proxy:"; code=$(http_code -X POST http://127.0.0.1:8400/v1/chat/completions -H 'content-type: application/json' -d '{"model":"x","messages":[]}'); [ "$code" = "401" ] || fail_smoke "expect compat 401, got $code"
 echo "-- onboardd:"; code=$(http_code "http://127.0.0.1:8100/onboard/install?token=x"); [ "$code" = "403" ] || fail_smoke "expect onboardd 403, got $code"

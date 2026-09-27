@@ -9,6 +9,82 @@
 <link rel="icon" href="assets/brand/favicon.svg" type="image/svg+xml" sizes="any">
 <link rel="apple-touch-icon" href="assets/brand/apple-touch-icon.png">
 <link rel="manifest" href="manifest.webmanifest">
+<style>
+  #ug-policy-drawer { width: 620px; max-width: 94vw; }
+  #ug-detail-drawer { width: 720px; max-width: 96vw; }
+  .ug-detail-notice { padding: 10px 12px; margin-bottom: 16px; border-left: 2px solid var(--accent); background: var(--accent-soft); color: var(--text2); font-size: 12px; line-height: 1.5; }
+  .ug-detail-meta { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 7px 12px; margin-bottom: 16px; }
+  .ug-detail-meta dt { color: var(--muted); }
+  .ug-detail-meta dd { margin: 0; color: var(--text); min-width: 0; word-break: break-word; }
+  .ug-detail-section { margin-top: 16px; }
+  .ug-detail-section h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 7px; color: var(--heading); font-size: 12px; }
+  .ug-detail-section h3::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .ug-detail-format { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; color: var(--muted); font-size: 10px; font-weight: 400; white-space: nowrap; cursor: pointer; }
+  .ug-detail-format input { margin: 0; accent-color: var(--accent); }
+  .ug-detail-code { max-height: 260px; overflow: auto; margin: 0; padding: 10px 12px; white-space: pre-wrap; word-break: break-word; background: var(--panel3); border: 1px solid var(--border); border-radius: 5px; color: var(--text2); font: 11px/1.55 var(--mono); }
+  .ug-detail-state { color: var(--muted); padding: 24px 0; text-align: center; }
+  .ug-detail-conversation { display: grid; gap: 8px; }
+  .ug-message { padding: 9px 11px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel3); }
+  .ug-message-role { margin-bottom: 4px; color: var(--accent); font: 10px var(--mono); text-transform: uppercase; }
+  .ug-message-content { color: var(--text); white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.55; }
+  .ug-message.tool { border-left: 2px solid var(--violet); }
+  .ug-policy-action { margin-left: auto; align-self: center; }
+  .ug-policy-intro { display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px; margin-bottom: 16px; border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border)); border-radius: 6px; background: var(--accent-soft); color: var(--text2); font-size: 12px; line-height: 1.55; }
+  .ug-policy-intro-mark { color: var(--accent); font: 14px var(--mono); }
+  .ug-policy-overview { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 12px; margin-bottom: 16px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel3); }
+  .ug-policy-overview-title { color: var(--muted); font-size: 11px; }
+  .ug-policy-overview-meta { margin-top: 3px; color: var(--text2); font: 10px var(--mono); }
+  .ug-policy-overview-right { display: flex; align-items: center; gap: 8px; }
+  .ug-policy-field { margin-bottom: 16px; }
+  .ug-policy-field > label { display: block; margin-bottom: 7px; color: var(--heading); font-size: 12px; font-weight: 500; }
+  .ug-policy-help { margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+  .ug-policy-mode-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .ug-policy-mode { position: relative; display: block; min-height: 70px; padding: 9px 10px; border: 1px solid var(--border2); border-radius: 5px; background: var(--panel3); cursor: pointer; }
+  .ug-policy-mode:hover { border-color: var(--accent); }
+  .ug-policy-mode.selected { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+  .ug-policy-mode input { position: absolute; opacity: 0; pointer-events: none; }
+  .ug-policy-mode-title { color: var(--heading); font-size: 12px; }
+  .ug-policy-mode-copy { display: block; margin-top: 3px; color: var(--muted); font-size: 10.5px; line-height: 1.4; }
+  .ug-policy-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .ug-policy-keys { max-height: 250px; overflow: auto; border: 1px solid var(--border); border-radius: 5px; background: var(--panel3); }
+  .ug-policy-key { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 7px 10px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .ug-policy-key:last-child { border-bottom: 0; }
+  .ug-policy-key:hover { background: var(--hover); }
+  .ug-policy-key input { margin: 0; accent-color: var(--accent); }
+  .ug-policy-key-main { min-width: 0; flex: 1; }
+  .ug-policy-key-name { color: var(--text); }
+  .ug-policy-key-ref { margin-left: 7px; color: var(--muted); font: 11px var(--mono); }
+  .ug-policy-key-hash { color: var(--muted); font: 10px var(--mono); white-space: nowrap; }
+  .ug-policy-key-tools { display: flex; align-items: center; gap: 8px; margin-top: 7px; }
+  .ug-policy-key-tools .pf-btn { flex: none; }
+  .ug-policy-key-select-all { display: inline-flex; align-items: center; gap: 5px; color: var(--text2); font-size: 11px; white-space: nowrap; cursor: pointer; }
+  .ug-policy-key-select-all input { margin: 0; accent-color: var(--accent); }
+  .ug-policy-key-count { margin-left: auto; color: var(--muted); font: 10px var(--mono); white-space: nowrap; }
+  .ug-policy-empty { padding: 14px; color: var(--muted); font-size: 11px; text-align: center; }
+  .ug-policy-status { min-height: 18px; margin-top: 10px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+  .ug-policy-status.error { color: var(--red); }
+  .ug-monitor-health { margin-bottom: 14px; }
+  .ug-monitor-health .pf-card-head { align-items: flex-start; margin-bottom: 14px; }
+  .ug-health-headcopy { min-width: 0; }
+  .ug-health-subtitle { margin-top: 2px; color: var(--muted); font-size: 11px; }
+  .ug-health-controls { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+  .ug-health-status { font-size: 10.5px; }
+  .ug-health-status.connected { color: var(--green); border-color: color-mix(in srgb, var(--green) 35%, transparent); background: color-mix(in srgb, var(--green) 9%, transparent); }
+  .ug-health-status.error { color: var(--red); border-color: color-mix(in srgb, var(--red) 35%, transparent); background: color-mix(in srgb, var(--red) 9%, transparent); }
+  .ug-health-metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+  .ug-health-metric { min-width: 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel3); }
+  .ug-health-label { color: var(--muted); font-size: 10px; }
+  .ug-health-value { margin-top: 4px; color: var(--heading); font: 14px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ug-health-note { display: flex; align-items: center; gap: 7px; margin-top: 11px; padding-top: 9px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; line-height: 1.5; }
+  .ug-health-note::before { content: 'i'; display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border: 1px solid var(--border2); border-radius: 50%; color: var(--accent); font: 10px var(--mono); flex: none; }
+  .ug-health-recent { margin-top: 7px; color: var(--text2); font: 11px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ug-detail-btn { min-width: 46px; }
+  .ug-request-row { cursor: default; }
+  .ug-request-row:hover td { background: var(--hover); }
+  .ug-detail-col { width: 58px; text-align: center !important; white-space: nowrap; }
+  @media (max-width: 900px) { .ug-health-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  @media (max-width: 560px) { .ug-health-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .ug-health-controls { flex-wrap: wrap; justify-content: flex-end; } .ug-policy-mode-grid, .ug-policy-grid { grid-template-columns: 1fr; } }
+</style>
 </head>
 <body data-page="usage">
 <template id="page">
@@ -16,6 +92,31 @@
   <div class="pf-tabs" id="ug-tabs">
     <button class="pf-tab active" data-tab="sum" type="button">用量汇总</button>
     <button class="pf-tab" data-tab="rec" type="button" id="ug-tab-rec">请求明细</button>
+    <div class="ug-policy-action"><button class="pf-btn" id="ug-policy-open" type="button">采集策略</button></div>
+  </div>
+
+  <div class="pf-card ug-monitor-health" id="ug-monitor-health">
+    <div class="pf-card-head">
+      <div class="ug-health-headcopy">
+        <div class="pf-card-title">采集链路</div>
+        <div class="ug-health-subtitle">实时事件、Portal 原文留存与连接状态</div>
+      </div>
+      <div class="ug-health-controls">
+        <span class="pf-chip gray ug-health-status" id="ug-health-status">正在读取…</span>
+        <button class="pf-btn sm" id="ug-monitor-sse-toggle" type="button" disabled>恢复实时流</button>
+        <button class="pf-btn sm" id="ug-monitor-health-refresh" type="button" title="刷新采集状态" aria-label="刷新采集状态">刷新</button>
+      </div>
+    </div>
+    <div class="ug-health-metrics">
+      <div class="ug-health-metric"><div class="ug-health-label">采集模式</div><div class="ug-health-value" id="ug-health-mode">—</div></div>
+      <div class="ug-health-metric"><div class="ug-health-label">已采集原文</div><div class="ug-health-value" id="ug-health-captured">—</div></div>
+      <div class="ug-health-metric"><div class="ug-health-label">已持久化</div><div class="ug-health-value" id="ug-health-persisted">—</div></div>
+      <div class="ug-health-metric"><div class="ug-health-label">已丢弃</div><div class="ug-health-value" id="ug-health-dropped">—</div></div>
+      <div class="ug-health-metric"><div class="ug-health-label">实时客户端</div><div class="ug-health-value" id="ug-health-clients">—</div></div>
+      <div class="ug-health-metric"><div class="ug-health-label">保留期 / 容量</div><div class="ug-health-value" id="ug-health-retention">—</div></div>
+    </div>
+    <div class="ug-health-note">Portal 只负责保存和展示原文；collector 在链路外调用 OPF。采集、存储或 SSE 故障不会阻断主请求。</div>
+    <div class="ug-health-recent" id="ug-health-recent">最近事件：暂无</div>
   </div>
 
   <!-- ══════════ 汇总面板 ══════════ -->
@@ -101,7 +202,7 @@
     </div>
     <div class="pf-card flush">
       <table class="pf-table"><thead><tr>
-        <th>时间</th><th>Key / 用户</th><th>模型</th><th>节点</th><th>IP</th><th>端点</th>
+        <th>时间</th><th class="ug-detail-col">详情</th><th>Key / 用户</th><th>模型</th><th>节点</th><th>IP</th><th>端点</th>
         <th class="num">读 Token</th><th class="num">写 Token</th><th class="num">缓存 Token</th>
         <th class="num">首字延迟</th><th class="num">总时延</th><th>状态</th>
       </tr></thead><tbody id="ug-tbody"></tbody></table>
@@ -112,6 +213,31 @@
         <div class="pf-pager" id="ug-pager" style="margin-left:auto;padding:0"></div>
       </div>
     </div>
+  </div>
+
+  <div class="pf-drawer" id="ug-policy-drawer" role="dialog" aria-modal="true" aria-labelledby="ug-policy-title">
+    <div class="pf-drawer-head">
+      <div class="pf-drawer-title" id="ug-policy-title">采集策略</div>
+      <button class="pf-x" type="button" data-close aria-label="关闭采集策略">×</button>
+    </div>
+    <div class="pf-drawer-body" id="ug-policy-body">
+      <div class="ug-detail-state">正在读取采集策略…</div>
+    </div>
+    <div class="pf-drawer-foot">
+      <button class="pf-btn" type="button" data-close>取消</button>
+      <button class="pf-btn primary" id="ug-policy-save" type="button" disabled>保存策略</button>
+    </div>
+  </div>
+
+  <div class="pf-drawer" id="ug-detail-drawer" role="dialog" aria-modal="true" aria-labelledby="ug-detail-title">
+    <div class="pf-drawer-head">
+      <div class="pf-drawer-title" id="ug-detail-title">请求详情</div>
+      <button class="pf-x" type="button" data-close aria-label="关闭请求详情">×</button>
+    </div>
+    <div class="pf-drawer-body" id="ug-detail-body">
+      <div class="ug-detail-state">选择请求后加载 Portal 原文。</div>
+    </div>
+    <div class="pf-drawer-foot"><button class="pf-btn" type="button" data-close>关闭</button></div>
   </div>
 
 </template>
@@ -217,6 +343,316 @@
     var idx = 0;
     for (var i = 0; i < key.length; i++) idx = (idx * 31 + key.charCodeAt(i)) >>> 0;
     return t.s[SERIES_COLORS[idx % SERIES_COLORS.length]];
+  }
+
+  /* ══════════ 对话采集策略 ══════════ */
+  var ugPolicy = { policy: null, keys: [], epoch: 0 };
+
+  function policyHash(value) {
+    value = String(value || '').toLowerCase();
+    return /^[0-9a-f]{64}$/.test(value) ? value : '';
+  }
+
+  function policyError(e) {
+    if (e && e.status === 401) return '登录已失效，请重新登录。';
+    if (e && e.status === 403) return '当前账号没有管理采集策略的权限。';
+    if (e && e.status === 404) return '采集策略接口暂不可用，请确认 Portal 版本。';
+    return (e && e.error) || '采集策略加载失败，请稍后重试。';
+  }
+
+  function policyStatus(message, isError) {
+    var el = $('ug-policy-status');
+    if (!el) return;
+    el.textContent = message || '';
+    el.classList.toggle('error', !!isError);
+  }
+
+  function renderPolicyForm(policy, keyRows) {
+    var allowed = {};
+    (policy.keys || []).forEach(function (value) {
+      var hash = policyHash(value);
+      if (hash) allowed[hash] = true;
+    });
+    var seen = {};
+    var usable = (keyRows || []).map(function (row) {
+      var hash = policyHash(row.key_hash);
+      if (!hash || seen[hash]) return null;
+      seen[hash] = true;
+      return { hash: hash, alias: row.alias || '(未命名)', ref: row.key_last4 || '…' };
+    }).filter(Boolean).sort(function (a, b) {
+      return (a.alias + a.ref).localeCompare(b.alias + b.ref, 'zh-CN');
+    });
+    var keyMarkup = usable.length ? usable.map(function (row) {
+      return '<label class="ug-policy-key"><input type="checkbox" data-key-hash="' + esc(row.hash) + '"' +
+        (allowed[row.hash] ? ' checked' : '') + '><span class="ug-policy-key-main"><span class="ug-policy-key-name">' +
+        esc(row.alias) + '</span><span class="ug-policy-key-ref">' + esc(row.ref) + '</span></span>' +
+        '<span class="ug-policy-key-hash">…' + esc(row.hash.slice(-12)) + '</span></label>';
+    }).join('') : '<div class="ug-policy-empty">没有可用于 allowlist 的 Key hash。请先在 Key 管理中创建或导入 Key。</div>';
+    var mode = ['off', 'stream', 'persist'].indexOf(policy.mode) >= 0 ? policy.mode : 'off';
+    var modeCards = [
+      { value: 'off', title: '关闭', copy: '不产生采集事件' },
+      { value: 'stream', title: '实时流', copy: '只推送 SSE，不落盘' },
+      { value: 'persist', title: '实时流 + 持久化', copy: '推送并保存 Portal 原文' }
+    ].map(function (item) {
+      return '<label class="ug-policy-mode' + (item.value === mode ? ' selected' : '') + '" data-mode="' + item.value + '">' +
+        '<input type="radio" name="ug-policy-mode-choice" value="' + item.value + '"' + (item.value === mode ? ' checked' : '') + '>' +
+        '<span class="ug-policy-mode-title">' + item.title + '</span><span class="ug-policy-mode-copy">' + item.copy + '</span></label>';
+    }).join('');
+    $('ug-policy-body').innerHTML =
+      '<div class="ug-policy-intro"><span class="ug-policy-intro-mark">◈</span><span>Portal 保存原文，collector 自行调用 OPF。只有 allowlist 中的 Key 会产生事件；链路故障只记录监控状态，不阻断主请求。</span></div>' +
+      '<div class="ug-policy-overview"><div><div class="ug-policy-overview-title">当前策略</div><div class="ug-policy-overview-meta">版本 ' + esc(String(policy.version == null ? '—' : policy.version)) + ' · 更新于 ' + esc(policy.updated_at || '—') + '</div></div>' +
+        '<div class="ug-policy-overview-right"><span class="pf-chip accent">' + esc(mode) + '</span><span class="pf-chip gray">' + fmt((policy.keys || []).length) + ' 个 Key</span></div></div>' +
+      '<div class="ug-policy-field"><label>采集模式</label><div class="ug-policy-mode-grid">' + modeCards + '</div>' +
+        '<select class="pf-select" id="ug-policy-mode" hidden><option value="off">off</option><option value="stream">stream</option><option value="persist">persist</option></select>' +
+        '<div class="ug-policy-help">模式切换立即影响后续请求；历史原文不会因切换被改写。</div></div>' +
+      '<div class="ug-policy-grid"><div class="ug-policy-field"><label for="ug-policy-ttl">原文保留期</label>' +
+        '<select class="pf-select" id="ug-policy-ttl"><option value="7">7 天</option><option value="14">14 天</option><option value="30">30 天</option></select>' +
+        '<div class="ug-policy-help">仅影响 persist 模式中的 Portal 原文记录。</div></div>' +
+      '<div class="ug-policy-field"><label for="ug-policy-capacity">原文容量上限</label>' +
+        '<select class="pf-select" id="ug-policy-capacity"><option value="10000">10,000 条</option><option value="50000">50,000 条</option><option value="100000">100,000 条</option></select>' +
+        '<div class="ug-policy-help">达到上限时优先清理最早记录。</div></div></div>' +
+      '<div class="ug-policy-field"><label for="ug-policy-key-search">Key allowlist</label>' +
+        '<input class="pf-input" id="ug-policy-key-search" type="search" placeholder="按名称或尾号筛选 Key" autocomplete="off">' +
+        '<div class="ug-policy-key-tools">' +
+          '<label class="ug-policy-key-select-all"><input type="checkbox" id="ug-policy-select-all">全选当前筛选</label>' +
+          '<button class="pf-btn sm" id="ug-policy-select-visible" type="button">全选</button>' +
+          '<button class="pf-btn sm" id="ug-policy-clear-visible" type="button">清空</button>' +
+          '<span class="ug-policy-key-count" id="ug-policy-key-count">已选 0/0</span>' +
+        '</div>' +
+        '<div class="ug-policy-keys" id="ug-policy-key-list">' + keyMarkup + '</div>' +
+        '<div class="ug-policy-help">提交内容只包含 SHA-256 hash；Portal 不把原始 Key 写入采集策略或监控数据库。</div></div>' +
+      '<div class="ug-policy-status" id="ug-policy-status"></div>';
+    $('ug-policy-mode').value = ['off', 'stream', 'persist'].indexOf(policy.mode) >= 0 ? policy.mode : 'off';
+    $('ug-policy-ttl').value = ['7', '14', '30'].indexOf(String(policy.ttl_days)) >= 0 ? String(policy.ttl_days) : '14';
+    $('ug-policy-capacity').value = ['10000', '50000', '100000'].indexOf(String(policy.capacity)) >= 0 ? String(policy.capacity) : '50000';
+    document.querySelectorAll('#ug-policy-body .ug-policy-mode').forEach(function (card) {
+      card.addEventListener('click', function () {
+        $('ug-policy-mode').value = card.dataset.mode;
+        document.querySelectorAll('#ug-policy-body .ug-policy-mode').forEach(function (item) { item.classList.toggle('selected', item === card); });
+      });
+    });
+    function visiblePolicyInputs() {
+      return Array.from(document.querySelectorAll('#ug-policy-key-list .ug-policy-key:not([hidden]) input[data-key-hash]'));
+    }
+    function allPolicyInputs() {
+      return Array.from(document.querySelectorAll('#ug-policy-key-list input[data-key-hash]'));
+    }
+    function updatePolicyKeySelection() {
+      var visible = visiblePolicyInputs();
+      var all = allPolicyInputs();
+      var selected = all.filter(function (input) { return input.checked; }).length;
+      var visibleSelected = visible.filter(function (input) { return input.checked; }).length;
+      var master = $('ug-policy-select-all');
+      if (master) {
+        master.checked = visible.length > 0 && visibleSelected === visible.length;
+        master.indeterminate = visibleSelected > 0 && visibleSelected < visible.length;
+        master.disabled = visible.length === 0;
+      }
+      var count = $('ug-policy-key-count');
+      if (count) count.textContent = '已选 ' + selected + '/' + all.length + ' · 当前显示 ' + visible.length;
+    }
+    $('ug-policy-key-search').addEventListener('input', function () {
+      var query = this.value.trim().toLowerCase();
+      document.querySelectorAll('#ug-policy-key-list .ug-policy-key').forEach(function (row) {
+        row.hidden = !!query && row.textContent.toLowerCase().indexOf(query) < 0;
+      });
+      updatePolicyKeySelection();
+    });
+    document.querySelectorAll('#ug-policy-key-list input[data-key-hash]').forEach(function (input) {
+      input.addEventListener('change', updatePolicyKeySelection);
+    });
+    $('ug-policy-select-all').addEventListener('change', function () {
+      visiblePolicyInputs().forEach(function (input) { input.checked = $('ug-policy-select-all').checked; });
+      updatePolicyKeySelection();
+    });
+    $('ug-policy-select-visible').addEventListener('click', function () {
+      visiblePolicyInputs().forEach(function (input) { input.checked = true; });
+      updatePolicyKeySelection();
+    });
+    $('ug-policy-clear-visible').addEventListener('click', function () {
+      visiblePolicyInputs().forEach(function (input) { input.checked = false; });
+      updatePolicyKeySelection();
+    });
+    updatePolicyKeySelection();
+    $('ug-policy-save').disabled = false;
+    policyStatus('当前策略版本 ' + String(policy.version == null ? '—' : policy.version) + ' · 更新时间 ' + (policy.updated_at || '—'));
+  }
+
+  async function loadPolicyPanel() {
+    var epoch = ++ugPolicy.epoch;
+    $('ug-policy-save').disabled = true;
+    $('ug-policy-body').innerHTML = '<div class="ug-detail-state">正在读取采集策略与 Key 列表…</div>';
+    try {
+      var result = await Promise.all([
+        window.pfApi('GET', '/conversation-monitor/policy'),
+        window.pfApi('GET', '/keys')
+      ]);
+      if (epoch !== ugPolicy.epoch) return;
+      ugPolicy.policy = result[0] || {};
+      ugPolicy.keys = (result[1] && result[1].keys) || [];
+      renderPolicyForm(ugPolicy.policy, ugPolicy.keys);
+    } catch (e) {
+      if (epoch !== ugPolicy.epoch) return;
+      $('ug-policy-body').innerHTML = '<div class="ug-detail-state error">' + esc(policyError(e)) + '</div>';
+      $('ug-policy-save').disabled = true;
+    }
+  }
+
+  async function savePolicyPanel() {
+    var save = $('ug-policy-save');
+    var hashes = Array.from(document.querySelectorAll('#ug-policy-body input[data-key-hash]:checked'))
+      .map(function (input) { return policyHash(input.dataset.keyHash); }).filter(Boolean);
+    var payload = {
+      mode: $('ug-policy-mode').value,
+      ttl_days: Number($('ug-policy-ttl').value),
+      capacity: Number($('ug-policy-capacity').value),
+      keys: Array.from(new Set(hashes))
+    };
+    save.disabled = true;
+    policyStatus('正在保存策略…');
+    try {
+      var saved = await window.pfApi('PUT', '/conversation-monitor/policy', payload);
+      ugPolicy.policy = saved || payload;
+      renderPolicyForm(ugPolicy.policy, ugPolicy.keys);
+      loadMonitorHealth();
+      window.pfToast('采集策略已保存');
+    } catch (e) {
+      policyStatus(policyError(e), true);
+      save.disabled = false;
+    }
+  }
+
+  /* ══════════ 采集健康 / SSE ══════════ */
+  var ugMonitor = { source: null, lastEventId: '', paused: true, loading: false, connecting: false, refreshTimer: null };
+
+  function monitorHealthStatus(message, kind) {
+    var el = $('ug-health-status');
+    if (!el) return;
+    el.textContent = message || '';
+    el.className = 'pf-chip ug-health-status' + (kind ? ' ' + kind : ' gray');
+  }
+
+  function monitorHealthError(e) {
+    if (e && e.status === 401) return '登录已失效，请重新登录。';
+    if (e && e.status === 403) return '当前账号没有查看采集健康状态的权限。';
+    if (e && e.status === 404) return '采集健康接口暂不可用，请确认 Portal 版本。';
+    return (e && e.error) || '采集健康状态加载失败。';
+  }
+
+  function renderMonitorHealth(data) {
+    data = data || {};
+    $('ug-health-mode').textContent = String(data.capture_mode || 'off');
+    $('ug-health-captured').textContent = fmt(data.captured);
+    $('ug-health-persisted').textContent = fmt(data.persisted);
+    $('ug-health-dropped').textContent = fmt(data.dropped);
+    $('ug-health-clients').textContent = fmt(data.sse_clients);
+    $('ug-health-retention').textContent = String(data.ttl_days == null ? '—' : data.ttl_days + 'd') + ' / ' +
+      fmt(data.capacity) + ' 条';
+    if (!ugMonitor.lastEventId && data.last_event_id) ugMonitor.lastEventId = data.last_event_id;
+  }
+
+  async function loadMonitorHealth() {
+    if (ugMonitor.loading) return;
+    ugMonitor.loading = true;
+    try {
+      var data = await window.pfApi('GET', '/conversation-monitor/summary');
+      renderMonitorHealth(data);
+      if (!ugMonitor.connecting) $('ug-monitor-sse-toggle').disabled = false;
+      if (!ugMonitor.source && ugMonitor.paused) monitorHealthStatus('已暂停', '');
+    } catch (e) {
+      monitorHealthStatus(monitorHealthError(e), 'error');
+      $('ug-monitor-sse-toggle').disabled = !ugMonitor.source;
+    } finally {
+      ugMonitor.loading = false;
+    }
+  }
+
+  function monitorRecent(type, data) {
+    data = data || {};
+    var parts = [type];
+    if (data.request_id) parts.push(data.request_id);
+    if (data.model) parts.push(data.model);
+    if (data.status) parts.push(data.status);
+    if (data.reason) parts.push(data.reason);
+    $('ug-health-recent').textContent = '最近事件：' + parts.join(' · ');
+  }
+
+  function handleMonitorEvent(event) {
+    if (event.lastEventId) ugMonitor.lastEventId = event.lastEventId;
+    if (event.type === 'reset') {
+      ugMonitor.lastEventId = '';
+      monitorRecent('reset', { reason: 'replay unavailable; 可从请求明细补查' });
+      return;
+    }
+    var data = {};
+    try { data = JSON.parse(event.data || '{}'); } catch (e) { data = {}; }
+    /* 事件只在这里显示 envelope metadata，不把 Portal 原文 payload 放进页面。 */
+    monitorRecent(event.type || 'message', data);
+    if (event.type === 'conversation.capture' || event.type === 'conversation.drop' || event.type === 'policy.changed') {
+      loadMonitorHealth();
+    }
+  }
+
+  function stopMonitorStream(message, kind) {
+    if (ugMonitor.source) {
+      ugMonitor.source.close();
+      ugMonitor.source = null;
+    }
+    ugMonitor.paused = true;
+    ugMonitor.connecting = false;
+    var toggle = $('ug-monitor-sse-toggle');
+    toggle.textContent = '恢复实时流';
+    toggle.disabled = false;
+    monitorHealthStatus(message || '已暂停', kind || '');
+  }
+
+  async function startMonitorStream() {
+    if (ugMonitor.source) return;
+    monitorHealthStatus('正在连接…');
+    ugMonitor.connecting = true;
+    $('ug-monitor-sse-toggle').disabled = true;
+    try {
+      /* 先用 REST 验证当前会话，EventSource 本身不会暴露 401/403 响应体。 */
+      await window.pfApi('GET', '/conversation-monitor/summary');
+    } catch (e) {
+      stopMonitorStream(monitorHealthError(e), 'error');
+      return;
+    }
+    ugMonitor.connecting = false;
+    var query = ugMonitor.lastEventId ? '?last_event_id=' + encodeURIComponent(ugMonitor.lastEventId) : '';
+    var source;
+    try {
+      source = new EventSource('/console/api/conversation-monitor/stream' + query, { withCredentials: true });
+    } catch (e) {
+      stopMonitorStream('SSE 初始化失败，已暂停（请点击恢复）', 'error');
+      return;
+    }
+    ugMonitor.source = source;
+    ugMonitor.paused = false;
+    $('ug-monitor-sse-toggle').textContent = '暂停实时流';
+    source.onopen = function () {
+      monitorHealthStatus('SSE 已连接', 'connected');
+      $('ug-monitor-sse-toggle').disabled = false;
+      loadMonitorHealth();
+    };
+    ['conversation.capture', 'conversation.drop', 'policy.changed', 'reset'].forEach(function (type) {
+      source.addEventListener(type, handleMonitorEvent);
+    });
+    source.onerror = function () {
+      /* 自动重连会掩盖“暂停”语义，故错误后关闭；恢复按钮会带上最近 event id。 */
+      stopMonitorStream('SSE 连接失败，已暂停（请点击恢复）', 'error');
+      loadMonitorHealth();
+    };
+  }
+
+  function toggleMonitorStream() {
+    if (ugMonitor.source || ugMonitor.connecting) {
+      stopMonitorStream('已暂停');
+      return;
+    }
+    startMonitorStream().catch(function () {
+      stopMonitorStream('SSE 连接失败，已暂停（请点击恢复）', 'error');
+    });
   }
 
   /* ══════════ 汇总状态 ══════════ */
@@ -425,6 +861,228 @@
   var rl = { range: '0.9999', today: false, from: null, to: null, key: 'all', model: 'all',
              node: 'all', ep: 'all', status: '', q: '', page: 1, per: 20, logs: [], expanded: {} };
   var recEpoch = 0;
+  var detailEpoch = 0;
+  var activeDetailValues = { request: null, response: null };
+
+  function detailValue(value) {
+    if (value === undefined || value === null || value === '') return '—';
+    if (typeof value === 'string') return value;
+    try { return JSON.stringify(value, null, 2); } catch (e) { return String(value); }
+  }
+
+  function detailCode(value) { return '<pre class="ug-detail-code">' + esc(detailValue(value)) + '</pre>'; }
+
+  function parseJsonText(value) {
+    if (typeof value !== 'string') return value;
+    var text = value.trim();
+    if (!text) return value;
+    try { return JSON.parse(text); } catch (e) {}
+    if (text.indexOf('\\"') >= 0 || text.indexOf('\\n') >= 0) {
+      try { return JSON.parse(text.replace(/\\"/g, '"').replace(/\\n/g, '\n')); } catch (e2) {}
+    }
+    return value;
+  }
+
+  function parseSseEvents(value) {
+    if (typeof value !== 'string' || value.indexOf('data:') < 0) return [];
+    return value.replace(/\r\n?/g, '\n').split('\n').reduce(function (events, line) {
+      var item = line.trim();
+      if (item.toLowerCase().indexOf('data:') !== 0) return events;
+      var data = item.slice(5).trim();
+      if (!data || data === '[DONE]') return events;
+      var parsed = parseJsonText(data);
+      events.push(parsed);
+      return events;
+    }, []).filter(function (item) { return item && typeof item === 'object'; });
+  }
+
+  function aggregateSseResponse(events) {
+    var output = {}, choices = {};
+    events.forEach(function (event) {
+      if (!event || typeof event !== 'object') return;
+      ['id', 'object', 'created', 'model', 'system_fingerprint'].forEach(function (key) {
+        if (event[key] !== undefined && output[key] === undefined) output[key] = event[key];
+      });
+      if (event.usage && typeof event.usage === 'object') output.usage = event.usage;
+      (Array.isArray(event.choices) ? event.choices : []).forEach(function (choice) {
+        if (!choice || typeof choice !== 'object') return;
+        var index = Number(choice.index || 0);
+        var current = choices[index] || { index: index, message: { role: 'assistant', content: '' } };
+        var part = choice.delta || choice.message || {};
+        if (part.role) current.message.role = part.role;
+        if (part.content !== undefined && part.content !== null) current.message.content += messageText(part.content);
+        if (Array.isArray(part.tool_calls)) {
+          current.message.tool_calls = (current.message.tool_calls || []).concat(part.tool_calls);
+        }
+        if (choice.finish_reason !== undefined && choice.finish_reason !== null) current.finish_reason = choice.finish_reason;
+        choices[index] = current;
+      });
+    });
+    if (Object.keys(choices).length) output.choices = Object.keys(choices).sort(function (a, b) { return Number(a) - Number(b); }).map(function (key) { return choices[key]; });
+    return output;
+  }
+
+  function structuredDetailValue(value, kind) {
+    var parsed = parseJsonText(value);
+    if (kind === 'response' && typeof parsed === 'string') {
+      var events = parseSseEvents(parsed);
+      if (events.length) return aggregateSseResponse(events);
+      parsed = parseJsonText(parsed);
+    }
+    return parsed;
+  }
+
+  function formattedDetailValue(value, kind) {
+    var parsed = structuredDetailValue(value, kind);
+    if (typeof parsed === 'string') return parsed;
+    try { return JSON.stringify(parsed, null, 2); } catch (e) { return String(parsed); }
+  }
+
+  function detailFormatSection(title, id, value, kind) {
+    return '<section class="ug-detail-section"><h3>' + esc(title) +
+      '<label class="ug-detail-format"><input type="checkbox" data-detail-format="' + esc(kind) + '" data-detail-format-target="' + esc(id) + '">格式化</label></h3>' +
+      '<pre class="ug-detail-code" id="' + esc(id) + '">' + esc(detailValue(value)) + '</pre></section>';
+  }
+
+  function bindDetailFormatters() {
+    document.querySelectorAll('#ug-detail-body input[data-detail-format]').forEach(function (input) {
+      input.addEventListener('change', function () {
+        var kind = input.dataset.detailFormat;
+        var pre = $(input.dataset.detailFormatTarget);
+        if (!pre) return;
+        pre.textContent = input.checked ? formattedDetailValue(activeDetailValues[kind], kind) : detailValue(activeDetailValues[kind]);
+      });
+    });
+  }
+
+  function detailState(message, kind) {
+    return '<div class="ug-detail-state ' + (kind || '') + '">' + esc(message) + '</div>';
+  }
+
+  function messageText(value) {
+    if (value === undefined || value === null) return '';
+    if (typeof value === 'string') return value;
+    if (Array.isArray(value)) {
+      return value.map(function (part) {
+        if (typeof part === 'string') return part;
+        if (part && typeof part === 'object' && part.text) return String(part.text);
+        return detailValue(part);
+      }).join('\n');
+    }
+    return detailValue(value);
+  }
+
+  function conversationHtml(payload) {
+    var request = payload && payload.request;
+    var response = structuredDetailValue(payload && payload.response, 'response');
+    var messages = request && Array.isArray(request.messages) ? request.messages : [];
+    var choices = response && Array.isArray(response.choices) ? response.choices : [];
+    var blocks = [];
+    messages.forEach(function (message) {
+      if (!message || typeof message !== 'object') return;
+      var role = message.role || 'request';
+      var content = message.content;
+      if (content !== undefined && content !== null && content !== '') {
+        blocks.push('<div class="ug-message"><div class="ug-message-role">request · ' + esc(role) + '</div><div class="ug-message-content">' + esc(messageText(content)) + '</div></div>');
+      }
+      if (Array.isArray(message.tool_calls)) {
+        message.tool_calls.forEach(function (call) {
+          blocks.push('<div class="ug-message tool"><div class="ug-message-role">request · tool call</div><div class="ug-message-content">' + esc(detailValue(call)) + '</div></div>');
+        });
+      }
+    });
+    choices.forEach(function (choice) {
+      var message = choice && choice.message;
+      if (!message || typeof message !== 'object') return;
+      var role = message.role || 'assistant';
+      var content = message.content;
+      if (content !== undefined && content !== null && content !== '') {
+        blocks.push('<div class="ug-message"><div class="ug-message-role">response · ' + esc(role) + '</div><div class="ug-message-content">' + esc(messageText(content)) + '</div></div>');
+      }
+      if (Array.isArray(message.tool_calls)) {
+        message.tool_calls.forEach(function (call) {
+          blocks.push('<div class="ug-message tool"><div class="ug-message-role">response · tool call</div><div class="ug-message-content">' + esc(detailValue(call)) + '</div></div>');
+        });
+      }
+    });
+    if (!choices.length && typeof response === 'string' && response) {
+      blocks.push('<div class="ug-message"><div class="ug-message-role">response · raw</div><div class="ug-message-content">' + esc(response) + '</div></div>');
+    }
+    return blocks.length ? blocks.join('') : '<div class="ug-detail-state">请求或响应中没有可解析的 messages/content，完整原文见下方 JSON。</div>';
+  }
+
+  function unavailableDetail(row, message) {
+    row = row || {};
+    message = message || 'Portal 未保存该请求的原文：对应 Key 未加入采集 allowlist，或记录已按 TTL / 容量清理。';
+    $('ug-detail-title').textContent = '请求详情 · ' + (row.request_id || '');
+    $('ug-detail-body').innerHTML =
+      '<div class="ug-detail-notice">' + esc(message) + ' 请求明细仍保留完整的账单元数据。</div>' +
+      '<dl class="ug-detail-meta">' +
+        '<dt>Request ID</dt><dd class="mono">' + esc(row.request_id) + '</dd>' +
+        '<dt>时间</dt><dd>' + esc(row.ts) + '</dd>' +
+        '<dt>Key / 用户</dt><dd>' + esc((row.key ? '…' + row.key : '—') + (row.alias ? ' · ' + row.alias : '')) + '</dd>' +
+        '<dt>模型 / 节点</dt><dd class="mono">' + esc((row.model || '—') + ' · ' + (row.node || '—')) + '</dd>' +
+        '<dt>端点</dt><dd class="mono">' + esc(row.endpoint || '—') + '</dd>' +
+        '<dt>状态</dt><dd>' + (row.status === 'failure' ? '<span class="pf-chip err">失败</span>' : '<span class="pf-chip ok">成功</span>') + '</dd>' +
+        '<dt>Token</dt><dd class="mono">读 ' + esc(fmt(row.prompt_tokens)) + ' · 写 ' + esc(fmt(row.completion_tokens)) + ' · 缓存 ' + esc(fmt(row.cached_tokens)) + '</dd>' +
+      '</dl>' +
+      (row.error ? '<section class="ug-detail-section"><h3>错误</h3>' + detailCode(row.error) + '</section>' : '') +
+      '<section class="ug-detail-section"><h3>原文状态</h3>' + detailState('请在“采集策略”中确认该 Key 已加入 allowlist；只有后续请求才会按当前策略保存原文。') + '</section>';
+  }
+
+  function renderConversationDetail(detail) {
+    var payload = detail.payload || {};
+    var usage = payload.usage || {};
+    var tools = payload.tool_calls || [];
+    activeDetailValues = { request: payload.request, response: payload.response };
+    var truncated = payload.capture_truncated ? '<div class="ug-detail-notice">原文 capture 达到 Portal 字节上限，当前内容带有截断标记。</div>' : '';
+    $('ug-detail-title').textContent = '请求详情 · ' + (detail.request_id || '');
+    $('ug-detail-body').innerHTML =
+      '<div class="ug-detail-notice">以下内容是 Portal 保存的原文，仅对当前授权管理员可见。Portal 不调用 OPF；collector 的脱敏副本不会显示在此处。</div>' +
+      truncated +
+      '<dl class="ug-detail-meta">' +
+        '<dt>Request ID</dt><dd class="mono">' + esc(detail.request_id) + '</dd>' +
+        '<dt>时间</dt><dd>' + esc(detail.created_at) + '</dd>' +
+        '<dt>Key</dt><dd class="mono">' + esc(detail.key_ref) + '</dd>' +
+        '<dt>模型</dt><dd class="mono">' + esc(detail.model) + '</dd>' +
+        '<dt>协议</dt><dd class="mono">' + esc(detail.protocol) + '</dd>' +
+        '<dt>状态</dt><dd>' + esc(detail.status) + '</dd>' +
+        '<dt>端点</dt><dd class="mono">' + esc(payload.endpoint || '—') + '</dd>' +
+        '<dt>上游请求 ID</dt><dd class="mono">' + esc(payload.upstream_request_id || '—') + '</dd>' +
+        '<dt>响应类型</dt><dd class="mono">' + esc(payload.response_content_type || '—') + '</dd>' +
+        '<dt>Capture</dt><dd><span class="pf-chip accent">' + esc(detail.capture_mode) + '</span></dd>' +
+        '<dt>正文</dt><dd>' + esc(detail.content_mode || 'not-captured') + '</dd>' +
+        '<dt>保留期</dt><dd>' + esc(String(payload.retention_ttl_days == null ? '—' : payload.retention_ttl_days) + (payload.retention_ttl_days == null ? '' : ' 天（摄取时策略）')) + '</dd>' +
+        '<dt>总时延</dt><dd>' + esc(String(payload.latency_ms == null ? '—' : payload.latency_ms) + (payload.latency_ms == null ? '' : ' ms')) + '</dd>' +
+      '</dl>' +
+      '<section class="ug-detail-section"><h3>原文对话</h3><div class="ug-detail-conversation">' + conversationHtml(payload) + '</div></section>' +
+      detailFormatSection('原始 request', 'ug-detail-request-code', payload.request, 'request') +
+      detailFormatSection('原始 response', 'ug-detail-response-code', payload.response, 'response') +
+      '<section class="ug-detail-section"><h3>Tool calls</h3>' + detailCode(tools) + '</section>' +
+      '<section class="ug-detail-section"><h3>Usage</h3>' + detailCode(usage) + '</section>';
+    bindDetailFormatters();
+  }
+
+  async function openConversationDetail(requestId, row) {
+    var epoch = ++detailEpoch;
+    $('ug-detail-title').textContent = '请求详情 · ' + requestId;
+    $('ug-detail-body').innerHTML = detailState('正在读取 Portal 原文…');
+    window.pfDrawer('ug-detail-drawer');
+    try {
+      var detail = await window.pfApi('GET', '/conversation-monitor/records/' + encodeURIComponent(requestId));
+      if (epoch !== detailEpoch) return;
+      if (!detail || !detail.payload) throw { status: 404, error: '此请求未采集原文，或已按 TTL / 容量清理。' };
+      renderConversationDetail(detail);
+    } catch (e) {
+      if (epoch !== detailEpoch) return;
+      var message;
+      if (e && e.status === 401) message = '登录已失效，请重新登录。';
+      else if (e && e.status === 403) message = '当前账号没有查看原文的权限。';
+      else if (e && e.status === 404) { unavailableDetail(row); return; }
+      else message = (e && e.error) || '请求详情加载失败，请稍后重试。';
+      $('ug-detail-body').innerHTML = detailState(message, 'error');
+    }
+  }
 
   function recQuery() {
     var q = '?days=' + encodeURIComponent(rl.today ? 1 : rl.range) + '&limit=2000';
@@ -513,8 +1171,9 @@
     $('ug-tbody').innerHTML = slice.map(function (r) {
       var fail = r.status === 'failure';
       var exp = rl.expanded[r.request_id];
-      var tr = '<tr data-rid="' + esc(r.request_id) + '" class="' + (fail ? 'pf-err-row' : '') + (fail ? ' clickable' : '') + '">' +
+      var tr = '<tr data-rid="' + esc(r.request_id) + '" class="ug-request-row ' + (fail ? 'pf-err-row' : '') + '">' +
         '<td class="mono" style="font-size:11px">' + esc((r.ts || '').replace('T', ' ')) + '</td>' +
+        '<td class="ug-detail-col"><button class="pf-btn sm ug-detail-btn" type="button" data-rid="' + esc(r.request_id) + '">详情</button></td>' +
         '<td><span class="mono" style="font-size:11px">…' + esc(r.key) + '</span><div style="font-size:11px;color:var(--muted)">' + esc(r.alias) + ' · ' + esc(r.group || 'default') + '</div></td>' +
         '<td class="mono" style="font-size:11px">' + esc(r.model) + '</td>' +
         '<td class="mono" style="font-size:11px">' + esc(r.node || '—') + '</td>' +
@@ -526,18 +1185,18 @@
         '<td class="num">' + latencyHtml(r.tft_ms) + '</td>' +
         '<td class="num">' + latencyHtml(r.duration_ms) + '</td>' +
         '<td>' + (fail
-          ? '<span class="pf-chip err"><span class="pf-dot err" style="margin-right:0"></span>失败</span> <span style="font-size:11px;color:var(--muted)">' + (exp ? '▾' : '▸') + '</span>'
+          ? '<span class="pf-chip err"><span class="pf-dot err" style="margin-right:0"></span>失败</span> <button class="pf-btn-icon ug-error-toggle" type="button" aria-label="展开错误详情" title="展开错误详情">' + (exp ? '▾' : '▸') + '</button>'
           : '<span class="pf-chip ok"><span class="pf-dot ok" style="margin-right:0"></span>成功</span>') + '</td>' +
       '</tr>';
       if (fail && exp) {
-        tr += '<tr class="pf-err-row"><td colspan="12"><div class="pf-err-detail">' +
+        tr += '<tr class="pf-err-row"><td colspan="13"><div class="pf-err-detail">' +
           'request_id: ' + esc(r.request_id) + '\n' +
           'error: ' + esc(r.error || 'failure') + '\n' +
           'node: ' + esc(r.node || '—') + ' · model: ' + esc(r.model) + ' · endpoint: ' + esc(r.endpoint || '—') + '\n' +
           'ip: ' + esc(r.ip || '—') + (r.effort ? ' · effort: ' + esc(r.effort) : '') + '</div></td></tr>';
       }
       return tr;
-    }).join('') || '<tr><td colspan="12" style="padding:10px" class="pf-desc">当前过滤条件下暂无请求</td></tr>';
+    }).join('') || '<tr><td colspan="13" style="padding:10px" class="pf-desc">当前过滤条件下暂无请求</td></tr>';
     $('ug-count').textContent = '共 ' + fmt(rows.length) + ' 条 · 第 ' + rl.page + '/' + pages + ' 页';
     /* 分页（窗口页码） */
     var pager = $('ug-pager');
@@ -587,6 +1246,19 @@
   }
 
   window.pfReady.then(function () {
+    $('ug-policy-open').addEventListener('click', function () {
+      window.pfDrawer('ug-policy-drawer');
+      loadPolicyPanel();
+    });
+    $('ug-policy-save').addEventListener('click', savePolicyPanel);
+    $('ug-monitor-sse-toggle').addEventListener('click', toggleMonitorStream);
+    $('ug-monitor-health-refresh').addEventListener('click', function () {
+      loadMonitorHealth();
+      window.pfToast('采集健康状态已刷新');
+    });
+    loadMonitorHealth();
+    window.setInterval(loadMonitorHealth, 30000);
+
     /* 汇总面板事件 */
     $('ug-range').addEventListener('click', function (e) {
       var b = e.target.closest('button'); if (!b) return;
@@ -722,8 +1394,27 @@
     });
     $('ug-tbody').addEventListener('click', function (e) {
       var tr = e.target.closest('tr[data-rid]'); if (!tr) return;
-      rl.expanded[tr.dataset.rid] = !rl.expanded[tr.dataset.rid];
-      renderRecTable();
+      var detailButton = e.target.closest('.ug-detail-btn');
+      if (detailButton) {
+        e.stopPropagation();
+        openConversationDetail(detailButton.dataset.rid || tr.dataset.rid, rl.logs.find(function (row) { return row.request_id === tr.dataset.rid; }));
+        return;
+      }
+      var errorToggle = e.target.closest('.ug-error-toggle');
+      if (errorToggle) {
+        e.stopPropagation();
+        rl.expanded[tr.dataset.rid] = !rl.expanded[tr.dataset.rid];
+        renderRecTable();
+        return;
+      }
+      /* Keep the existing failure-row affordance: clicking the red row exposes
+         the short error summary; the explicit 详情 button still opens Portal
+         detail for both successful and failed requests. */
+      if (tr.classList.contains('pf-err-row')) {
+        rl.expanded[tr.dataset.rid] = !rl.expanded[tr.dataset.rid];
+        renderRecTable();
+        return;
+      }
     });
 
     /* 主题切换 → 图表重渲染 */

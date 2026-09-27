@@ -43,15 +43,21 @@ services:
       - postgres
 
   # 协议兼容层（issue #9 / US-13 us13-v1）：nginx 三条 API 路径经此转 LiteLLM。
-  # 无状态、不落盘、不挂 sock、不持密钥（鉴权头原样透传，鉴权/路由/记账仍归 litellm）
+  # 兼容层不持认证状态；conversation-monitor 仅落共享受限 SQLite 事件库
   compat:
-    build: ../compat
+    build:
+      context: ..
+      dockerfile: compat/Dockerfile
     container_name: private-llm-compat
     restart: unless-stopped
     # 无状态服务以非 root 运行（issue #10 最小权限收敛）
     user: "10001:10001"
     environment:
       LITELLM_BASE: http://litellm:4000
+      CONVERSATION_MONITOR_DB: /var/lib/private-llm/conversation-monitor/monitor.db
+      CONVERSATION_MONITOR_SSE_TOKEN: ${CONVERSATION_MONITOR_SSE_TOKEN:-}
+    volumes:
+      - /var/lib/private-llm/conversation-monitor:/var/lib/private-llm/conversation-monitor
     ports:
       - "127.0.0.1:8400:8400"   # 本机冒烟/调试
     networks:
@@ -132,7 +138,9 @@ services:
       - shared
 
   console:
-    build: ../console
+    build:
+      context: ..
+      dockerfile: console/Dockerfile
     container_name: private-llm-console
     restart: unless-stopped
     environment:
@@ -158,8 +166,11 @@ services:
       MCP_RESTART_CMD: docker restart private-llm-mcp-hub
       # Dedicated SELECT-only account; no owner DATABASE_URL is exposed to Console.
       USAGE_DATABASE_URL: postgresql://console_usage:${CONSOLE_USAGE_PASSWORD}@private-llm-postgres:5432/litellm
+      CONVERSATION_MONITOR_DB: /var/lib/private-llm/conversation-monitor/monitor.db
+      CONVERSATION_MONITOR_SSE_TOKEN: ${CONVERSATION_MONITOR_SSE_TOKEN:-}
     volumes:
       - /var/lib/private-llm/console:/var/lib/private-llm/console
+      - /var/lib/private-llm/conversation-monitor:/var/lib/private-llm/conversation-monitor
       # 只读用量账本（mcp-hub 写、consoled 聚合读）
       - /var/lib/private-llm/mcp-hub:/var/lib/private-llm/mcp-hub:ro
       # 外部 MCP 注册表（consoled 写）
