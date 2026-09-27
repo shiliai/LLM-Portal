@@ -127,7 +127,7 @@
         <div class="eyebrow"><span class="dot"></span>Offline evaluation · 已完成</div>
         <h1>上下文优化离线评估</h1>
         <p class="hero-copy">基于 nasubuntu 上三份 OPF 脱敏快照，对工具输出的确定性压缩策略做第一轮对照。报告只呈现聚合统计，不包含请求正文、响应正文或凭证。</p>
-        <div class="chips"><span class="chip">#127</span><span class="chip">229 条样本</span><span class="chip">12,560 tool calls</span><span class="chip">0 invariant failures</span></div>
+        <div class="chips"><span class="chip">#127</span><span class="chip">229 条样本</span><span class="chip">12,560 tool calls</span><span class="chip">0 invariant failures</span><span class="chip">RTK 参考 · 本轮未调用</span></div>
       </div>
       <aside class="hero-side">
         <div><div class="side-label">当前推荐</div><div class="side-value">safe · 低风险候选</div></div>
@@ -171,7 +171,7 @@
         <div class="hit"><span class="hit-name">连续重复行折叠</span><span class="hit-value">196 组</span><div class="bar"><i style="width:42%"></i></div></div>
         <div class="hit"><span class="hit-name">bounded 超大结果截断</span><span class="hit-value">304 次</span><div class="bar amber"><i style="width:56%"></i></div></div>
       </div></div>
-      <div class="panel"><h3 style="margin-top:0">验证边界</h3><div class="callout"><div class="callout-icon">✓</div><div><strong>结构安全检查全部通过</strong><p>消息结构、tool-call ID、结构字段、JSON/代码/system 内容和图片占位符均保持不变。</p></div></div><div class="limits"><div class="limit">token 目前使用 UTF-8 bytes / 4 粗估，不是精确 tokenizer。</div><div class="limit">尚未测量 TTFT、总延迟、缓存命中、模型质量和任务成功率。</div><div class="limit">bounded 需要真实 replay 后才能进入 canary。</div></div></div>
+      <div class="panel"><h3 style="margin-top:0">验证边界</h3><div class="callout"><div class="callout-icon">✓</div><div><strong>结构安全检查全部通过</strong><p>消息结构、tool-call ID、结构字段、JSON/代码/system 内容和图片占位符均保持不变。</p></div></div><div class="limits"><div class="limit">本轮未调用 RTK；规则是参考 RTK 研究方向后实现的本地候选。</div><div class="limit">token 目前使用 UTF-8 bytes / 4 粗估，不是精确 tokenizer。</div><div class="limit">尚未测量 TTFT、总延迟、缓存命中、模型质量和任务成功率。</div><div class="limit">bounded 需要真实 replay 后才能进入 canary。</div></div></div>
     </section>
 
     <div class="section-head"><div><h2>建议</h2><div class="section-sub">从离线结果到可控上线的下一步</div></div></div>
