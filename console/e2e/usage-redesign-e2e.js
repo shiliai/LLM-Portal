@@ -25,6 +25,10 @@ const HOURLY = Array.from({ length: 24 }, (_, i) => ({
 }));
 
 async function installFixtures(page) {
+  await page.route('**/console/api/conversation-monitor/summary', route => route.fulfill({ json: {
+    capture_mode: 'persist', captured: 12, persisted: 12, dropped: 0,
+    sse_clients: 1, ttl_days: 14, capacity: 50000, last_event_id: 'evt-12'
+  } }));
   await page.route('**/console/api/usage?**', route => route.fulfill({ json: {
     rows: ROWS, errors: [], totals: TOTALS, hourly: HOURLY,
     per_key: [['zhangsan-dev', 65], ['lisi-dev', 18], ['wangwu-da', 45]] } }));
@@ -49,6 +53,21 @@ async function installFixtures(page) {
     }
     return route.fulfill({ json: { logs: logs.slice(0, per), next_cursor: '', has_more: false } });
   });
+  await page.route('**/console/api/conversation-monitor/records/req-idx-0001', route => route.fulfill({ json: {
+    request_id: 'req-idx-0001', created_at: '2026-09-14T10:58:00Z', key_ref: '…3f2a',
+    model: 'qwen3-32b-instruct', protocol: 'openai', status: 'ok',
+    capture_mode: 'persist', content_mode: 'original',
+    payload: {
+      endpoint: '/v1/chat/completions', response_content_type: 'application/json',
+      upstream_request_id: 'upstream-idx-0001', latency_ms: 2030, retention_ttl_days: 14,
+      request: { messages: [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'user', content: 'Summarize the deployment status.' }
+      ] },
+      response: { choices: [{ message: { role: 'assistant', content: 'The deployment is healthy.' } }] },
+      tool_calls: [], usage: { prompt_tokens: 901, completion_tokens: 301 }
+    }
+  } }));
 }
 
 (async () => {
@@ -118,7 +137,20 @@ async function installFixtures(page) {
   console.log('统计卡:', statCards, '| 首页行数:', rows);
   await page.screenshot({ path: '/tmp/e2e/r106-records.png', fullPage: false });
 
-  console.log('== 7. 分页:');
+  console.log('== 7. 请求详情抽屉：原文对话 + 元数据:');
+  await page.locator('#ug-tbody tr[data-rid="req-idx-0001"] .ug-detail-btn').click();
+  await page.waitForTimeout(300);
+  if (!(await page.locator('#ug-detail-drawer').evaluate(el => el.classList.contains('open')))) {
+    throw new Error('request detail drawer must open from a successful row');
+  }
+  if (await page.locator('.ug-message').count() !== 3) throw new Error('detail drawer must render request/response messages');
+  const detailText = await page.locator('#ug-detail-body').innerText();
+  if (!detailText.includes('Summarize the deployment status.') || !detailText.includes('The deployment is healthy.')) {
+    throw new Error('detail drawer must expose original conversation content');
+  }
+  await page.locator('#ug-detail-drawer [data-close]').first().click();
+
+  console.log('== 8. 分页:');
   const firstPageFirst = await page.locator('#ug-tbody tr td').first().innerText();
   await page.locator('#ug-pager button[data-pg="2"]').click();
   await page.waitForTimeout(200);
@@ -126,7 +158,7 @@ async function installFixtures(page) {
   if (firstPageFirst === secondPageFirst) throw new Error('pagination must change rows');
   console.log('翻页后首行时间变化: true');
 
-  console.log('== 8. 失败行展开错误详情:');
+  console.log('== 9. 失败行展开错误详情:');
   await page.locator('#ug-f-status').selectOption('failure');
   await page.waitForTimeout(500);
   if (!/status=failure/.test(lastLogsUrl)) throw new Error('status filter must be sent server-side');
@@ -136,7 +168,7 @@ async function installFixtures(page) {
   if (!errDetail) throw new Error('failed row must expand error detail');
   console.log('失败行展开:', errDetail, '| 详情含 request_id:', (await page.locator('.pf-err-detail').innerText()).includes('request_id:'));
 
-  console.log('== 9. 导出 CSV:');
+  console.log('== 10. 导出 CSV:');
   const [download] = await Promise.all([
     page.waitForEvent('download'),
     page.locator('#ug-csv').click()
