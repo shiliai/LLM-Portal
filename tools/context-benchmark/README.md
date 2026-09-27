@@ -111,7 +111,8 @@ Run the local synthetic regression fixture:
 ```bash
 /usr/bin/python3 -m unittest \
   tools/context-benchmark/test_collect.py \
-  tools/context-benchmark/test_evaluate.py
+  tools/context-benchmark/test_evaluate.py \
+  tools/context-benchmark/test_rtk_benchmark.py
 ```
 
 Evaluate existing redacted snapshots from nasubuntu after copying them to a
@@ -136,3 +137,56 @@ tail. Tune it explicitly for a comparison, for example:
   --head-bytes 8192 --tail-bytes 4096 \
   --output /tmp/context-benchmark-eval.report.json
 ```
+
+## Actual RTK CLI comparison
+
+`rtk_benchmark.py` invokes the real RTK CLI through `rtk --skip-env pipe` and
+sends captured tool-result text on stdin. It never executes the captured Bash
+commands and never writes the filtered text to the report. RTK auto-detects its
+filter from the text, so this measures RTK's actual command-output pipeline
+rather than the local `safe`/`bounded` approximation.
+
+Run it with an explicitly downloaded RTK binary kept outside the repository:
+
+```bash
+/usr/bin/python3 tools/context-benchmark/rtk_benchmark.py \
+  --rtk /tmp/rtk/rtk \
+  --input /tmp/context-benchmark-eval/dsh-benchmark-20260927.redacted.jsonl \
+  --input /tmp/context-benchmark-eval/dsh-macmini-20260927.tool-v2.redacted.jsonl \
+  --input /tmp/context-benchmark-eval/portal-context-20260927.redacted.jsonl \
+  --output /tmp/context-benchmark-eval/rtk-report.json
+```
+
+The RTK report counts tool-result text bytes. To estimate impact on the full
+request body, divide the reported `bytes_saved` by the raw request bytes from
+the local evaluator; do not mix the two denominators. The adapter reports the
+RTK version, requested source commit, cache hits, failures, and timeouts so an
+evaluation cannot silently fall back to the local rules.
+
+## RTK CLI replay
+
+`rtk_benchmark.py` is a separate adapter for an actual RTK CLI executable. It
+invokes only `rtk --skip-env pipe`, sending each redacted tool-result text to
+stdin. The captured request body and any command-like text inside a result are
+never passed to a shell or to an RTK command runner. Identical tool results are
+hashed and processed once, while occurrence counts are retained in the
+aggregate report. The report never contains result text.
+
+Run it with an RTK binary supplied by the environment:
+
+```bash
+/usr/bin/python3 tools/context-benchmark/rtk_benchmark.py \
+  --rtk /path/to/rtk \
+  --rtk-commit c75f159 \
+  --input /tmp/context-benchmark-eval/dsh-benchmark-20260927.redacted.jsonl \
+  --input /tmp/context-benchmark-eval/dsh-macmini-20260927.tool-v2.redacted.jsonl \
+  --input /tmp/context-benchmark-eval/portal-context-20260927.redacted.jsonl \
+  --output /tmp/context-benchmark-eval.rtk.report.json
+```
+
+The result declares `execution: actual_rtk` only after the executable responds
+successfully to the stdin `pipe` calls. If no executable is available, it
+returns `execution: blocked` with `missing_executable`; this must not be
+reported as an RTK benchmark. The local `safe`/`bounded` modes in
+`evaluate.py` remain a separate candidate-rule baseline and are not a Python
+implementation of RTK.
