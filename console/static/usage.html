@@ -36,6 +36,20 @@
   .ug-policy-empty { padding: 14px; color: var(--muted); font-size: 11px; text-align: center; }
   .ug-policy-status { min-height: 18px; margin-top: 10px; color: var(--muted); font-size: 11px; line-height: 1.5; }
   .ug-policy-status.error { color: var(--red); }
+  .ug-monitor-health { margin-bottom: 14px; }
+  .ug-monitor-health .pf-card-head { align-items: center; }
+  .ug-health-controls { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+  .ug-health-status { font-size: 11px; color: var(--muted); }
+  .ug-health-status.connected { color: var(--green); }
+  .ug-health-status.error { color: var(--red); }
+  .ug-health-metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+  .ug-health-metric { min-width: 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel3); }
+  .ug-health-label { color: var(--muted); font-size: 10px; }
+  .ug-health-value { margin-top: 4px; color: var(--heading); font: 14px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ug-health-note { margin-top: 9px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+  .ug-health-recent { margin-top: 7px; color: var(--text2); font: 11px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  @media (max-width: 900px) { .ug-health-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  @media (max-width: 560px) { .ug-health-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .ug-health-controls { flex-wrap: wrap; justify-content: flex-end; } }
 </style>
 </head>
 <body data-page="usage">
@@ -45,6 +59,27 @@
     <button class="pf-tab active" data-tab="sum" type="button">用量汇总</button>
     <button class="pf-tab" data-tab="rec" type="button" id="ug-tab-rec">请求明细</button>
     <div class="ug-policy-action"><button class="pf-btn" id="ug-policy-open" type="button">⚙ 采集策略</button></div>
+  </div>
+
+  <div class="pf-card ug-monitor-health" id="ug-monitor-health">
+    <div class="pf-card-head">
+      <div class="pf-card-title">采集状态 / 健康</div>
+      <div class="ug-health-controls">
+        <span class="ug-health-status" id="ug-health-status">正在读取…</span>
+        <button class="pf-btn sm" id="ug-monitor-sse-toggle" type="button" disabled>恢复实时流</button>
+        <button class="pf-btn sm" id="ug-monitor-health-refresh" type="button">⟳</button>
+      </div>
+    </div>
+    <div class="ug-health-metrics">
+      <div class="ug-health-metric"><div class="ug-health-label">Mode</div><div class="ug-health-value" id="ug-health-mode">—</div></div>
+      <div class="ug-health-metric"><div class="ug-health-label">Captured</div><div class="ug-health-value" id="ug-health-captured">—</div></div>
+      <div class="ug-health-metric"><div class="ug-health-label">Persisted</div><div class="ug-health-value" id="ug-health-persisted">—</div></div>
+      <div class="ug-health-metric"><div class="ug-health-label">Dropped</div><div class="ug-health-value" id="ug-health-dropped">—</div></div>
+      <div class="ug-health-metric"><div class="ug-health-label">SSE clients</div><div class="ug-health-value" id="ug-health-clients">—</div></div>
+      <div class="ug-health-metric"><div class="ug-health-label">TTL / capacity</div><div class="ug-health-value" id="ug-health-retention">—</div></div>
+    </div>
+    <div class="ug-health-note">SSE、采集或存储故障不会阻断主请求；Portal 保存原文，collector 自行调用 OPF。</div>
+    <div class="ug-health-recent" id="ug-health-recent">最近事件：暂无</div>
   </div>
 
   <!-- ══════════ 汇总面板 ══════════ -->
@@ -376,11 +411,130 @@
       var saved = await window.pfApi('PUT', '/conversation-monitor/policy', payload);
       ugPolicy.policy = saved || payload;
       renderPolicyForm(ugPolicy.policy, ugPolicy.keys);
+      loadMonitorHealth();
       window.pfToast('采集策略已保存');
     } catch (e) {
       policyStatus(policyError(e), true);
       save.disabled = false;
     }
+  }
+
+  /* ══════════ 采集健康 / SSE ══════════ */
+  var ugMonitor = { source: null, lastEventId: '', paused: true, loading: false, refreshTimer: null };
+
+  function monitorHealthStatus(message, kind) {
+    var el = $('ug-health-status');
+    if (!el) return;
+    el.textContent = message || '';
+    el.className = 'ug-health-status' + (kind ? ' ' + kind : '');
+  }
+
+  function monitorHealthError(e) {
+    if (e && e.status === 401) return '登录已失效，请重新登录。';
+    if (e && e.status === 403) return '当前账号没有查看采集健康状态的权限。';
+    if (e && e.status === 404) return '采集健康接口暂不可用，请确认 Portal 版本。';
+    return (e && e.error) || '采集健康状态加载失败。';
+  }
+
+  function renderMonitorHealth(data) {
+    data = data || {};
+    $('ug-health-mode').textContent = String(data.capture_mode || 'off');
+    $('ug-health-captured').textContent = fmt(data.captured);
+    $('ug-health-persisted').textContent = fmt(data.persisted);
+    $('ug-health-dropped').textContent = fmt(data.dropped);
+    $('ug-health-clients').textContent = fmt(data.sse_clients);
+    $('ug-health-retention').textContent = String(data.ttl_days == null ? '—' : data.ttl_days + 'd') + ' / ' +
+      fmt(data.capacity) + ' 条';
+    if (!ugMonitor.lastEventId && data.last_event_id) ugMonitor.lastEventId = data.last_event_id;
+  }
+
+  async function loadMonitorHealth() {
+    if (ugMonitor.loading) return;
+    ugMonitor.loading = true;
+    try {
+      var data = await window.pfApi('GET', '/conversation-monitor/summary');
+      renderMonitorHealth(data);
+      if (!ugMonitor.source && ugMonitor.paused) monitorHealthStatus('已暂停', '');
+    } catch (e) {
+      monitorHealthStatus(monitorHealthError(e), 'error');
+      $('ug-monitor-sse-toggle').disabled = !ugMonitor.source;
+    } finally {
+      ugMonitor.loading = false;
+    }
+  }
+
+  function monitorRecent(type, data) {
+    data = data || {};
+    var parts = [type];
+    if (data.request_id) parts.push(data.request_id);
+    if (data.model) parts.push(data.model);
+    if (data.status) parts.push(data.status);
+    if (data.reason) parts.push(data.reason);
+    $('ug-health-recent').textContent = '最近事件：' + parts.join(' · ');
+  }
+
+  function handleMonitorEvent(event) {
+    if (event.lastEventId) ugMonitor.lastEventId = event.lastEventId;
+    if (event.type === 'reset') {
+      ugMonitor.lastEventId = '';
+      monitorRecent('reset', { reason: 'replay unavailable; 可从请求明细补查' });
+      return;
+    }
+    var data = {};
+    try { data = JSON.parse(event.data || '{}'); } catch (e) { data = {}; }
+    /* 事件只在这里显示 envelope metadata，不把 Portal 原文 payload 放进页面。 */
+    monitorRecent(event.type || 'message', data);
+    if (event.type === 'conversation.capture' || event.type === 'conversation.drop' || event.type === 'policy.changed') {
+      loadMonitorHealth();
+    }
+  }
+
+  function stopMonitorStream(message, kind) {
+    if (ugMonitor.source) {
+      ugMonitor.source.close();
+      ugMonitor.source = null;
+    }
+    ugMonitor.paused = true;
+    var toggle = $('ug-monitor-sse-toggle');
+    toggle.textContent = '恢复实时流';
+    toggle.disabled = false;
+    monitorHealthStatus(message || '已暂停', kind || '');
+  }
+
+  async function startMonitorStream() {
+    if (ugMonitor.source) return;
+    monitorHealthStatus('正在连接…');
+    $('ug-monitor-sse-toggle').disabled = true;
+    try {
+      /* 先用 REST 验证当前会话，EventSource 本身不会暴露 401/403 响应体。 */
+      await window.pfApi('GET', '/conversation-monitor/summary');
+    } catch (e) {
+      stopMonitorStream(monitorHealthError(e), 'error');
+      return;
+    }
+    var query = ugMonitor.lastEventId ? '?last_event_id=' + encodeURIComponent(ugMonitor.lastEventId) : '';
+    var source = new EventSource('/console/api/conversation-monitor/stream' + query, { withCredentials: true });
+    ugMonitor.source = source;
+    ugMonitor.paused = false;
+    $('ug-monitor-sse-toggle').textContent = '暂停实时流';
+    source.onopen = function () {
+      monitorHealthStatus('SSE 已连接', 'connected');
+      $('ug-monitor-sse-toggle').disabled = false;
+      loadMonitorHealth();
+    };
+    ['conversation.capture', 'conversation.drop', 'policy.changed', 'reset'].forEach(function (type) {
+      source.addEventListener(type, handleMonitorEvent);
+    });
+    source.onerror = function () {
+      /* 自动重连会掩盖“暂停”语义，故错误后关闭；恢复按钮会带上最近 event id。 */
+      stopMonitorStream('SSE 连接失败，已暂停（请点击恢复）', 'error');
+      loadMonitorHealth();
+    };
+  }
+
+  function toggleMonitorStream() {
+    if (ugMonitor.source) stopMonitorStream('已暂停');
+    else startMonitorStream();
   }
 
   /* ══════════ 汇总状态 ══════════ */
@@ -817,6 +971,13 @@
       loadPolicyPanel();
     });
     $('ug-policy-save').addEventListener('click', savePolicyPanel);
+    $('ug-monitor-sse-toggle').addEventListener('click', toggleMonitorStream);
+    $('ug-monitor-health-refresh').addEventListener('click', function () {
+      loadMonitorHealth();
+      window.pfToast('采集健康状态已刷新');
+    });
+    loadMonitorHealth();
+    window.setInterval(loadMonitorHealth, 30000);
 
     /* 汇总面板事件 */
     $('ug-range').addEventListener('click', function (e) {
