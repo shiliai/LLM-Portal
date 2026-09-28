@@ -113,7 +113,7 @@ def _walk_text_slots(value: Any, path: tuple[Any, ...] = (), key: str | None = N
     arguments are redacted in memory.
     """
     if isinstance(value, str):
-        if image_payload and key in {"data", "url"}:
+        if image_payload:
             return
         if key in STRUCTURAL_KEYS:
             return

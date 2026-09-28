@@ -76,6 +76,30 @@ class ReplayTest(unittest.TestCase):
             self.assertGreaterEqual(filt.cache_hits, 1)
             self.assertLess(candidate.request_bytes, candidate.raw_request_bytes)
 
+    def test_rtk_preserves_tool_result_block_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            executable = Path(tmp) / "fake-rtk"
+            executable.write_text(
+                "#!/usr/bin/env python3\n"
+                "import sys\n"
+                "sys.stdout.write('filtered')\n",
+                encoding="utf-8",
+            )
+            executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+            filt = replay.RtkFilter(str(executable), 2)
+            body = {
+                "messages": [{"role": "user", "content": [{
+                    "type": "tool_result", "tool_use_id": "toolu-1",
+                    "content": [{"type": "text", "text": "captured output"}],
+                }]}],
+            }
+            candidate = replay.make_candidate(body, "rtk", replay.PolicyConfig(), filt)
+        block = candidate.body["messages"][0]["content"][0]
+        self.assertEqual(block["type"], "tool_result")
+        self.assertEqual(block["tool_use_id"], "toolu-1")
+        self.assertEqual(block["content"][0]["type"], "text")
+        self.assertEqual(block["content"][0]["text"], "filtered")
+
     def test_stream_result_records_protocol_fields_without_response_text(self):
         response = _StreamResponse([
             "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n",
@@ -88,6 +112,13 @@ class ReplayTest(unittest.TestCase):
         self.assertTrue(result["sse_complete"])
         self.assertEqual(result["usage"]["prompt_tokens"], 12)
         self.assertNotIn("response", result)
+
+    def test_malformed_sse_json_is_a_protocol_error(self):
+        response = _StreamResponse(["data: {broken}\n", "data: [DONE]\n"])
+        with patch("replay.urllib.request.urlopen", return_value=response):
+            result = replay.send_request("http://example.test/v1/chat/completions", self._body(), "", 2)
+        self.assertEqual(result["status"], "protocol_error")
+        self.assertEqual(result["error_kind"], "invalid_sse_json")
 
     def test_replay_report_does_not_contain_response_body(self):
         record = {"sample_id": "sample-1", "protocol": "openai_chat", "replay": {"endpoint": "/v1/chat/completions", "body": self._body()}}

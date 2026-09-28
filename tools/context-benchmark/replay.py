@@ -141,7 +141,12 @@ def _walk_tool_texts(value: Any, replace: Callable[[str], str]) -> Any:
     if isinstance(value, list):
         return [_walk_tool_texts(item, replace) for item in value]
     if isinstance(value, dict):
-        return {key: _walk_tool_texts(child, replace) for key, child in value.items()}
+        # Only content-bearing fields may be filtered.  Preserve block types,
+        # IDs, names, and other protocol fields byte-for-byte.
+        return {
+            key: _walk_tool_texts(child, replace) if key in {"text", "content"} else child
+            for key, child in value.items()
+        }
     return value
 
 
@@ -301,6 +306,7 @@ def _stream_result(response: Any, started: float) -> dict[str, Any]:
     finish_reasons: list[str] = []
     tool_ids: set[str] = set()
     tool_argument_fragments: dict[str, list[str]] = defaultdict(list)
+    malformed_event_count = 0
     while True:
         line = response.readline()
         if not line:
@@ -317,6 +323,7 @@ def _stream_result(response: Any, started: float) -> dict[str, Any]:
         try:
             payload = json.loads(data)
         except (TypeError, ValueError, json.JSONDecodeError):
+            malformed_event_count += 1
             continue
         event_count += 1
         if first_event_ms is None:
@@ -356,6 +363,7 @@ def _stream_result(response: Any, started: float) -> dict[str, Any]:
         "first_event_ms": round(first_event_ms, 2) if first_event_ms is not None else None,
         "sse_complete": done,
         "event_count": event_count,
+        "malformed_event_count": malformed_event_count,
         "usage": usage,
         "finish_reason": finish_reasons[-1] if finish_reasons else None,
         "tool_call_count": len(tool_ids) if tool_ids else len(tool_argument_fragments),
@@ -375,6 +383,9 @@ def send_request(url: str, body: dict[str, Any], api_key: str, timeout_seconds: 
             status = int(getattr(response, "status", response.getcode()))
             if body.get("stream"):
                 result = _stream_result(response, started)
+                if result.get("malformed_event_count", 0):
+                    result["status"] = "protocol_error"
+                    result["error_kind"] = "invalid_sse_json"
             else:
                 raw = response.read()
                 try:
@@ -385,6 +396,7 @@ def send_request(url: str, body: dict[str, Any], api_key: str, timeout_seconds: 
                     "first_event_ms": None,
                     "sse_complete": None,
                     "event_count": 0,
+                    "malformed_event_count": 0,
                     "usage": _usage(parsed),
                     "finish_reason": (
                         parsed.get("choices", [{}])[0].get("finish_reason")
@@ -396,7 +408,8 @@ def send_request(url: str, body: dict[str, Any], api_key: str, timeout_seconds: 
                     "response_json_valid": parsed is not None,
                 }
             result["http_status"] = status
-            result["status"] = "ok" if 200 <= status < 300 else "http_error"
+            if result.get("status") != "protocol_error":
+                result["status"] = "ok" if 200 <= status < 300 else "http_error"
     except urllib.error.HTTPError as exc:
         result = {"http_status": int(exc.code), "status": "http_error", "error_kind": "http_error"}
     except urllib.error.URLError as exc:
@@ -409,6 +422,7 @@ def send_request(url: str, body: dict[str, Any], api_key: str, timeout_seconds: 
     result.setdefault("first_event_ms", None)
     result.setdefault("sse_complete", None)
     result.setdefault("event_count", 0)
+    result.setdefault("malformed_event_count", 0)
     result.setdefault("usage", {})
     result.setdefault("finish_reason", None)
     result.setdefault("tool_call_count", 0)
@@ -515,6 +529,7 @@ def replay(inputs: list[TextIO], base_url: str, api_key: str, strategies: list[s
                     "total_ms": round((time.perf_counter() - started) * 1000, 2),
                     "sse_complete": None,
                     "event_count": 0,
+                    "malformed_event_count": 0,
                     "usage": {},
                     "finish_reason": None,
                     "tool_call_count": 0,
@@ -575,7 +590,7 @@ def replay(inputs: list[TextIO], base_url: str, api_key: str, strategies: list[s
     return {
         "schema_version": SCHEMA_VERSION,
         "execution": "actual_replay",
-        "request": {"base_url": base_url, "strategies": strategies, "timeout_seconds": timeout_seconds},
+        "request": {"endpoint_kind": "openai_compatible", "strategies": strategies, "timeout_seconds": timeout_seconds},
         "inputs": {"files_seen": files_seen, "records_loaded": len(records), "selection": selection, "load_errors": load_errors},
         "rtk": {
             "executable": executable,
@@ -593,7 +608,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--input", action="append", required=True, help="OPF-redacted JSONL; repeat for datasets")
     parser.add_argument("--output", default="-", help="aggregate JSON report path, or - for stdout")
     parser.add_argument("--base-url", default=os.environ.get("REPLAY_BASE_URL", "http://127.0.0.1:4000"))
-    parser.add_argument("--api-key", default=os.environ.get("REPLAY_API_KEY", ""), help="prefer REPLAY_API_KEY in the environment")
     parser.add_argument("--strategies", default="off,safe,bounded,rtk", help="comma-separated strategies")
     parser.add_argument("--rtk", help="RTK executable path; defaults to PATH lookup")
     parser.add_argument("--limit-per-input", type=int, default=0, help="pilot limit per file; 0 means all")
@@ -613,7 +627,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for path in args.input:
             sources.append(Path(path).open(encoding="utf-8"))
-        report = replay(sources, args.base_url, args.api_key, strategies, config, args.timeout_seconds, args.limit_per_input, args.rtk, args.selection)
+        report = replay(sources, args.base_url, os.environ.get("REPLAY_API_KEY", ""), strategies, config, args.timeout_seconds, args.limit_per_input, args.rtk, args.selection)
     finally:
         for source in sources:
             source.close()
