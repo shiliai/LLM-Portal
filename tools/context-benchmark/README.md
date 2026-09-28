@@ -211,6 +211,7 @@ python3 tools/context-benchmark/replay.py \
   --strategies off,safe,bounded,rtk \
   --rtk /tmp/rtk/rtk \
   --limit-per-input 3 \
+  --selection evenly_spaced \
   --base-url http://127.0.0.1:4000 \
   --output /tmp/context-replay.canary.json
 ```

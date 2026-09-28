@@ -52,6 +52,11 @@ class ReplayTest(unittest.TestCase):
         self.assertEqual(candidate.body["messages"][1]["tool_call_id"], "call-1")
         self.assertTrue(candidate.changed)
 
+    def test_evenly_spaced_selection_covers_dataset_edges(self):
+        records = [(line, {"line": line}) for line in range(1, 11)]
+        selected = replay._select_records(records, 4, "evenly_spaced")
+        self.assertEqual([line for line, _ in selected], [1, 4, 7, 10])
+
     def test_rtk_uses_pipe_stdin_and_caches_duplicate_text(self):
         with tempfile.TemporaryDirectory() as tmp:
             executable = Path(tmp) / "fake-rtk"

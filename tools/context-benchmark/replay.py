@@ -123,6 +123,18 @@ def _invalid_image_payload(body: dict[str, Any]) -> bool:
     return False
 
 
+def _select_records(records: list[tuple[int, dict[str, Any]]], limit: int, selection: str) -> list[tuple[int, dict[str, Any]]]:
+    """Select a deterministic head or evenly spaced sample from one dataset."""
+    if not limit or len(records) <= limit or selection == "head":
+        return records[:limit] if limit else records
+    if selection != "evenly_spaced":
+        raise ValueError(f"unknown selection: {selection}")
+    if limit == 1:
+        return [records[0]]
+    indices = {round(index * (len(records) - 1) / (limit - 1)) for index in range(limit)}
+    return [records[index] for index in sorted(indices)]
+
+
 def _walk_tool_texts(value: Any, replace: Callable[[str], str]) -> Any:
     if isinstance(value, str):
         return replace(value)
@@ -447,26 +459,25 @@ def _aggregate(attempts: list[dict[str, Any]]) -> dict[str, Any]:
 
 def replay(inputs: list[TextIO], base_url: str, api_key: str, strategies: list[str],
            config: PolicyConfig, timeout_seconds: float, limit_per_input: int,
-           rtk_path: str | None) -> dict[str, Any]:
+           rtk_path: str | None, selection: str = "evenly_spaced") -> dict[str, Any]:
     records: list[tuple[str, int, dict[str, Any]]] = []
     files_seen = len(inputs)
     load_errors: list[dict[str, Any]] = []
     for source in inputs:
         dataset = Path(getattr(source, "name", "snapshot")).name
-        count = 0
+        available: list[tuple[int, dict[str, Any]]] = []
         for line_no, line in enumerate(source, 1):
             if not line.strip():
                 continue
-            if limit_per_input and count >= limit_per_input:
-                break
             try:
                 record = json.loads(line)
                 _record_body(record)
             except (ValueError, TypeError, json.JSONDecodeError) as exc:
                 load_errors.append({"dataset": dataset, "line": line_no, "error": type(exc).__name__})
                 continue
+            available.append((line_no, record))
+        for line_no, record in _select_records(available, limit_per_input, selection):
             records.append((dataset, line_no, record))
-            count += 1
     executable = None
     if rtk_path:
         candidate = Path(rtk_path).expanduser()
@@ -565,7 +576,7 @@ def replay(inputs: list[TextIO], base_url: str, api_key: str, strategies: list[s
         "schema_version": SCHEMA_VERSION,
         "execution": "actual_replay",
         "request": {"base_url": base_url, "strategies": strategies, "timeout_seconds": timeout_seconds},
-        "inputs": {"files_seen": files_seen, "records_loaded": len(records), "load_errors": load_errors},
+        "inputs": {"files_seen": files_seen, "records_loaded": len(records), "selection": selection, "load_errors": load_errors},
         "rtk": {
             "executable": executable,
             "calls": rtk.calls if rtk else 0,
@@ -586,6 +597,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--strategies", default="off,safe,bounded,rtk", help="comma-separated strategies")
     parser.add_argument("--rtk", help="RTK executable path; defaults to PATH lookup")
     parser.add_argument("--limit-per-input", type=int, default=0, help="pilot limit per file; 0 means all")
+    parser.add_argument("--selection", choices=("head", "evenly_spaced"), default="evenly_spaced")
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     parser.add_argument("--max-tool-result-bytes", type=int, default=8192)
     parser.add_argument("--head-bytes", type=int, default=4096)
@@ -601,7 +613,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for path in args.input:
             sources.append(Path(path).open(encoding="utf-8"))
-        report = replay(sources, args.base_url, args.api_key, strategies, config, args.timeout_seconds, args.limit_per_input, args.rtk)
+        report = replay(sources, args.base_url, args.api_key, strategies, config, args.timeout_seconds, args.limit_per_input, args.rtk, args.selection)
     finally:
         for source in sources:
             source.close()
