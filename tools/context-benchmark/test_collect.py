@@ -75,6 +75,19 @@ class CollectTest(unittest.TestCase):
         self.assertEqual(image["source"]["data"], "[IMAGE_OMITTED]")
         self.assertNotIn("CONTACT_TOKEN_B", json.dumps(result))
 
+    def test_openai_image_url_payload_is_not_sent_to_opf(self):
+        body = {
+            "model": "fixture",
+            "messages": [{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,NOT-PII"}},
+                {"type": "text", "text": "CONTACT_TOKEN_A"},
+            ]}],
+        }
+        result = collect.collect_record({"body": body}, FakeOpf(), 6, False)
+        self.assertEqual(result["aggregate"]["text_slot_count"], 1)
+        image = result["replay"]["body"]["messages"][0]["content"][0]
+        self.assertEqual(image["image_url"]["url"], "[IMAGE_OMITTED]")
+
     def test_openai_tool_calls_and_tool_messages_are_counted(self):
         body = {
             "model": "fixture",

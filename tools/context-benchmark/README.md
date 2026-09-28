@@ -190,3 +190,40 @@ returns `execution: blocked` with `missing_executable`; this must not be
 reported as an RTK benchmark. The local `safe`/`bounded` modes in
 `evaluate.py` remain a separate candidate-rule baseline and are not a Python
 implementation of RTK.
+
+## Tokenizer-aware replay
+
+`replay.py` is the next-stage canary runner. It accepts only the OPF-redacted
+JSONL snapshots described above and replays the same selected records through
+`off`, `safe`, `bounded`, and the actual `rtk` stdin filter. It records aggregate
+request bytes, exact `usage.prompt_tokens` when the upstream returns usage,
+TTFT, total latency, SSE completion, finish reason, and tool-call argument JSON
+validity. Response text is consumed in memory and is never written to the
+report. The `rtk` strategy invokes only `rtk --skip-env pipe`; captured
+commands are never executed.
+
+Run a small canary on the host where the private model is reachable:
+
+```bash
+python3 tools/context-benchmark/replay.py \
+  --input dsh-benchmark.redacted.jsonl \
+  --input dsh-macmini.redacted.jsonl \
+  --strategies off,safe,bounded,rtk \
+  --rtk /tmp/rtk/rtk \
+  --limit-per-input 3 \
+  --base-url http://127.0.0.1:4000 \
+  --output /tmp/context-replay.canary.json
+```
+
+Set `REPLAY_API_KEY` in the process environment before running; do not pass a
+key as a command-line argument because it can be visible in process listings.
+Snapshots with damaged or omitted base64 image payloads are skipped and counted
+as `invalid_image_payload`; they are not included in latency or quality
+comparisons. Future collection must keep image payloads out of the OPF text
+slots so valid multimodal samples can be replayed separately.
+
+Use `--limit-per-input 0` only after the canary has passed. Keep the report and
+snapshots outside the repository. The report contains opaque sample IDs and
+timing/usage metadata, but no request or response body. `prompt_tokens` is
+marked unavailable when the upstream does not return usage; the offline
+`bytes / 4` estimate remains a separate planning metric.
