@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>上下文优化离线评估 · #127</title>
+  <title>上下文优化评估 · #127</title>
   <style>
     :root {
       --bg: #101216;
@@ -124,14 +124,14 @@
 
     <section class="hero">
       <div class="hero-main">
-        <div class="eyebrow"><span class="dot"></span>Offline evaluation · 已完成</div>
+        <div class="eyebrow"><span class="dot"></span>Replay evaluation · 已完成</div>
         <h1>上下文优化离线评估</h1>
-        <p class="hero-copy">基于 nasubuntu 上三份 OPF 脱敏快照，对工具输出的确定性压缩策略做第一轮对照。报告只呈现聚合统计，不包含请求正文、响应正文或凭证。</p>
-        <div class="chips"><span class="chip">#127</span><span class="chip">229 条样本</span><span class="chip">12,560 tool calls</span><span class="chip">0 invariant failures</span><span class="chip">RTK 0.49.0 · 实测</span></div>
+        <p class="hero-copy">基于 nasubuntu 上 OPF 脱敏快照，结合第一轮离线评估和第二轮真实模型 replay，对工具输出的确定性压缩策略做对照。报告只呈现聚合统计，不包含请求正文、响应正文或凭证。</p>
+        <div class="chips"><span class="chip">#127</span><span class="chip">229 条样本</span><span class="chip">12,560 tool calls</span><span class="chip">0 invariant failures</span><span class="chip">RTK 0.49.0 · 实测</span><span class="chip">真实 replay · 21 条有效</span></div>
       </div>
       <aside class="hero-side">
-        <div><div class="side-label">当前推荐</div><div class="side-value">safe · 低风险候选</div></div>
-        <div class="side-note">RTK 已完成实际 CLI 对照；bounded 在工具密集场景收益更高，但需要真实模型 replay 验证质量与延迟后再进入 canary。</div>
+        <div><div class="side-label">当前推荐</div><div class="side-value">RTK · canary 候选</div></div>
+        <div class="side-note">真实 replay 显示 RTK 在工具密集上下文中有稳定收益；bounded 收益更高，但仍需任务质量和恢复原文比例验证。</div>
       </aside>
     </section>
 
@@ -177,6 +177,20 @@
       </table>
     </section>
 
+    <div class="section-head"><div><h2>真实模型 replay</h2><div class="section-sub">2026-09-28 · 25 条等距样本 · 4 个策略 · 21 条有效</div></div></div>
+    <section class="panel table-wrap">
+      <table>
+        <thead><tr><th>策略</th><th>尝试</th><th>有效</th><th>跳过</th><th>请求体节省</th><th>prompt token 节省</th><th>工具结果节省</th><th>TTFT p50</th><th>总耗时 p50</th></tr></thead>
+        <tbody>
+          <tr><td><span class="dataset"><i class="dataset-mark"></i>off</span></td><td>25</td><td>21</td><td>4</td><td>0%</td><td>0%</td><td>0%</td><td>4,021 ms</td><td>10,777 ms</td></tr>
+          <tr><td><span class="dataset"><i class="dataset-mark green"></i>safe</span></td><td>25</td><td>21</td><td>4</td><td>0.192%</td><td>0.232%</td><td>0.536%</td><td>3,690 ms</td><td>9,504 ms</td></tr>
+          <tr><td><span class="dataset"><i class="dataset-mark amber"></i>bounded</span></td><td>25</td><td>21</td><td>4</td><td><strong>8.440%</strong></td><td><strong>9.839%</strong></td><td><strong>23.509%</strong></td><td>3,831 ms</td><td>7,785 ms</td></tr>
+          <tr class="total-row"><td><strong>RTK 0.49.0</strong></td><td><strong>25</strong></td><td><strong>21</strong></td><td><strong>4</strong></td><td><strong>2.791%</strong></td><td><strong>3.577%</strong></td><td><strong>7.773%</strong></td><td><strong>4,033 ms</strong></td><td><strong>7,638 ms</strong></td></tr>
+        </tbody>
+      </table>
+    </section>
+    <section class="panel" style="margin-top:12px"><div class="callout" style="border-color:rgba(119,185,255,.35);background:var(--blue-dim)"><div class="callout-icon" style="background:var(--blue)">✓</div><div><strong>协议回归通过</strong><p>21 条有效样本全部成功返回，SSE 完整率 100%，tool-call 参数 JSON 全部有效。4 条损坏图片样本在发送前跳过，不计入策略分母。</p></div></div></section>
+
     <div class="section-head"><div><h2>规则与验证</h2><div class="section-sub">所有候选策略都执行 never-worse 回退和结构不变量检查</div></div></div>
     <section class="lower-grid">
       <div class="panel"><h3 style="margin-top:0">规则命中</h3><div class="hit-list">
@@ -184,13 +198,13 @@
         <div class="hit"><span class="hit-name">连续重复行折叠</span><span class="hit-value">196 组</span><div class="bar"><i style="width:42%"></i></div></div>
         <div class="hit"><span class="hit-name">bounded 超大结果截断</span><span class="hit-value">304 次</span><div class="bar amber"><i style="width:56%"></i></div></div>
       </div></div>
-      <div class="panel"><h3 style="margin-top:0">验证边界</h3><div class="callout"><div class="callout-icon">✓</div><div><strong>结构安全检查全部通过</strong><p>消息结构、tool-call ID、结构字段、JSON/代码/system 内容和图片占位符均保持不变。</p></div></div><div class="limits"><div class="limit">RTK 0.49.0 实际成功处理 12,560 个 tool result，去重后调用 301 次。</div><div class="limit">RTK 只接收 stdin 文本，采集到的命令从未执行。</div><div class="limit">token 目前使用 UTF-8 bytes / 4 粗估，不是精确 tokenizer。</div><div class="limit">尚未测量 TTFT、总延迟、缓存命中、模型质量和任务成功率。</div><div class="limit">RTK 与 bounded 都需要真实 replay 后才能进入 canary。</div></div></div>
+      <div class="panel"><h3 style="margin-top:0">验证边界</h3><div class="callout"><div class="callout-icon">✓</div><div><strong>结构安全检查全部通过</strong><p>消息结构、tool-call ID、结构字段、JSON/代码/system 内容和图片占位符均保持不变。</p></div></div><div class="limits"><div class="limit">真实 replay 的 21 条有效样本全部 SSE 完整，tool-call JSON 全部有效。</div><div class="limit">RTK 0.49.0 在 replay 中实际调用 152 次，缓存命中 309 次，无失败。</div><div class="limit">RTK 只接收 stdin 文本，采集到的命令从未执行。</div><div class="limit">TTFT 和总耗时已记录，但 cache、上游队列和模型负载尚未隔离。</div><div class="limit">任务质量、工具执行成功率和恢复原文比例仍需单独回归。</div></div></div>
     </section>
 
     <div class="section-head"><div><h2>建议</h2><div class="section-sub">从离线结果到可控上线的下一步</div></div></div>
-    <section class="panel"><div class="callout" style="border-color:rgba(119,185,255,.35);background:var(--blue-dim)"><div class="callout-icon" style="background:var(--blue)">→</div><div><strong>下一步优先 replay RTK，再评估 bounded</strong><p>RTK 在工具密集场景已显示实际收益；为 RTK 与 bounded 补充 tokenizer-aware token、TTFT/总延迟、tool-call 成功率和任务质量回归，再决定 Key 级 canary。</p></div></div></section>
+    <section class="panel"><div class="callout" style="border-color:rgba(119,185,255,.35);background:var(--blue-dim)"><div class="callout-icon" style="background:var(--blue)">→</div><div><strong>下一步优先做质量回归和 Key 级 canary</strong><p>RTK 已具备进入更大规模 canary 的证据；bounded 仍需补充任务成功率、工具执行正确率和恢复原文比例，再决定是否按 Key 开启。</p></div></div></section>
 
-    <footer>LLM Portal · Context Benchmark · #127 · 数据已脱敏，仅用于离线评估</footer>
+    <footer>LLM Portal · Context Benchmark · #127 · 数据已脱敏，仅用于 benchmark replay</footer>
   </main>
   <script>
     const buttons = [...document.querySelectorAll('[data-metric]')];
