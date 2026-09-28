@@ -11,6 +11,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <style>
   #ug-policy-drawer { width: 620px; max-width: 94vw; }
+  #ug-optimization-drawer { width: 620px; max-width: 94vw; }
   #ug-detail-drawer { width: 720px; max-width: 96vw; }
   .ug-detail-notice { padding: 10px 12px; margin-bottom: 16px; border-left: 2px solid var(--accent); background: var(--accent-soft); color: var(--text2); font-size: 12px; line-height: 1.5; }
   .ug-detail-meta { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 7px 12px; margin-bottom: 16px; }
@@ -83,7 +84,7 @@
   .ug-request-row:hover td { background: var(--hover); }
   .ug-detail-col { width: 58px; text-align: center !important; white-space: nowrap; }
   @media (max-width: 900px) { .ug-health-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-  @media (max-width: 560px) { .ug-health-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .ug-health-controls { flex-wrap: wrap; justify-content: flex-end; } .ug-policy-mode-grid, .ug-policy-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 560px) { .ug-health-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .ug-health-controls { flex-wrap: wrap; justify-content: flex-end; } .ug-policy-mode-grid, .ug-policy-grid { grid-template-columns: 1fr; } .ug-policy-action { flex-wrap: wrap; } }
 </style>
 </head>
 <body data-page="usage">
@@ -92,7 +93,7 @@
   <div class="pf-tabs" id="ug-tabs">
     <button class="pf-tab active" data-tab="sum" type="button">用量汇总</button>
     <button class="pf-tab" data-tab="rec" type="button" id="ug-tab-rec">请求明细</button>
-    <div class="ug-policy-action"><button class="pf-btn" id="ug-policy-open" type="button">采集策略</button></div>
+    <div class="ug-policy-action"><button class="pf-btn" id="ug-policy-open" type="button">采集策略</button><button class="pf-btn" id="ug-optimization-open" type="button">上下文优化</button></div>
   </div>
 
   <div class="pf-card ug-monitor-health" id="ug-monitor-health">
@@ -226,6 +227,20 @@
     <div class="pf-drawer-foot">
       <button class="pf-btn" type="button" data-close>取消</button>
       <button class="pf-btn primary" id="ug-policy-save" type="button" disabled>保存策略</button>
+    </div>
+  </div>
+
+  <div class="pf-drawer" id="ug-optimization-drawer" role="dialog" aria-modal="true" aria-labelledby="ug-optimization-title">
+    <div class="pf-drawer-head">
+      <div class="pf-drawer-title" id="ug-optimization-title">上下文优化</div>
+      <button class="pf-x" type="button" data-close aria-label="关闭上下文优化">×</button>
+    </div>
+    <div class="pf-drawer-body" id="ug-optimization-body">
+      <div class="ug-detail-state">正在读取上下文优化策略…</div>
+    </div>
+    <div class="pf-drawer-foot">
+      <button class="pf-btn" type="button" data-close>取消</button>
+      <button class="pf-btn primary" id="ug-optimization-save" type="button" disabled>保存策略</button>
     </div>
   </div>
 
@@ -520,6 +535,119 @@
       policyStatus(policyError(e), true);
       save.disabled = false;
     }
+  }
+
+  /* ══════════ 上下文优化策略 ══════════ */
+  var ugOptimization = { policy: null, keys: [], epoch: 0 };
+
+  function optimizationError(e) {
+    if (e && e.status === 401) return '登录已失效，请重新登录。';
+    if (e && e.status === 403) return '当前账号没有管理上下文优化策略的权限。';
+    if (e && e.status === 404) return '上下文优化接口暂不可用，请确认 Portal 版本。';
+    return (e && e.error) || '上下文优化策略加载失败，请稍后重试。';
+  }
+
+  function renderOptimizationForm(policy, keyRows) {
+    var wildcard = (policy.keys || []).indexOf('*') >= 0;
+    var allowed = {};
+    (policy.keys || []).forEach(function (value) {
+      var hash = policyHash(value);
+      if (hash) allowed[hash] = true;
+    });
+    var seen = {};
+    var usable = (keyRows || []).map(function (row) {
+      var hash = policyHash(row.key_hash);
+      if (!hash || seen[hash]) return null;
+      seen[hash] = true;
+      return { hash: hash, alias: row.alias || '(未命名)', ref: row.key_last4 || '…' };
+    }).filter(Boolean).sort(function (a, b) { return (a.alias + a.ref).localeCompare(b.alias + b.ref, 'zh-CN'); });
+    var keyMarkup = usable.length ? usable.map(function (row) {
+      return '<label class="ug-policy-key"><input type="checkbox" data-opt-key-hash="' + esc(row.hash) + '"' +
+        (allowed[row.hash] ? ' checked' : '') + '><span class="ug-policy-key-main"><span class="ug-policy-key-name">' +
+        esc(row.alias) + '</span><span class="ug-policy-key-ref">' + esc(row.ref) + '</span></span>' +
+        '<span class="ug-policy-key-hash">…' + esc(row.hash.slice(-12)) + '</span></label>';
+    }).join('') : '<div class="ug-policy-empty">没有可用于 allowlist 的 Key hash。请先创建或导入 Key。</div>';
+    var mode = ['off', 'safe', 'bounded'].indexOf(policy.mode) >= 0 ? policy.mode : 'off';
+    var modeCards = [
+      { value: 'off', title: '关闭', copy: '原请求原样转发' },
+      { value: 'safe', title: 'safe', copy: 'ANSI 剥离 + 重复行折叠' },
+      { value: 'bounded', title: 'bounded', copy: 'safe + 超大工具结果保留头尾' }
+    ].map(function (item) {
+      return '<label class="ug-policy-mode' + (item.value === mode ? ' selected' : '') + '" data-opt-mode="' + item.value + '">' +
+        '<input type="radio" name="ug-optimization-mode-choice" value="' + item.value + '"' + (item.value === mode ? ' checked' : '') + '>' +
+        '<span class="ug-policy-mode-title">' + item.title + '</span><span class="ug-policy-mode-copy">' + item.copy + '</span></label>';
+    }).join('');
+    $('ug-optimization-body').innerHTML =
+      '<div class="ug-policy-intro"><span class="ug-policy-intro-mark">◈</span><span>只处理工具结果文本，默认关闭。选中的 Key 才会进入 canary；请求结构、tool ID、JSON、代码和图片保持原样。</span></div>' +
+      '<div class="ug-policy-overview"><div><div class="ug-policy-overview-title">当前优化策略</div><div class="ug-policy-overview-meta">版本 ' + esc(String(policy.version == null ? '—' : policy.version)) + ' · 更新于 ' + esc(policy.updated_at || '—') + '</div></div>' +
+        '<div class="ug-policy-overview-right"><span class="pf-chip accent">' + esc(mode) + '</span><span class="pf-chip gray">' + fmt((policy.keys || []).length) + ' 个 Key</span></div></div>' +
+      '<div class="ug-policy-field"><label>优化模式</label><div class="ug-policy-mode-grid">' + modeCards + '</div>' +
+        '<div class="ug-policy-help">关闭时请求不重序列化；safe 和 bounded 都执行 never-worse 回退。</div></div>' +
+      '<div class="ug-policy-grid"><div class="ug-policy-field"><label for="ug-opt-max">工具结果上限（bytes）</label><input class="pf-input" id="ug-opt-max" type="number" min="512" max="1048576" step="512"><div class="ug-policy-help">bounded 超过此大小才截断。</div></div>' +
+      '<div class="ug-policy-field"><label for="ug-opt-repeat">连续重复行阈值</label><input class="pf-input" id="ug-opt-repeat" type="number" min="2" max="20" step="1"><div class="ug-policy-help">safe 和 bounded 共用。</div></div>' +
+      '<div class="ug-policy-field"><label for="ug-opt-head">保留头部（bytes）</label><input class="pf-input" id="ug-opt-head" type="number" min="0" max="1048576" step="512"></div>' +
+      '<div class="ug-policy-field"><label for="ug-opt-tail">保留尾部（bytes）</label><input class="pf-input" id="ug-opt-tail" type="number" min="0" max="1048576" step="512"></div></div>' +
+      '<div class="ug-policy-field"><label for="ug-opt-search">Key allowlist</label><label class="ug-policy-key-select-all" style="margin:0 0 8px"><input type="checkbox" id="ug-opt-all-keys"' + (wildcard ? ' checked' : '') + '>全量 Key（*，仅用于临时 canary）</label><input class="pf-input" id="ug-opt-search" type="search" placeholder="按名称或尾号筛选 Key" autocomplete="off">' +
+        '<div class="ug-policy-key-tools"><label class="ug-policy-key-select-all"><input type="checkbox" id="ug-opt-select-all">全选当前筛选</label><button class="pf-btn sm" id="ug-opt-select-visible" type="button">全选</button><button class="pf-btn sm" id="ug-opt-clear-visible" type="button">清空</button><span class="ug-policy-key-count" id="ug-opt-key-count">已选 0/0</span></div>' +
+        '<div class="ug-policy-keys" id="ug-opt-key-list">' + keyMarkup + '</div><div class="ug-policy-help">只提交 SHA-256 hash；不会保存 Key 明文。</div></div>' +
+      '<div class="ug-policy-status" id="ug-optimization-status"></div>';
+    $('ug-opt-max').value = String(policy.max_tool_result_bytes == null ? 8192 : policy.max_tool_result_bytes);
+    $('ug-opt-repeat').value = String(policy.repeat_min_lines == null ? 2 : policy.repeat_min_lines);
+    $('ug-opt-head').value = String(policy.head_bytes == null ? 4096 : policy.head_bytes);
+    $('ug-opt-tail').value = String(policy.tail_bytes == null ? 4096 : policy.tail_bytes);
+    document.querySelectorAll('#ug-optimization-body .ug-policy-mode').forEach(function (card) {
+      card.addEventListener('click', function () {
+        document.querySelectorAll('#ug-optimization-body .ug-policy-mode').forEach(function (item) { item.classList.toggle('selected', item === card); });
+      });
+    });
+    function visible() { return Array.from(document.querySelectorAll('#ug-opt-key-list .ug-policy-key:not([hidden]) input[data-opt-key-hash]')); }
+    function all() { return Array.from(document.querySelectorAll('#ug-opt-key-list input[data-opt-key-hash]')); }
+    function update() {
+      var v = visible(), a = all(), selected = a.filter(function (x) { return x.checked; }).length, vs = v.filter(function (x) { return x.checked; }).length;
+      var master = $('ug-opt-select-all');
+      master.checked = v.length > 0 && vs === v.length; master.indeterminate = vs > 0 && vs < v.length; master.disabled = v.length === 0;
+      $('ug-opt-key-count').textContent = '已选 ' + selected + '/' + a.length + ' · 当前显示 ' + v.length;
+    }
+    $('ug-opt-search').addEventListener('input', function () { var q = this.value.trim().toLowerCase(); document.querySelectorAll('#ug-opt-key-list .ug-policy-key').forEach(function (row) { row.hidden = !!q && row.textContent.toLowerCase().indexOf(q) < 0; }); update(); });
+    $('ug-opt-all-keys').addEventListener('change', function () { document.querySelectorAll('#ug-opt-key-list input[data-opt-key-hash]').forEach(function (input) { input.disabled = $('ug-opt-all-keys').checked; }); });
+    document.querySelectorAll('#ug-opt-key-list input[data-opt-key-hash]').forEach(function (input) { input.addEventListener('change', update); });
+    $('ug-opt-select-all').addEventListener('change', function () { visible().forEach(function (input) { input.checked = $('ug-opt-select-all').checked; }); update(); });
+    $('ug-opt-select-visible').addEventListener('click', function () { visible().forEach(function (input) { input.checked = true; }); update(); });
+    $('ug-opt-clear-visible').addEventListener('click', function () { visible().forEach(function (input) { input.checked = false; }); update(); });
+    document.querySelectorAll('#ug-opt-key-list input[data-opt-key-hash]').forEach(function (input) { input.disabled = wildcard; });
+    update(); $('ug-optimization-save').disabled = false;
+    $('ug-optimization-status').textContent = '当前策略版本 ' + String(policy.version == null ? '—' : policy.version);
+  }
+
+  async function loadOptimizationPanel() {
+    var epoch = ++ugOptimization.epoch;
+    $('ug-optimization-save').disabled = true;
+    $('ug-optimization-body').innerHTML = '<div class="ug-detail-state">正在读取上下文优化策略与 Key 列表…</div>';
+    try {
+      var result = await Promise.all([window.pfApi('GET', '/context-optimization/policy'), window.pfApi('GET', '/keys')]);
+      if (epoch !== ugOptimization.epoch) return;
+      ugOptimization.policy = result[0] || {}; ugOptimization.keys = (result[1] && result[1].keys) || [];
+      renderOptimizationForm(ugOptimization.policy, ugOptimization.keys);
+    } catch (e) {
+      if (epoch !== ugOptimization.epoch) return;
+      $('ug-optimization-body').innerHTML = '<div class="ug-detail-state error">' + esc(optimizationError(e)) + '</div>';
+    }
+  }
+
+  async function saveOptimizationPanel() {
+    var save = $('ug-optimization-save');
+    var hashes = $('ug-opt-all-keys').checked ? ['*'] : Array.from(document.querySelectorAll('#ug-opt-key-list input[data-opt-key-hash]:checked')).map(function (input) { return policyHash(input.dataset.optKeyHash); }).filter(Boolean);
+    var selected = document.querySelector('#ug-optimization-body .ug-policy-mode.selected');
+    var payload = {
+      mode: selected ? selected.dataset.optMode : 'off', keys: Array.from(new Set(hashes)),
+      max_tool_result_bytes: Number($('ug-opt-max').value), repeat_min_lines: Number($('ug-opt-repeat').value),
+      head_bytes: Number($('ug-opt-head').value), tail_bytes: Number($('ug-opt-tail').value)
+    };
+    save.disabled = true; $('ug-optimization-status').textContent = '正在保存策略…';
+    try {
+      var saved = await window.pfApi('PUT', '/context-optimization/policy', payload);
+      ugOptimization.policy = saved || payload; renderOptimizationForm(ugOptimization.policy, ugOptimization.keys); window.pfToast('上下文优化策略已保存');
+    } catch (e) { $('ug-optimization-status').textContent = optimizationError(e); $('ug-optimization-status').classList.add('error'); save.disabled = false; }
   }
 
   /* ══════════ 采集健康 / SSE ══════════ */
@@ -1251,6 +1379,11 @@
       loadPolicyPanel();
     });
     $('ug-policy-save').addEventListener('click', savePolicyPanel);
+    $('ug-optimization-open').addEventListener('click', function () {
+      window.pfDrawer('ug-optimization-drawer');
+      loadOptimizationPanel();
+    });
+    $('ug-optimization-save').addEventListener('click', saveOptimizationPanel);
     $('ug-monitor-sse-toggle').addEventListener('click', toggleMonitorStream);
     $('ug-monitor-health-refresh').addEventListener('click', function () {
       loadMonitorHealth();

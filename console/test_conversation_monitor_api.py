@@ -65,9 +65,9 @@ def test_admin_policy_records_and_detail_are_protected(tmp_path, monkeypatch):
 
 def test_key_rows_and_policy_panel_use_sha256_identity_only(tmp_path):
     mod = load_console(tmp_path)
-    token = "sk-policy-ui-key"
-    row = mod.key_row({"token": token, "key_alias": "billing", "metadata": {"group": "prod"}})
-    assert row["key_hash"] == __import__("hashlib").sha256(token.encode()).hexdigest()
+    value = "ui-fixture"
+    row = mod.key_row({"token": value, "key_alias": "billing", "metadata": {"group": "prod"}})
+    assert row["key_hash"] == __import__("hashlib").sha256(value.encode()).hexdigest()
     assert len(row["key_hash"]) == 64
     hashed = "AB" * 32
     assert mod.key_row({"token": hashed})["key_hash"] == hashed.lower()
@@ -84,6 +84,10 @@ def test_key_rows_and_policy_panel_use_sha256_identity_only(tmp_path):
         "不阻断主请求", "提交内容只包含 SHA-256 hash",
         "ug-policy-select-all", "ug-policy-select-visible", "ug-policy-clear-visible",
         "ug-policy-key-count", "visiblePolicyInputs", "updatePolicyKeySelection",
+        "id=\"ug-optimization-open\"", "id=\"ug-optimization-drawer\"", "上下文优化",
+        "window.pfApi('GET', '/context-optimization/policy')",
+        "window.pfApi('PUT', '/context-optimization/policy', payload)",
+        "ug-opt-select-all", "ug-opt-key-list", "max_tool_result_bytes",
         "data-detail-format=", "detailFormatSection", "bindDetailFormatters",
         "parseSseEvents", "aggregateSseResponse", "原始 response",
         "id=\"ug-monitor-health\"", "window.pfApi('GET', '/conversation-monitor/summary')",
@@ -97,3 +101,25 @@ def test_key_rows_and_policy_panel_use_sha256_identity_only(tmp_path):
         assert required in source
     assert "keys: Array.from(new Set(hashes))" in source
     assert "row.token" not in source
+def test_context_optimization_policy_is_admin_only_and_persistent(tmp_path, monkeypatch):
+    install_litellm_stub(monkeypatch, handler)
+    mod = load_console(tmp_path)
+    mod.MONITOR = ConversationMonitor(tmp_path / "monitor.db")
+    key_hash, _ = key_identity("fixture-context-canary")
+    with TestClient(mod.app) as client:
+        assert client.get("/console/api/context-optimization/policy").status_code == 401
+        assert client.post("/console/api/login", json={"key": MASTER}, headers=XRW).status_code == 200
+        invalid = client.put("/console/api/context-optimization/policy", json={
+            "mode": "bounded", "keys": ["fixture-context-canary"], "max_tool_result_bytes": 8192,
+            "repeat_min_lines": 2, "head_bytes": 4096, "tail_bytes": 4096}, headers=XRW)
+        assert invalid.status_code == 400
+        saved = client.put("/console/api/context-optimization/policy", json={
+            "mode": "safe", "keys": [key_hash], "max_tool_result_bytes": 16384,
+            "repeat_min_lines": 3, "head_bytes": 2048, "tail_bytes": 2048}, headers=XRW)
+        assert saved.status_code == 200
+        assert saved.json()["mode"] == "safe"
+        assert saved.json()["keys"] == [key_hash]
+        assert saved.json()["max_tool_result_bytes"] == 16384
+        assert client.get("/console/api/context-optimization/policy").json()["repeat_min_lines"] == 3
+
+

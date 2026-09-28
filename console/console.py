@@ -44,6 +44,7 @@
   POST /console/api/mcp/remove         移除（写配置 + 重启 MCP 服务）
   GET  /console/api/mcp/tools          聚合 tools/list 预览（直连各外部 MCP）
   GET  /console/api/mcp/usage?days=N   按 Key 工具调用计数（usage.db）
+  GET/PUT /console/api/context-optimization/policy  Key 级 safe/bounded canary 策略
 
 会话：sqlite 落盘（容器重建/重部署不掉线；cookie 只放 sid+HMAC）；会话表只存
 Key 的 sha256 哈希与尾 4 位——完整用户 Key 与 master key 均不落 sessions.db
@@ -1893,6 +1894,27 @@ async def api_conversation_monitor_policy(request: Request) -> Response:
     return JSONResponse(policy)
 
 
+async def api_context_optimization_policy(request: Request) -> Response:
+    sess = await _monitor_require(request)
+    if isinstance(sess, JSONResponse):
+        return sess
+    if request.method == "GET":
+        return JSONResponse(MONITOR.context_optimization_policy())
+    try:
+        body = await request.json()
+        policy = await MONITOR.update_context_optimization_policy(
+            mode=body.get("mode", "off"), keys=body.get("keys", []),
+            max_tool_result_bytes=body.get("max_tool_result_bytes", 8192),
+            repeat_min_lines=body.get("repeat_min_lines", 2),
+            head_bytes=body.get("head_bytes", 4096),
+            tail_bytes=body.get("tail_bytes", 4096))
+    except (ValueError, TypeError, AttributeError) as exc:
+        return jerr(str(exc) or "bad context optimization policy", 400)
+    except Exception:
+        return jerr("context optimization unavailable", 503)
+    return JSONResponse(policy)
+
+
 async def api_conversation_monitor_summary(request: Request) -> Response:
     sess = await _monitor_require(request)
     if isinstance(sess, JSONResponse):
@@ -3347,6 +3369,7 @@ api_routes = [
     Route("/console/api/usage", api_usage, methods=["GET"]),
     Route("/console/api/usage/logs", api_usage_logs, methods=["GET"]),
     Route("/console/api/conversation-monitor/policy", api_conversation_monitor_policy, methods=["GET", "PUT"]),
+    Route("/console/api/context-optimization/policy", api_context_optimization_policy, methods=["GET", "PUT"]),
     Route("/console/api/conversation-monitor/summary", api_conversation_monitor_summary, methods=["GET"]),
     Route("/console/api/conversation-monitor/records", api_conversation_monitor_records, methods=["GET"]),
     Route("/console/api/conversation-monitor/records/{request_id}", api_conversation_monitor_detail, methods=["GET"]),
