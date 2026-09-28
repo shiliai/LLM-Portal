@@ -38,6 +38,10 @@ except ModuleNotFoundError:  # local `python compat_proxy.py` from the compat di
     import sys
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from conversation_monitor import MONITOR, extract_credential, max_capture_bytes, schedule_capture
+try:
+    from context_optimizer import ContextOptimizer
+except ModuleNotFoundError:  # local package import from the repository root
+    from compat.context_optimizer import ContextOptimizer
 from starlette.applications import Starlette
 from starlette.background import BackgroundTask
 from starlette.datastructures import Headers
@@ -49,6 +53,7 @@ LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://litellm:4000").rstrip("/")
 COMPAT_PORT = int(os.environ.get("COMPAT_PORT", "8400"))
 US13_VERSION = "us13-v1"
 PROXY_PATHS = ("/v1/messages", "/v1/messages/count_tokens", "/v1/chat/completions")
+OPTIMIZER = ContextOptimizer()
 
 # 逐跳头 + 交给 httpx 按目标重建的头（Host/Content-Length/Accept-Encoding）；
 # Authorization、x-api-key、anthropic-version、anthropic-beta、X-Forwarded-For 等一律原样透传
@@ -423,6 +428,8 @@ async def compat_proxy(request: Request) -> Response:
             return error_response(exc, proto)
         sys_info = normalize_anthropic_messages(parsed) if proto == "anthropic" else None
         dsml_info = normalize_dsml_history(parsed) if proto == "openai" else None
+        optimized, optimization_info = OPTIMIZER.transform(parsed, credential)
+        parsed = optimized
         if tc_info or sys_info or dsml_info:
             out_body = json.dumps(parsed, separators=(",", ":"), ensure_ascii=False).encode()
             if tc_info:
@@ -431,6 +438,13 @@ async def compat_proxy(request: Request) -> Response:
                 metric("compat.transform", rule=US13_VERSION, endpoint=path, **sys_info)
             if dsml_info:
                 metric("compat.dsml_args_normalized", endpoint=path, side="request", **dsml_info)
+        if optimization_info["enabled"] and optimization_info["changed"]:
+            out_body = json.dumps(parsed, separators=(",", ":"), ensure_ascii=False).encode()
+            metric("compat.context_optimized", endpoint=path,
+                   mode=optimization_info["mode"], bytes_saved=optimization_info["bytes_saved"],
+                   tool_result_bytes_saved=optimization_info["tool_result_bytes_saved"],
+                   fallback_never_worse=optimization_info["fallback_never_worse"],
+                   rule_hits=optimization_info["rule_hits"])
 
     fwd = forwarded_headers(request.headers, request_id)
     upstream_request = client.build_request(request.method, url, headers=fwd, content=out_body)
