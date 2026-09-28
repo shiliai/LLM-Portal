@@ -248,12 +248,12 @@ class ContextOptimizer:
 
     def transform(self, body: dict[str, Any], credential: str) -> tuple[dict[str, Any], dict[str, Any]]:
         mode, digest = self.decision(credential)
-        raw_bytes = _json_bytes(body)
-        raw_tool_bytes = self._tool_result_bytes(body)
         if mode == "off":
             return body, {"mode": mode, "enabled": False, "changed": False, "key_hash": digest[:12],
-                          "raw_bytes": raw_bytes, "optimized_bytes": raw_bytes, "bytes_saved": 0,
+                          "raw_bytes": None, "optimized_bytes": None, "bytes_saved": 0,
                           "tool_result_bytes_saved": 0, "fallback_never_worse": False, "rule_hits": RuleHits().as_dict()}
+        raw_bytes = _json_bytes(body)
+        raw_tool_bytes = self._tool_result_bytes(body)
         config = OptimizerConfig(mode=mode, key_hashes=self.config.key_hashes,
                                  max_tool_result_bytes=self.config.max_tool_result_bytes,
                                  repeat_min_lines=self.config.repeat_min_lines,
