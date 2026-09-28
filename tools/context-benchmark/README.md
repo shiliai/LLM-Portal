@@ -80,3 +80,151 @@ internal topology. Include opaque labels such as `deployment_label` and
 API keys, or raw logs. The next stage can then replay the redacted samples for
 `off`/`safe`/`bounded` comparisons and add tokenizer, TTFT, total latency, cache,
 protocol, and quality fields.
+
+## Offline optimization evaluation
+
+`evaluate.py` compares four deterministic modes using only `replay.body` from a
+redacted snapshot. It never writes optimized request bodies to the report.
+
+- `raw`: the stored redacted body, serialized compactly as the baseline.
+- `off`: optimization disabled; it is intentionally identical to `raw`.
+- `safe`: strips ANSI control sequences and folds consecutive repeated lines in
+  tool-result text. User/assistant prose, system/developer content, structured
+  JSON, code, tool-call arguments, image blocks, and structural IDs are kept.
+- `bounded`: applies `safe`, then keeps the head and tail of a tool result when
+  its UTF-8 size exceeds the configured limit. The truncation marker includes
+  the omitted byte count.
+
+Every candidate is accepted only when its compact JSON is smaller than the raw
+body. Otherwise the complete body falls back to the raw body, so an evaluation
+cannot report a negative saving. The evaluator recomputes message, tool-call,
+and tool-result counts from the replay body because older snapshots may have
+incomplete aggregate tool fields. Each sample reports byte savings, tool-result
+byte savings, estimated input tokens as `bytes / 4`, rule hits, and structure
+invariants; the report contains no request or response content. The token field
+is a planning estimate, not an exact tokenizer count. Tokenizer-aware replay,
+TTFT, total latency, cache behavior, and response-quality checks are a later
+stage.
+
+Run the local synthetic regression fixture:
+
+```bash
+/usr/bin/python3 -m unittest \
+  tools/context-benchmark/test_collect.py \
+  tools/context-benchmark/test_evaluate.py \
+  tools/context-benchmark/test_rtk_benchmark.py
+```
+
+Evaluate existing redacted snapshots from nasubuntu after copying them to a
+local temporary directory (the snapshots themselves must remain outside the
+repository):
+
+```bash
+/usr/bin/python3 tools/context-benchmark/evaluate.py \
+  --input /tmp/context-benchmark-eval/dsh-benchmark-20260927.redacted.jsonl \
+  --input /tmp/context-benchmark-eval/dsh-macmini-20260927.tool-v2.redacted.jsonl \
+  --input /tmp/context-benchmark-eval/portal-context-20260927.redacted.jsonl \
+  --output /tmp/context-benchmark-eval.report.json
+```
+
+The default bounded policy is an 8 KiB tool-result limit with 4 KiB head and
+tail. Tune it explicitly for a comparison, for example:
+
+```bash
+/usr/bin/python3 tools/context-benchmark/evaluate.py \
+  --input snapshot.redacted.jsonl \
+  --max-tool-result-bytes 16384 \
+  --head-bytes 8192 --tail-bytes 4096 \
+  --output /tmp/context-benchmark-eval.report.json
+```
+
+## Actual RTK CLI comparison
+
+`rtk_benchmark.py` invokes the real RTK CLI through `rtk --skip-env pipe` and
+sends captured tool-result text on stdin. It never executes the captured Bash
+commands and never writes the filtered text to the report. RTK auto-detects its
+filter from the text, so this measures RTK's actual command-output pipeline
+rather than the local `safe`/`bounded` approximation.
+
+Run it with an explicitly downloaded RTK binary kept outside the repository:
+
+```bash
+/usr/bin/python3 tools/context-benchmark/rtk_benchmark.py \
+  --rtk /tmp/rtk/rtk \
+  --input /tmp/context-benchmark-eval/dsh-benchmark-20260927.redacted.jsonl \
+  --input /tmp/context-benchmark-eval/dsh-macmini-20260927.tool-v2.redacted.jsonl \
+  --input /tmp/context-benchmark-eval/portal-context-20260927.redacted.jsonl \
+  --output /tmp/context-benchmark-eval/rtk-report.json
+```
+
+The RTK report counts tool-result text bytes. To estimate impact on the full
+request body, divide the reported `bytes_saved` by the raw request bytes from
+the local evaluator; do not mix the two denominators. The adapter reports the
+RTK version, requested source commit, cache hits, failures, and timeouts so an
+evaluation cannot silently fall back to the local rules.
+
+## RTK CLI replay
+
+`rtk_benchmark.py` is a separate adapter for an actual RTK CLI executable. It
+invokes only `rtk --skip-env pipe`, sending each redacted tool-result text to
+stdin. The captured request body and any command-like text inside a result are
+never passed to a shell or to an RTK command runner. Identical tool results are
+hashed and processed once, while occurrence counts are retained in the
+aggregate report. The report never contains result text.
+
+Run it with an RTK binary supplied by the environment:
+
+```bash
+/usr/bin/python3 tools/context-benchmark/rtk_benchmark.py \
+  --rtk /path/to/rtk \
+  --rtk-commit c75f159 \
+  --input /tmp/context-benchmark-eval/dsh-benchmark-20260927.redacted.jsonl \
+  --input /tmp/context-benchmark-eval/dsh-macmini-20260927.tool-v2.redacted.jsonl \
+  --input /tmp/context-benchmark-eval/portal-context-20260927.redacted.jsonl \
+  --output /tmp/context-benchmark-eval.rtk.report.json
+```
+
+The result declares `execution: actual_rtk` only after the executable responds
+successfully to the stdin `pipe` calls. If no executable is available, it
+returns `execution: blocked` with `missing_executable`; this must not be
+reported as an RTK benchmark. The local `safe`/`bounded` modes in
+`evaluate.py` remain a separate candidate-rule baseline and are not a Python
+implementation of RTK.
+
+## Tokenizer-aware replay
+
+`replay.py` is the next-stage canary runner. It accepts only the OPF-redacted
+JSONL snapshots described above and replays the same selected records through
+`off`, `safe`, `bounded`, and the actual `rtk` stdin filter. It records aggregate
+request bytes, exact `usage.prompt_tokens` when the upstream returns usage,
+TTFT, total latency, SSE completion, finish reason, and tool-call argument JSON
+validity. Response text is consumed in memory and is never written to the
+report. The `rtk` strategy invokes only `rtk --skip-env pipe`; captured
+commands are never executed.
+
+Run a small canary on the host where the private model is reachable:
+
+```bash
+python3 tools/context-benchmark/replay.py \
+  --input dsh-benchmark.redacted.jsonl \
+  --input dsh-macmini.redacted.jsonl \
+  --strategies off,safe,bounded,rtk \
+  --rtk /tmp/rtk/rtk \
+  --limit-per-input 3 \
+  --selection evenly_spaced \
+  --base-url http://127.0.0.1:4000 \
+  --output /tmp/context-replay.canary.json
+```
+
+Set `REPLAY_API_KEY` in the process environment before running; do not pass a
+key as a command-line argument because it can be visible in process listings.
+Snapshots with damaged or omitted base64 image payloads are skipped and counted
+as `invalid_image_payload`; they are not included in latency or quality
+comparisons. Future collection must keep image payloads out of the OPF text
+slots so valid multimodal samples can be replayed separately.
+
+Use `--limit-per-input 0` only after the canary has passed. Keep the report and
+snapshots outside the repository. The report contains opaque sample IDs and
+timing/usage metadata, but no request or response body. `prompt_tokens` is
+marked unavailable when the upstream does not return usage; the offline
+`bytes / 4` estimate remains a separate planning metric.

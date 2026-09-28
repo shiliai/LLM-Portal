@@ -104,7 +104,8 @@ def _content_type(value: Any) -> str:
     return str(block_type or "object")
 
 
-def _walk_text_slots(value: Any, path: tuple[Any, ...] = (), key: str | None = None) -> Iterable[TextSlot]:
+def _walk_text_slots(value: Any, path: tuple[Any, ...] = (), key: str | None = None,
+                     image_payload: bool = False) -> Iterable[TextSlot]:
     """Find text leaves in messages and tool definitions.
 
     Binary image payloads are omitted later and never sent to OPF. Structural
@@ -112,7 +113,7 @@ def _walk_text_slots(value: Any, path: tuple[Any, ...] = (), key: str | None = N
     arguments are redacted in memory.
     """
     if isinstance(value, str):
-        if key in {"data", "url"} and path and any(part == "source" for part in path if isinstance(part, str)):
+        if image_payload:
             return
         if key in STRUCTURAL_KEYS:
             return
@@ -120,13 +121,14 @@ def _walk_text_slots(value: Any, path: tuple[Any, ...] = (), key: str | None = N
         return
     if isinstance(value, list):
         for i, item in enumerate(value):
-            yield from _walk_text_slots(item, path + (i,), key)
+            yield from _walk_text_slots(item, path + (i,), key, image_payload)
         return
     if isinstance(value, dict):
+        current_image_payload = image_payload or value.get("type") in {"image", "image_url"}
         for child_key, child in value.items():
-            if child_key in {"data", "url"} and value.get("type") in {"image", "image_url"}:
+            if current_image_payload and child_key in {"data", "url"}:
                 continue
-            yield from _walk_text_slots(child, path + (child_key,), child_key)
+            yield from _walk_text_slots(child, path + (child_key,), child_key, current_image_payload)
 
 
 def _get_path(value: Any, path: tuple[Any, ...]) -> Any:
