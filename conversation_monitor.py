@@ -22,8 +22,13 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 MODES = {"off", "stream", "persist"}
+CONTEXT_OPTIMIZATION_MODES = {"off", "safe", "bounded"}
 DEFAULT_TTL_DAYS = 14
 DEFAULT_CAPACITY = 50_000
+DEFAULT_CONTEXT_MAX_TOOL_RESULT_BYTES = 8192
+DEFAULT_CONTEXT_REPEAT_MIN_LINES = 2
+DEFAULT_CONTEXT_HEAD_BYTES = 4096
+DEFAULT_CONTEXT_TAIL_BYTES = 4096
 REPLAY_LIMIT = 2048
 CLIENT_QUEUE_LIMIT = 256
 DEFAULT_MAX_CAPTURE_BYTES = 4 * 1024 * 1024
@@ -112,6 +117,17 @@ class ConversationMonitor:
         # processes and by Python 3.9 test loaders.  Keep lifecycle state
         # independent of any particular asyncio loop.
         self._policy_lock = threading.RLock()
+        self._context_policy = {
+            "mode": os.environ.get("CONTEXT_OPTIMIZATION_MODE", "off").strip().lower()
+            if os.environ.get("CONTEXT_OPTIMIZATION_MODE", "off").strip().lower() in CONTEXT_OPTIMIZATION_MODES else "off",
+            "keys": self._context_env_keys(),
+            "max_tool_result_bytes": self._context_env_int("CONTEXT_OPTIMIZATION_MAX_TOOL_RESULT_BYTES", DEFAULT_CONTEXT_MAX_TOOL_RESULT_BYTES, 512, 1024 * 1024),
+            "repeat_min_lines": self._context_env_int("CONTEXT_OPTIMIZATION_REPEAT_MIN_LINES", DEFAULT_CONTEXT_REPEAT_MIN_LINES, 2, 20),
+            "head_bytes": self._context_env_int("CONTEXT_OPTIMIZATION_HEAD_BYTES", DEFAULT_CONTEXT_HEAD_BYTES, 0, 1024 * 1024),
+            "tail_bytes": self._context_env_int("CONTEXT_OPTIMIZATION_TAIL_BYTES", DEFAULT_CONTEXT_TAIL_BYTES, 0, 1024 * 1024),
+            "version": 1, "updated_at": _utc_now(),
+        }
+        self._context_policy_checked = 0.0
         self._subscribers: set[asyncio.Queue] = set()
         self._replay: deque[dict] = deque(maxlen=REPLAY_LIMIT)
         self._dropped: dict[str, int] = {}
@@ -153,6 +169,13 @@ class ConversationMonitor:
                 );
                 CREATE INDEX IF NOT EXISTS conversation_events_created ON conversation_events(created_ts DESC);
                 CREATE INDEX IF NOT EXISTS conversation_events_filters ON conversation_events(key_hash, model, protocol, status);
+                CREATE TABLE IF NOT EXISTS context_optimization_policy (
+                    id INTEGER PRIMARY KEY CHECK (id = 1), mode TEXT NOT NULL,
+                    keys_json TEXT NOT NULL, max_tool_result_bytes INTEGER NOT NULL,
+                    repeat_min_lines INTEGER NOT NULL, head_bytes INTEGER NOT NULL,
+                    tail_bytes INTEGER NOT NULL, version INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
             """)
             row = conn.execute("SELECT mode, keys_json, ttl_days, capacity, version, updated_at "
                                "FROM conversation_policy WHERE id=1").fetchone()
@@ -168,7 +191,45 @@ class ConversationMonitor:
                                 "keys": keys if isinstance(keys, list) else [],
                                 "ttl_days": int(row[2]), "capacity": int(row[3]),
                                 "version": int(row[4]), "updated_at": row[5]}
+            context_row = conn.execute(
+                "SELECT mode, keys_json, max_tool_result_bytes, repeat_min_lines, head_bytes, tail_bytes, version, updated_at "
+                "FROM context_optimization_policy WHERE id=1").fetchone()
+            if context_row is None:
+                conn.execute(
+                    "INSERT INTO context_optimization_policy VALUES (1,?,?,?,?,?,?,?,?)",
+                    (self._context_policy["mode"], _json(self._context_policy["keys"]),
+                     self._context_policy["max_tool_result_bytes"], self._context_policy["repeat_min_lines"],
+                     self._context_policy["head_bytes"], self._context_policy["tail_bytes"],
+                     self._context_policy["version"], self._context_policy["updated_at"]))
+            else:
+                try:
+                    keys = json.loads(context_row[1])
+                except (ValueError, TypeError):
+                    keys = []
+                self._context_policy = {
+                    "mode": context_row[0] if context_row[0] in CONTEXT_OPTIMIZATION_MODES else "off",
+                    "keys": keys if isinstance(keys, list) else [],
+                    "max_tool_result_bytes": int(context_row[2]),
+                    "repeat_min_lines": int(context_row[3]),
+                    "head_bytes": int(context_row[4]),
+                    "tail_bytes": int(context_row[5]),
+                    "version": int(context_row[6]), "updated_at": context_row[7],
+                }
             self._policy_loaded = True
+
+    @staticmethod
+    def _context_env_keys() -> list[str]:
+        value = os.environ.get("CONTEXT_OPTIMIZATION_KEYS", "")
+        return sorted(set(item.strip().lower() for item in value.split(",")
+                          if item.strip() == "*" or re.fullmatch(r"[0-9a-fA-F]{64}", item.strip())))
+
+    @staticmethod
+    def _context_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+        try:
+            value = int(os.environ.get(name, default))
+        except (TypeError, ValueError):
+            value = default
+        return min(max(value, minimum), maximum)
 
     def policy(self) -> dict:
         self._refresh_policy()
@@ -238,6 +299,69 @@ class ConversationMonitor:
             }, request_id="policy")
             self._publish(event)
             return self.policy()
+
+    def context_optimization_policy(self) -> dict:
+        """Return the dynamic optimization canary policy with a short DB cache."""
+        now = time.monotonic()
+        if now - self._context_policy_checked < 1.0:
+            return dict(self._context_policy, keys=list(self._context_policy["keys"]))
+        with self._policy_lock:
+            try:
+                with self._connect() as conn:
+                    row = conn.execute(
+                        "SELECT mode, keys_json, max_tool_result_bytes, repeat_min_lines, head_bytes, tail_bytes, version, updated_at "
+                        "FROM context_optimization_policy WHERE id=1").fetchone()
+                if row is not None and int(row[6]) >= int(self._context_policy.get("version", 0)):
+                    try:
+                        keys = json.loads(row[1])
+                    except (ValueError, TypeError):
+                        keys = []
+                    self._context_policy = {
+                        "mode": row[0] if row[0] in CONTEXT_OPTIMIZATION_MODES else "off",
+                        "keys": keys if isinstance(keys, list) else [],
+                        "max_tool_result_bytes": int(row[2]),
+                        "repeat_min_lines": int(row[3]), "head_bytes": int(row[4]),
+                        "tail_bytes": int(row[5]), "version": int(row[6]), "updated_at": row[7],
+                    }
+            except Exception:
+                self._drop("context_policy_error")
+            self._context_policy_checked = now
+        return dict(self._context_policy, keys=list(self._context_policy["keys"]))
+
+    async def update_context_optimization_policy(self, *, mode: str, keys: list[str],
+                                                 max_tool_result_bytes: int,
+                                                 repeat_min_lines: int, head_bytes: int,
+                                                 tail_bytes: int) -> dict:
+        mode = str(mode).lower()
+        if mode not in CONTEXT_OPTIMIZATION_MODES:
+            raise ValueError("mode must be off, safe, or bounded")
+        if not isinstance(keys, list) or any(
+                not isinstance(x, str) or (x != "*" and not re.fullmatch(r"[0-9a-fA-F]{64}", x))
+                for x in keys):
+            raise ValueError("keys must be SHA-256 hashes or *")
+        max_tool_result_bytes = min(max(int(max_tool_result_bytes), 512), 1024 * 1024)
+        repeat_min_lines = min(max(int(repeat_min_lines), 2), 20)
+        head_bytes = min(max(int(head_bytes), 0), 1024 * 1024)
+        tail_bytes = min(max(int(tail_bytes), 0), 1024 * 1024)
+        with self._policy_lock:
+            updated = _utc_now()
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                current = conn.execute("SELECT version FROM context_optimization_policy WHERE id=1").fetchone()
+                version = int(current[0]) + 1 if current else 1
+                next_policy = {
+                    "mode": mode, "keys": sorted(set(x.lower() for x in keys)),
+                    "max_tool_result_bytes": max_tool_result_bytes,
+                    "repeat_min_lines": repeat_min_lines, "head_bytes": head_bytes,
+                    "tail_bytes": tail_bytes, "version": version, "updated_at": updated,
+                }
+                conn.execute(
+                    "UPDATE context_optimization_policy SET mode=?, keys_json=?, max_tool_result_bytes=?, repeat_min_lines=?, head_bytes=?, tail_bytes=?, version=?, updated_at=? WHERE id=1",
+                    (mode, _json(next_policy["keys"]), max_tool_result_bytes, repeat_min_lines,
+                     head_bytes, tail_bytes, version, updated))
+            self._context_policy = next_policy
+            self._context_policy_checked = time.monotonic()
+            return dict(next_policy, keys=list(next_policy["keys"]))
 
     def _drop(self, reason: str) -> None:
         self._dropped[reason] = self._dropped.get(reason, 0) + 1

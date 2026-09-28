@@ -23,7 +23,7 @@ DEFAULT_REPEAT_MIN_LINES = 2
 DEFAULT_HEAD_BYTES = 4096
 DEFAULT_TAIL_BYTES = 4096
 
-_ANSI_RE = re.compile(r"\x1b(?:\][^\x07]*(?:\x07|$)|\[[0-?]*[ -/]*[@-~])")
+_ANSI_RE = re.compile(r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~])")
 _CODE_RE = re.compile(
     r"```|^\s*(?:#!|(?:const|let|var|def|class|import|from|SELECT|INSERT|UPDATE|DELETE|curl|git|npm|python|bash)\b)",
     re.MULTILINE,
@@ -238,26 +238,54 @@ def _transform(value: Any, context: VisitContext, config: OptimizerConfig,
 
 
 class ContextOptimizer:
-    def __init__(self, config: OptimizerConfig | None = None):
+    def __init__(self, config: OptimizerConfig | None = None, policy_provider: Any | None = None):
         self.config = config or OptimizerConfig.from_env()
+        self.policy_provider = policy_provider
 
-    def decision(self, credential: str) -> tuple[str, str]:
+    def _active_config(self) -> OptimizerConfig:
+        if self.policy_provider is None:
+            return self.config
+        try:
+            policy = self.policy_provider()
+            if isinstance(policy, dict):
+                mode = str(policy.get("mode", "off")).lower()
+                if mode not in MODES:
+                    mode = "off"
+                key_hashes = frozenset(
+                    str(value).lower() for value in policy.get("keys", [])
+                    if str(value) == "*" or re.fullmatch(r"[0-9a-fA-F]{64}", str(value))
+                )
+                return OptimizerConfig(
+                    mode=mode,
+                    key_hashes=key_hashes,
+                    max_tool_result_bytes=int(policy.get("max_tool_result_bytes", DEFAULT_MAX_TOOL_RESULT_BYTES)),
+                    repeat_min_lines=int(policy.get("repeat_min_lines", DEFAULT_REPEAT_MIN_LINES)),
+                    head_bytes=int(policy.get("head_bytes", DEFAULT_HEAD_BYTES)),
+                    tail_bytes=int(policy.get("tail_bytes", DEFAULT_TAIL_BYTES)),
+                )
+        except Exception:
+            return self.config
+        return self.config
+
+    def decision(self, credential: str, config: OptimizerConfig | None = None) -> tuple[str, str]:
+        config = config or self._active_config()
         digest = key_hash(credential)
-        enabled = "*" in self.config.key_hashes or digest in self.config.key_hashes
-        return (self.config.mode if enabled else "off", digest)
+        enabled = "*" in config.key_hashes or digest in config.key_hashes
+        return (config.mode if enabled else "off", digest)
 
     def transform(self, body: dict[str, Any], credential: str) -> tuple[dict[str, Any], dict[str, Any]]:
-        mode, digest = self.decision(credential)
+        active_config = self._active_config()
+        mode, digest = self.decision(credential, active_config)
         if mode == "off":
             return body, {"mode": mode, "enabled": False, "changed": False, "key_hash": digest[:12],
                           "raw_bytes": None, "optimized_bytes": None, "bytes_saved": 0,
                           "tool_result_bytes_saved": 0, "fallback_never_worse": False, "rule_hits": RuleHits().as_dict()}
         raw_bytes = _json_bytes(body)
         raw_tool_bytes = self._tool_result_bytes(body)
-        config = OptimizerConfig(mode=mode, key_hashes=self.config.key_hashes,
-                                 max_tool_result_bytes=self.config.max_tool_result_bytes,
-                                 repeat_min_lines=self.config.repeat_min_lines,
-                                 head_bytes=self.config.head_bytes, tail_bytes=self.config.tail_bytes)
+        config = OptimizerConfig(mode=mode, key_hashes=active_config.key_hashes,
+                                 max_tool_result_bytes=active_config.max_tool_result_bytes,
+                                 repeat_min_lines=active_config.repeat_min_lines,
+                                 head_bytes=active_config.head_bytes, tail_bytes=active_config.tail_bytes)
         stats = TransformStats()
         candidate = _transform(copy.deepcopy(body), VisitContext(), config, stats, root=True)
         optimized_bytes = _json_bytes(candidate)

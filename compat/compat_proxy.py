@@ -53,7 +53,7 @@ LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://litellm:4000").rstrip("/")
 COMPAT_PORT = int(os.environ.get("COMPAT_PORT", "8400"))
 US13_VERSION = "us13-v1"
 PROXY_PATHS = ("/v1/messages", "/v1/messages/count_tokens", "/v1/chat/completions")
-OPTIMIZER = ContextOptimizer()
+OPTIMIZER = ContextOptimizer(policy_provider=MONITOR.context_optimization_policy)
 
 # 逐跳头 + 交给 httpx 按目标重建的头（Host/Content-Length/Accept-Encoding）；
 # Authorization、x-api-key、anthropic-version、anthropic-beta、X-Forwarded-For 等一律原样透传

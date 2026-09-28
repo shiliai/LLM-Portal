@@ -26,6 +26,8 @@ CONTEXT_OPTIMIZATION_TAIL_BYTES=4096
 
 `CONTEXT_OPTIMIZATION_KEYS` 只接受完整 SHA-256 Key hash 或 `*`。空列表等同于关闭。Key 明文只在请求头中用于计算 hash，不写入日志或指标。回滚时把 mode 改为 `off` 并重启 compat，原请求字节透传。
 
+管理员也可以在“请求与用量 → 上下文优化”菜单中保存同一策略。菜单使用共享 monitor SQLite 持久化配置，Key 列表只提交 hash；保存后 compat 在最多一秒的策略缓存窗口内读取新版本。环境变量只作为首次初始化默认值，菜单保存后以数据库策略为准。
+
 ## 请求流程
 
 ```text
