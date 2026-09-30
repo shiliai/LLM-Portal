@@ -1,7 +1,7 @@
 # Private node metrics agent
 
 This bundle runs VictoriaMetrics `vmagent` beside the private LLM service. It
-scrapes the service's Prometheus endpoint every 15 seconds, buffers samples on
+scrapes the service's Prometheus endpoint every 5 seconds, buffers samples on
 disk while the VPS is unavailable, and sends Prometheus remote_write samples to
 the Portal VictoriaMetrics instance.
 
