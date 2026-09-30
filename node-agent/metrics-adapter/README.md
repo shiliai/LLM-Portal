@@ -33,9 +33,12 @@ systemctl --user daemon-reload && systemctl --user enable --now llm-metrics-adap
 
 Direct mappings (`MAP` in `adapter.py`, engine `tensorfold_*` → contract `vllm:*`):
 `prompt_tokens_total`, `generation_tokens_total`, `request_success_total`,
-`num_requests_running/waiting`, `spec_decode_num_decode_steps_total`,
-`prefix_cache_hits_total` ← engine cached tokens, `prefix_cache_queries_total` ←
-engine prompt tokens.
+`spec_decode_num_decode_steps_total`, `prefix_cache_hits_total` ← engine cached
+tokens, `prefix_cache_queries_total` ← engine prompt tokens. Activity and
+waiting gauges are sampled every second and exported as window maxima; the
+TensorFold `requests_stalled` gauge is the only waiting signal in 0.3.x and is
+used as a best-effort queue indicator. If a future engine exposes a real
+queued/pending gauge, add its name to `WAITING_NAMES`.
 
 Derived series (engine lacks native counters; sourced from the engine request
 log, one JSON line per request):
