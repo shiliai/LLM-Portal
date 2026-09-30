@@ -60,6 +60,18 @@ function makeLogs() {
   if (await page.locator('#ug-tbody tr').count() !== 20) throw new Error('default per-page must be 20');
   const headers = await page.locator('.pf-table thead th').allInnerTexts();
   if (!headers.includes('IP')) throw new Error('request detail table must expose IP column');
+  if (!headers.includes('推理强度')) throw new Error('request detail table must expose reasoning effort column');
+  if (!(await page.locator('#ug-tbody .ug-effort').first().innerText()).includes('high')) {
+    throw new Error('reasoning effort value missing from request detail row');
+  }
+  const tableLayout = await page.locator('.ug-rec-card').evaluate(el => {
+    const status = el.querySelector('.ug-request-table th:last-child');
+    const style = status ? getComputedStyle(status) : null;
+    return { overflowX: getComputedStyle(el).overflowX, position: style && style.position };
+  });
+  if (tableLayout.overflowX !== 'auto' || tableLayout.position !== 'sticky') {
+    throw new Error('request detail layout must keep the status column reachable');
+  }
   if (await page.locator('#ug-tbody .pf-token-read').count() !== 20 ||
       await page.locator('#ug-tbody .pf-token-write').count() !== 20) throw new Error('read/write token formatter missing');
   if (!(await page.locator('#ug-tbody .pf-token-cache.is-hit').count()) ||

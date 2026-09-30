@@ -924,6 +924,8 @@ def _derive_metrics(vals: dict) -> dict:
            if cached is not None and uncached is not None and cached + uncached > 0 else None)
     if hit is None:
         hit = _ratio(vals, "vllm:prefix_cache_hits_total", "vllm:prefix_cache_queries_total")
+    if hit is None:
+        hit = _ratio(vals, "tensorfold_cached_tokens_total", "tensorfold_prompt_tokens_total")
     if hit is not None:
         out["cache_hit_pct"] = round(hit, 1)
     return out
@@ -938,6 +940,11 @@ def _finish_metrics(vals: dict) -> dict:
         "vllm:kv_cache_usage_perc": "kv_cache_pct",
         "vllm:num_requests_running": "requests_running",
         "vllm:num_requests_waiting": "requests_waiting",
+        # TensorFold's native endpoint remains the LiteLLM target (:8890).
+        # Recognize its gauges directly while the VM adapter supplies the
+        # richer counter-derived throughput contract.
+        "tensorfold_requests_inflight": "requests_running",
+        "tensorfold_requests_stalled": "requests_waiting",
         "vllm:gpu_utilization": "gpu_util_pct",
         "llamacpp:predicted_tokens_seconds": "output_tok_s",
         "llamacpp:prompt_tokens_seconds": "input_tok_s",

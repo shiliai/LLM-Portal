@@ -83,6 +83,14 @@
   .ug-request-row { cursor: default; }
   .ug-request-row:hover td { background: var(--hover); }
   .ug-detail-col { width: 58px; text-align: center !important; white-space: nowrap; }
+  .pf-card.flush.ug-rec-card { overflow-x: auto; overflow-y: hidden; }
+  .ug-request-table { width: max-content; min-width: 100%; }
+  .ug-request-table th:last-child,
+  .ug-request-table td:last-child { position: sticky; right: 0; z-index: 1; box-shadow: -1px 0 0 var(--border); }
+  .ug-request-table th:last-child { background: var(--panel3); z-index: 2; }
+  .ug-request-table td:last-child { background: var(--panel); }
+  .ug-request-row:hover td:last-child { background: var(--hover); }
+  .ug-effort { color: var(--text2); }
   @media (max-width: 900px) { .ug-health-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
   @media (max-width: 560px) { .ug-health-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .ug-health-controls { flex-wrap: wrap; justify-content: flex-end; } .ug-policy-mode-grid, .ug-policy-grid { grid-template-columns: 1fr; } .ug-policy-action { flex-wrap: wrap; } }
 </style>
@@ -201,9 +209,9 @@
         <button class="pf-btn primary" id="ug-csv" type="button">⬇ 导出 CSV</button>
       </div>
     </div>
-    <div class="pf-card flush">
-      <table class="pf-table"><thead><tr>
-        <th>时间</th><th class="ug-detail-col">详情</th><th>Key / 用户</th><th>模型</th><th>节点</th><th>IP</th><th>端点</th>
+    <div class="pf-card flush ug-rec-card">
+      <table class="pf-table ug-request-table"><thead><tr>
+        <th>时间</th><th class="ug-detail-col">详情</th><th>Key / 用户</th><th>模型</th><th>推理强度</th><th>节点</th><th>IP</th><th>端点</th>
         <th class="num">读 Token</th><th class="num">写 Token</th><th class="num">缓存 Token</th>
         <th class="num">首字延迟</th><th class="num">总时延</th><th>状态</th>
       </tr></thead><tbody id="ug-tbody"></tbody></table>
@@ -1304,6 +1312,7 @@
         '<td class="ug-detail-col"><button class="pf-btn sm ug-detail-btn" type="button" data-rid="' + esc(r.request_id) + '">详情</button></td>' +
         '<td><span class="mono" style="font-size:11px">…' + esc(r.key) + '</span><div style="font-size:11px;color:var(--muted)">' + esc(r.alias) + ' · ' + esc(r.group || 'default') + '</div></td>' +
         '<td class="mono" style="font-size:11px">' + esc(r.model) + '</td>' +
+        '<td class="mono ug-effort" style="font-size:11px">' + (r.effort ? esc(r.effort) : dash()) + '</td>' +
         '<td class="mono" style="font-size:11px">' + esc(r.node || '—') + '</td>' +
         '<td class="mono" style="font-size:11px;color:var(--muted)">' + esc(r.ip || '—') + '</td>' +
         '<td class="mono" style="font-size:11px;color:var(--muted)">' + esc(r.endpoint || '—') + '</td>' +
@@ -1317,14 +1326,14 @@
           : '<span class="pf-chip ok"><span class="pf-dot ok" style="margin-right:0"></span>成功</span>') + '</td>' +
       '</tr>';
       if (fail && exp) {
-        tr += '<tr class="pf-err-row"><td colspan="13"><div class="pf-err-detail">' +
+        tr += '<tr class="pf-err-row"><td colspan="14"><div class="pf-err-detail">' +
           'request_id: ' + esc(r.request_id) + '\n' +
           'error: ' + esc(r.error || 'failure') + '\n' +
           'node: ' + esc(r.node || '—') + ' · model: ' + esc(r.model) + ' · endpoint: ' + esc(r.endpoint || '—') + '\n' +
           'ip: ' + esc(r.ip || '—') + (r.effort ? ' · effort: ' + esc(r.effort) : '') + '</div></td></tr>';
       }
       return tr;
-    }).join('') || '<tr><td colspan="13" style="padding:10px" class="pf-desc">当前过滤条件下暂无请求</td></tr>';
+    }).join('') || '<tr><td colspan="14" style="padding:10px" class="pf-desc">当前过滤条件下暂无请求</td></tr>';
     $('ug-count').textContent = '共 ' + fmt(rows.length) + ' 条 · 第 ' + rl.page + '/' + pages + ' 页';
     /* 分页（窗口页码） */
     var pager = $('ug-pager');
@@ -1347,10 +1356,10 @@
     return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   }
   function exportCsv() {
-    var head = ['时间', '请求ID', 'Key', '用户', '分组', '模型', '节点', 'IP', '端点', '读Token', '写Token', '缓存Token', '首字延迟ms', '总时延ms', '状态', '错误详情'];
+    var head = ['时间', '请求ID', 'Key', '用户', '分组', '模型', '推理强度', '节点', 'IP', '端点', '读Token', '写Token', '缓存Token', '首字延迟ms', '总时延ms', '状态', '错误详情'];
     var lines = [head.join(',')];
     rl.logs.forEach(function (r) {
-      lines.push([r.ts, r.request_id, '…' + r.key, r.alias, r.group, r.model, r.node, r.ip, r.endpoint,
+      lines.push([r.ts, r.request_id, '…' + r.key, r.alias, r.group, r.model, r.effort, r.node, r.ip, r.endpoint,
         r.prompt_tokens, r.completion_tokens, r.cached_tokens, r.tft_ms, r.duration_ms,
         r.status === 'failure' ? '失败' : '成功', r.error].map(csvCell).join(','));
     });
