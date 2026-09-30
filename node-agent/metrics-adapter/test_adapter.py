@@ -58,3 +58,13 @@ def test_translate_exposes_windowed_activity_and_waiting():
 
     assert "vllm:num_requests_running 7" in output
     assert "vllm:num_requests_waiting 2" in output
+
+
+def test_translate_falls_back_to_current_scrape_before_sampler_warms_up():
+    output = adapter.translate(
+        'tensorfold_requests_inflight{model="glm"} 4\n'
+        'tensorfold_requests_stalled{model="glm"} 1\n'
+    )
+
+    assert "vllm:num_requests_running 4" in output
+    assert "vllm:num_requests_waiting 1" in output

@@ -142,7 +142,11 @@ def fetch():
 
 def translate(body):
     out = []
-    for name, labels, value in parse_samples(body):
+    samples = parse_samples(body)
+    current_values = aggregate_engine_samples(samples)
+    current_running, current_has_running = first_engine_value(current_values, RUNNING_NAMES)
+    current_waiting, current_has_waiting = first_engine_value(current_values, WAITING_NAMES)
+    for name, labels, value in samples:
         # Activity gauges are emitted from the sampler window below.  Do not
         # also emit per-model copies, otherwise VM instant queries average the
         # same request count twice when a node exposes multiple model labels.
@@ -158,10 +162,12 @@ def translate(body):
     with state["lock"]:
         out.append("llamacpp:predicted_tokens_seconds %.2f" % _gauges["out_tps"])
         out.append("llamacpp:prompt_tokens_seconds %.2f" % _gauges["in_tps"])
-        if _gauges["has_running"]:
-            out.append("vllm:num_requests_running %.0f" % _gauges["running_max"])
-        if _gauges["has_waiting"]:
-            out.append("vllm:num_requests_waiting %.0f" % _gauges["waiting_max"])
+        running = _gauges["running_max"] if _gauges["has_running"] else current_running
+        waiting = _gauges["waiting_max"] if _gauges["has_waiting"] else current_waiting
+        if _gauges["has_running"] or current_has_running:
+            out.append("vllm:num_requests_running %.0f" % running)
+        if _gauges["has_waiting"] or current_has_waiting:
+            out.append("vllm:num_requests_waiting %.0f" % waiting)
         d, a = int(state["drafted"]), int(state["accepted"])
     out.append("vllm:spec_decode_num_draft_tokens_total %d" % d)
     out.append("vllm:spec_decode_num_accepted_tokens_total %d" % a)
