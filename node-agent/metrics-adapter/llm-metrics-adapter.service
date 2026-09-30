@@ -1,0 +1,7 @@
+[Unit]
+Description=LLM metrics adapter (engine -> dashboard contract)
+[Service]
+ExecStart=/usr/bin/python3 %h/llm-metrics-adapter/adapter.py
+Restart=always
+[Install]
+WantedBy=default.target

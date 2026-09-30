@@ -9,7 +9,7 @@ Each private node runs one copy of this bundle. The current deployments:
 
 | host | env file | `NODE_INSTANCE` | WireGuard IP | LLM `/metrics` |
 |---|---|---|---|---|
-| GB10 Head | `deployments/gb10-head.env.example` | `gb10-head` | `10.77.0.11` | `:8080` |
+| GB10 Head | deployments/gb10-head.env.example | gb10-head | 10.77.0.11 | :8891 (via [metrics-adapter](metrics-adapter/), engine :8890) |
 | GB10 Worker | `deployments/gb10-worker.env.example` | `gb10-worker` | `10.77.0.15` | `:8080` |
 | Dell Precision 7960 Tower | `deployments/dell-shili-7960.env.example` | `dell-shili-7960-llm` | `10.77.0.14` | `:8005` |
 | M2S2VMUbuntuA6000 | `deployments/m2s2NasUbuntuVM-shili-dev.env.example` | `m2s2NasUbuntuVM-shili-dev-llm` | `10.77.0.13` | `:8006` |
@@ -37,3 +37,11 @@ Docker) work unchanged.
 
 Keep labels low cardinality (`site`, `instance`, and exporter labels). Never
 add request IDs, API keys, or user identifiers to metric labels.
+
+## Metrics adapter (engine swap isolation)
+
+ freezes the dashboard contract ( series) behind a
+small translator so serving engines can be swapped without touching dashboards,
+alerts or scrape configs. vmagent scrapes the adapter port, not the engine.
+See [metrics-adapter/README.md](metrics-adapter/README.md) for the contract and
+the engine-swap checklist.
