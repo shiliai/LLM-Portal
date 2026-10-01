@@ -25,7 +25,15 @@ MAP = {
     "tensorfold_prompt_tokens_total": "vllm:prompt_tokens_total",
     "tensorfold_cached_tokens_total": "vllm:prefix_cache_hits_total",
     "tensorfold_completion_tokens_total": "vllm:generation_tokens_total",
+    "tensorfold_generation_tokens_total": "vllm:generation_tokens_total",
+    "tensorfold_health_completion_tokens_total": "vllm:generation_tokens_total",
     "tensorfold_requests_total": "vllm:request_success_total",
+    "tensorfold_health_requests_total": "vllm:request_success_total",
+    "tensorfold_health_cached_tokens_total": "vllm:prefix_cache_hits_total",
+    "tensorfold_health_rounds_total": "vllm:spec_decode_num_decode_steps_total",
+    "tensorfold_mtp_drafted_total": "vllm:spec_decode_num_draft_tokens_total",
+    "tensorfold_mtp_accepted_total": "vllm:spec_decode_num_accepted_tokens_total",
+    "tensorfold_kv_cache_usage_ratio": "vllm:kv_cache_usage_perc",
     # TensorFold 0.3 exposes ``stalled`` rather than a separate queue gauge.
     # Keep it as the best available waiting signal; newer engine builds can
     # add one of the aliases below without changing the dashboard contract.
@@ -54,6 +62,22 @@ _gauges = {"out_tps": 0.0, "in_tps": 0.0, "running_max": 0, "waiting_max": 0,
            "has_running": False, "has_waiting": False}
 
 
+def canonical_engine_name(name):
+    """Normalize TensorFold profile namespaces to the adapter's stable names.
+
+    Older profiles exported ``tensorfold_requests_running`` while newer
+    profiles use Prometheus namespaces such as ``tensorfold:requests_running``.
+    Health metrics use the same convention with a ``tensorfold_health``
+    namespace.  Keeping this normalization at the ingestion boundary makes
+    all downstream aliases independent of the active inference profile.
+    """
+    if name.startswith("tensorfold_health:"):
+        return "tensorfold_health_" + name[len("tensorfold_health:"):]
+    if name.startswith("tensorfold:"):
+        return "tensorfold_" + name[len("tensorfold:"):]
+    return name
+
+
 def parse_samples(body):
     """Return Prometheus samples as ``(name, labels, value)`` tuples."""
     out = []
@@ -74,8 +98,9 @@ def aggregate_engine_samples(samples):
     """Sum samples by metric name so multi-model labels remain visible."""
     values = defaultdict(float)
     for name, _labels, value in samples:
-        if name.startswith("tensorfold_"):
-            values[name] += value
+        canonical = canonical_engine_name(name)
+        if canonical.startswith(("tensorfold_", "tensorfold_health_")):
+            values[canonical] += value
     return dict(values)
 
 
@@ -85,6 +110,18 @@ def first_engine_value(values, names):
         if name in values:
             return values[name], True
     return 0.0, False
+
+
+# New health counters overlap with the primary counters on current builds.
+# Treat them as fallbacks so the same request is never counted twice when a
+# profile exports both namespaces.
+FALLBACK_COUNTERS = {
+    "tensorfold_health_completion_tokens_total": (
+        "tensorfold_generation_tokens_total", "tensorfold_completion_tokens_total"),
+    "tensorfold_health_requests_total": "tensorfold_requests_total",
+    "tensorfold_health_cached_tokens_total": "tensorfold_cached_tokens_total",
+    "tensorfold_health_rounds_total": "tensorfold_decode_rounds_total",
+}
 
 def tail_log():
     try:
@@ -109,12 +146,18 @@ def sample():
     vals = aggregate_engine_samples(parse_samples(body))
     running, has_running = first_engine_value(vals, RUNNING_NAMES)
     waiting, has_waiting = first_engine_value(vals, WAITING_NAMES)
+    generation, _ = first_engine_value(vals, (
+        "tensorfold_generation_tokens_total",
+        "tensorfold_completion_tokens_total",
+        "tensorfold_health_completion_tokens_total"))
+    prompt, _ = first_engine_value(vals, ("tensorfold_prompt_tokens_total",))
+    cached, _ = first_engine_value(vals, (
+        "tensorfold_cached_tokens_total",
+        "tensorfold_health_cached_tokens_total"))
     now = time.time()
     with state["lock"]:
         s = state["samples"]
-        s.append((now, vals.get("tensorfold_completion_tokens_total", 0.0),
-                  vals.get("tensorfold_prompt_tokens_total", 0.0),
-                  vals.get("tensorfold_cached_tokens_total", 0.0), running, waiting,
+        s.append((now, generation, prompt, cached, running, waiting,
                   has_running, has_waiting))
         while s and now - s[0][0] > WINDOW + 5: s.pop(0)
         if len(s) >= 2:
@@ -146,18 +189,27 @@ def translate(body):
     current_values = aggregate_engine_samples(samples)
     current_running, current_has_running = first_engine_value(current_values, RUNNING_NAMES)
     current_waiting, current_has_waiting = first_engine_value(current_values, WAITING_NAMES)
+    has_kv_ratio = "tensorfold_kv_cache_usage_ratio" in current_values
     for name, labels, value in samples:
+        canonical = canonical_engine_name(name)
         # Activity gauges are emitted from the sampler window below.  Do not
         # also emit per-model copies, otherwise VM instant queries average the
         # same request count twice when a node exposes multiple model labels.
-        if name in RUNNING_NAMES or name in WAITING_NAMES:
+        if canonical in RUNNING_NAMES or canonical in WAITING_NAMES:
             continue
-        dst = MAP.get(name)
+        preferred = FALLBACK_COUNTERS.get(canonical)
+        if isinstance(preferred, tuple):
+            if any(name in current_values for name in preferred):
+                continue
+        elif preferred and preferred in current_values:
+            continue
+        dst = MAP.get(canonical)
         if dst:
             out.append(f"{dst}{labels} {value:g}")
-        if name == "tensorfold_prompt_tokens_total":
+        if canonical == "tensorfold_prompt_tokens_total":
             out.append(f"vllm:prefix_cache_queries_total{labels} {value:g}")
-        if name == "tensorfold_cached_tokens_total":
+        if canonical in ("tensorfold_cached_tokens_total",
+                         "tensorfold_health_cached_tokens_total"):
             out.append(f"vllm:cache_cached_prompt_tokens_total{labels} {value:g}")
     with state["lock"]:
         out.append("llamacpp:predicted_tokens_seconds %.2f" % _gauges["out_tps"])
@@ -169,9 +221,15 @@ def translate(body):
         if _gauges["has_waiting"] or current_has_waiting:
             out.append("vllm:num_requests_waiting %.0f" % waiting)
         d, a = int(state["drafted"]), int(state["accepted"])
-    out.append("vllm:spec_decode_num_draft_tokens_total %d" % d)
-    out.append("vllm:spec_decode_num_accepted_tokens_total %d" % a)
-    if state["kv"]:
+    has_draft_metric = any(name in current_values for name in (
+        "tensorfold_mtp_drafted_total", "tensorfold_decode_rounds_total",
+        "tensorfold_health_rounds_total"))
+    has_accepted_metric = "tensorfold_mtp_accepted_total" in current_values
+    if not has_draft_metric:
+        out.append("vllm:spec_decode_num_draft_tokens_total %d" % d)
+    if not has_accepted_metric:
+        out.append("vllm:spec_decode_num_accepted_tokens_total %d" % a)
+    if state["kv"] and not has_kv_ratio:
         pages, free = state["kv"]
         out.append("vllm:kv_cache_usage_perc %.6f" % max(0.0, 1 - free / POOL_PAGES))
     out.append(body)

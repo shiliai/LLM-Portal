@@ -912,6 +912,12 @@ def _derive_metrics(vals: dict) -> dict:
     if spec is None:
         spec = _ratio(vals, "vllm:spec_decode_num_accepted_tokens_total",
                       "vllm:spec_decode_num_draft_tokens_total")
+    if spec is None:
+        spec = _ratio(vals, "tensorfold:mtp_accepted_total",
+                      "tensorfold:mtp_drafted_total")
+    if spec is None:
+        spec = _ratio(vals, "tensorfold_mtp_accepted_total",
+                      "tensorfold_mtp_drafted_total")
     if spec is not None:
         out["spec_accept_pct"] = round(spec, 1)
     cached = vals.get("llamacpp:prompt_tokens_cached_total")
@@ -927,6 +933,12 @@ def _derive_metrics(vals: dict) -> dict:
         hit = _ratio(vals, "vllm:prefix_cache_hits_total", "vllm:prefix_cache_queries_total")
     if hit is None:
         hit = _ratio(vals, "tensorfold_cached_tokens_total", "tensorfold_prompt_tokens_total")
+    if hit is None:
+        hit = _ratio(vals, "tensorfold:cached_tokens_total", "tensorfold:prompt_tokens_total")
+    if hit is None:
+        hit = _ratio(vals, "tensorfold_health:cached_tokens_total", "tensorfold:prompt_tokens_total")
+    if hit is None:
+        hit = _ratio(vals, "tensorfold_health_cached_tokens_total", "tensorfold_prompt_tokens_total")
     if hit is not None:
         out["cache_hit_pct"] = round(hit, 1)
     return out
@@ -941,6 +953,15 @@ def _finish_metrics(vals: dict) -> dict:
         "vllm:kv_cache_usage_perc": "kv_cache_pct",
         "vllm:num_requests_running": "requests_running",
         "vllm:num_requests_waiting": "requests_waiting",
+        # TensorFold profile exporters changed from underscore names to
+        # Prometheus namespace names.  Accept both at the Portal boundary so
+        # a profile switch cannot blank the activity and queue cards.
+        "tensorfold:requests_running": "requests_running",
+        "tensorfold_requests_running": "requests_running",
+        "tensorfold:requests_waiting": "requests_waiting",
+        "tensorfold_requests_waiting": "requests_waiting",
+        "tensorfold:kv_cache_usage_ratio": "kv_cache_pct",
+        "tensorfold_kv_cache_usage_ratio": "kv_cache_pct",
         # TensorFold's native endpoint remains the LiteLLM target (:8890).
         # Recognize its gauges directly while the VM adapter supplies the
         # richer counter-derived throughput contract.
@@ -956,9 +977,19 @@ def _finish_metrics(vals: dict) -> dict:
         "DCGM_FI_DEV_POWER_USAGE": "power_w",
     }
     additive = {"output_tok_s", "input_tok_s", "requests_running", "requests_waiting"}
+    stable_activity = {
+        "vllm:num_requests_running", "vllm:num_requests_waiting",
+        "llamacpp:requests_processing", "llamacpp:requests_deferred",
+    }
     out: dict[str, float] = {}
     for src, dst in aliases.items():
         if src not in vals:
+            continue
+        # The adapter keeps raw TensorFold samples in the response for
+        # diagnostics while also emitting the stable vllm:* contract.  Do
+        # not add the same activity gauge twice when both are present.
+        if src.startswith("tensorfold") and dst in {"requests_running", "requests_waiting"} \
+                and any(name in vals for name in stable_activity):
             continue
         value = vals[src] * (100 if dst == "kv_cache_pct" and vals[src] <= 1 else 1)
         # A site may expose llama.cpp and vLLM endpoints at the same time.
@@ -972,7 +1003,8 @@ def _finish_metrics(vals: dict) -> dict:
     out.update(_derive_metrics(vals))
     if out:
         out["runtime"] = "vllm" if any(k.startswith("vllm:") for k in vals) else \
-            ("llamacpp" if any(k.startswith("llamacpp:") for k in vals) else "")
+            ("llamacpp" if any(k.startswith("llamacpp:") for k in vals) else \
+             ("tensorfold" if any(k.startswith("tensorfold") for k in vals) else ""))
     return out
 
 
@@ -1015,7 +1047,11 @@ async def site_metrics(site: dict, deps: list[dict]) -> dict:
                 name, raw = line.split(None, 1)
                 try:
                     metric_name = name.split("{")[0]
-                    direct_vals[metric_name] = direct_vals.get(metric_name, 0.0) + float(raw)
+                    # Prometheus samples may carry an inline comment.  Keep
+                    # parsing tolerant so profile exporters can add HELP
+                    # metadata without hiding the actual gauge value.
+                    sample_value = raw.split("#", 1)[0].strip()
+                    direct_vals[metric_name] = direct_vals.get(metric_name, 0.0) + float(sample_value)
                 except ValueError:
                     continue
         except (httpx.HTTPError, ValueError):

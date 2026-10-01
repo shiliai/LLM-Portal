@@ -54,6 +54,13 @@ The MTP/TAR acceptance panel therefore shows a conservative, monotonic value:
 acceptance rate is always ≥ what the panel reports. If a future engine exposes
 native accepted/drafted counters, add them to `MAP` and delete the log tail.
 
+TensorFold profile compatibility is handled at the adapter boundary. Both the
+legacy underscore names (`tensorfold_requests_running`) and the Prometheus
+namespace names (`tensorfold:requests_running`) are normalized before mapping;
+the same applies to the `tensorfold_health:*` counters. A profile switch does
+not require a vmagent or dashboard change, and overlapping health counters are
+treated as fallbacks so they are not counted twice.
+
 ## Engine swap checklist
 
 1. New engine serves `:8890` (keep the historical port; LiteLLM deployments and
