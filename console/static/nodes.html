@@ -92,7 +92,7 @@
     });
     var out = await Promise.all(jobs);
     nodes.forEach(function (s, i) {
-      st.hist[s.name] = {
+      var hist = {
         speed: (out[i * 6] || {}).points || [],
         pre: (out[i * 6 + 1] || {}).points || [],
         kv: (out[i * 6 + 2] || {}).points || [],
@@ -100,6 +100,26 @@
         temp: (out[i * 6 + 4] || {}).points || [],
         power: (out[i * 6 + 5] || {}).points || []
       };
+      // The range endpoint is sampled independently from /overview.  Append
+      // the same live snapshot used by the tiles so the rightmost chart point
+      // cannot show the previous 10-second interval beside newer card values.
+      var m = s.metrics || {};
+      var now = Math.floor(Date.now() / 1000);
+      function appendLive(points, value) {
+        if (value == null || !isFinite(Number(value))) return points;
+        var next = (points || []).slice();
+        var point = [now, Number(value)];
+        if (next.length && next[next.length - 1][0] >= now) next[next.length - 1] = point;
+        else next.push(point);
+        return next;
+      }
+      hist.speed = appendLive(hist.speed, m.output_tok_s);
+      hist.pre = appendLive(hist.pre, m.input_tok_s);
+      hist.kv = appendLive(hist.kv, m.kv_cache_pct);
+      hist.gpu = appendLive(hist.gpu, m.gpu_util_pct);
+      hist.temp = appendLive(hist.temp, m.gpu_temp_c);
+      hist.power = appendLive(hist.power, m.power_w);
+      st.hist[s.name] = hist;
     });
   }
 

@@ -1598,6 +1598,46 @@ prompt_tokens_per_second 40
     assert calls == [f"http://{host}:8004/metrics", f"http://{host}:8890/metrics"]
 
 
+def test_site_metrics_keeps_vm_snapshot_consistent_with_trends(console_admin, monkeypatch):
+    class _Resp:
+        status_code = 200
+        text = """\
+llamacpp:requests_processing 1
+llamacpp:requests_deferred 0
+llamacpp:predicted_tokens_seconds 10
+llamacpp:prompt_tokens_seconds 20
+"""
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            return False
+        async def get(self, url, **kwargs):
+            return _Resp()
+
+    async def fake_vm(_site):
+        return {"output_tok_s": 42.0, "input_tok_s": 43.0,
+                "requests_running": 2.0, "requests_waiting": 3.0,
+                "gpu_util_pct": 88.0, "runtime": "llamacpp"}
+
+    monkeypatch.setattr(console_admin, "VM_URL", "http://vm-stub.invalid")
+    monkeypatch.setattr(console_admin.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(console_admin, "vm_site_metrics", fake_vm)
+    site = {"name": "workstation", "transport": "wireguard", "wg_ip": "test-node"}
+    deps = [{"litellm_params": {"api_base": "http://test-node:18001/v1"}}]
+
+    out = asyncio.run(console_admin.site_metrics(site, deps))
+
+    assert out["output_tok_s"] == 42.0
+    assert out["input_tok_s"] == 43.0
+    assert out["requests_running"] == 2.0
+    assert out["requests_waiting"] == 3.0
+    assert out["gpu_util_pct"] == 88.0
+
+
 def test_workstation_display_name_is_x570(console_admin):
     assert console_admin.site_display_name("workstation") == "x570"
     assert console_admin.site_display_name("m2s2NasUbuntuVM-shili-dev") == "m2s2NasUbuntuVM-shili-dev"
@@ -1631,7 +1671,7 @@ def test_metrics_range_rejects_unknown_metric_and_hours(console_admin, monkeypat
 
 def test_metrics_range_returns_points_from_vm(console_admin, monkeypatch):
     install_litellm_stub(monkeypatch, _handler)
-    seen = {}
+    seen = []
 
     class _Resp:
         status_code = 200
@@ -1647,7 +1687,7 @@ def test_metrics_range_returns_points_from_vm(console_admin, monkeypatch):
         async def __aenter__(self): return self
         async def __aexit__(self, *a): return False
         async def get(self, url, params=None):
-            seen["url"], seen["params"] = url, params
+            seen.append((url, params))
             return _Resp()
 
     monkeypatch.setattr(console_admin, "VM_URL", "http://vm-stub.invalid")
@@ -1657,11 +1697,12 @@ def test_metrics_range_returns_points_from_vm(console_admin, monkeypatch):
     assert resp.status_code == 200
     body = resp.json()
     assert body["points"] == [[1, 40.75], [2, 43.5]]   # 双实例均值
-    assert seen["params"]["step"] == 60
-    query = seen["params"]["query"]
-    # Adapter interval gauges are the primary source.  Counter irate fragments
-    # remain fallbacks, but must not precede the gauge and win with a VM scalar 0.
-    assert query.index("avg(llamacpp:predicted_tokens_seconds") < query.index("sum(irate(llamacpp:tokens_predicted_total")
+    assert len(seen) == 1
+    assert seen[0][1]["step"] == 10
+    query = seen[0][1]["query"]
+    # The adapter interval gauge is the primary source. Counter irate fragments
+    # are queried only when that source has no samples.
+    assert query == "avg(llamacpp:predicted_tokens_seconds{__name__=~\"(llamacpp:[a-z_0-9]+|vllm:[a-z_0-9]+|tensorfold(_health)?:[a-z_0-9]+|DCGM_FI_DEV_[A-Z_0-9]+)\",site=~\"^gb10(-llm)?$\"})"
 
 
 def test_usage_api_returns_node_endpoint_group_dimensions(console_admin, monkeypatch):

@@ -851,7 +851,7 @@ async def direct_health(sites: list[dict]) -> dict[str, bool]:
 # - 直连抓取：节点 /metrics（llama.cpp / vLLM 导出器）
 # - VM 回退：node-agent(vmagent+DCGM) remote_write 的中央库，带 site/instance 外部标签
 # 缺失指标一律不进结果 dict，前端渲染 "—"，绝不用 0 伪造。
-_VM_METRIC_RE = r"(llamacpp:[a-z_0-9]+|vllm:[a-z_0-9]+|DCGM_FI_DEV_[A-Z_0-9]+)"
+_VM_METRIC_RE = r"(llamacpp:[a-z_0-9]+|vllm:[a-z_0-9]+|tensorfold(_health)?:[a-z_0-9]+|DCGM_FI_DEV_[A-Z_0-9]+)"
 
 # Keep the historical registration key usable while showing the hardware's
 # actual name in the dashboard. The key is still used for API filters and VM
@@ -912,6 +912,12 @@ def _derive_metrics(vals: dict) -> dict:
     if spec is None:
         spec = _ratio(vals, "vllm:spec_decode_num_accepted_tokens_total",
                       "vllm:spec_decode_num_draft_tokens_total")
+    if spec is None:
+        spec = _ratio(vals, "tensorfold:mtp_accepted_total",
+                      "tensorfold:mtp_drafted_total")
+    if spec is None:
+        spec = _ratio(vals, "tensorfold_mtp_accepted_total",
+                      "tensorfold_mtp_drafted_total")
     if spec is not None:
         out["spec_accept_pct"] = round(spec, 1)
     cached = vals.get("llamacpp:prompt_tokens_cached_total")
@@ -927,6 +933,12 @@ def _derive_metrics(vals: dict) -> dict:
         hit = _ratio(vals, "vllm:prefix_cache_hits_total", "vllm:prefix_cache_queries_total")
     if hit is None:
         hit = _ratio(vals, "tensorfold_cached_tokens_total", "tensorfold_prompt_tokens_total")
+    if hit is None:
+        hit = _ratio(vals, "tensorfold:cached_tokens_total", "tensorfold:prompt_tokens_total")
+    if hit is None:
+        hit = _ratio(vals, "tensorfold_health:cached_tokens_total", "tensorfold:prompt_tokens_total")
+    if hit is None:
+        hit = _ratio(vals, "tensorfold_health_cached_tokens_total", "tensorfold_prompt_tokens_total")
     if hit is not None:
         out["cache_hit_pct"] = round(hit, 1)
     return out
@@ -941,6 +953,15 @@ def _finish_metrics(vals: dict) -> dict:
         "vllm:kv_cache_usage_perc": "kv_cache_pct",
         "vllm:num_requests_running": "requests_running",
         "vllm:num_requests_waiting": "requests_waiting",
+        # TensorFold profile exporters changed from underscore names to
+        # Prometheus namespace names.  Accept both at the Portal boundary so
+        # a profile switch cannot blank the activity and queue cards.
+        "tensorfold:requests_running": "requests_running",
+        "tensorfold_requests_running": "requests_running",
+        "tensorfold:requests_waiting": "requests_waiting",
+        "tensorfold_requests_waiting": "requests_waiting",
+        "tensorfold:kv_cache_usage_ratio": "kv_cache_pct",
+        "tensorfold_kv_cache_usage_ratio": "kv_cache_pct",
         # TensorFold's native endpoint remains the LiteLLM target (:8890).
         # Recognize its gauges directly while the VM adapter supplies the
         # richer counter-derived throughput contract.
@@ -956,9 +977,19 @@ def _finish_metrics(vals: dict) -> dict:
         "DCGM_FI_DEV_POWER_USAGE": "power_w",
     }
     additive = {"output_tok_s", "input_tok_s", "requests_running", "requests_waiting"}
+    stable_activity = {
+        "vllm:num_requests_running", "vllm:num_requests_waiting",
+        "llamacpp:requests_processing", "llamacpp:requests_deferred",
+    }
     out: dict[str, float] = {}
     for src, dst in aliases.items():
         if src not in vals:
+            continue
+        # The adapter keeps raw TensorFold samples in the response for
+        # diagnostics while also emitting the stable vllm:* contract.  Do
+        # not add the same activity gauge twice when both are present.
+        if src.startswith("tensorfold") and dst in {"requests_running", "requests_waiting"} \
+                and any(name in vals for name in stable_activity):
             continue
         value = vals[src] * (100 if dst == "kv_cache_pct" and vals[src] <= 1 else 1)
         # A site may expose llama.cpp and vLLM endpoints at the same time.
@@ -972,7 +1003,8 @@ def _finish_metrics(vals: dict) -> dict:
     out.update(_derive_metrics(vals))
     if out:
         out["runtime"] = "vllm" if any(k.startswith("vllm:") for k in vals) else \
-            ("llamacpp" if any(k.startswith("llamacpp:") for k in vals) else "")
+            ("llamacpp" if any(k.startswith("llamacpp:") for k in vals) else \
+             ("tensorfold" if any(k.startswith("tensorfold") for k in vals) else ""))
     return out
 
 
@@ -1015,27 +1047,33 @@ async def site_metrics(site: dict, deps: list[dict]) -> dict:
                 name, raw = line.split(None, 1)
                 try:
                     metric_name = name.split("{")[0]
-                    direct_vals[metric_name] = direct_vals.get(metric_name, 0.0) + float(raw)
+                    # Prometheus samples may carry an inline comment.  Keep
+                    # parsing tolerant so profile exporters can add HELP
+                    # metadata without hiding the actual gauge value.
+                    sample_value = raw.split("#", 1)[0].strip()
+                    direct_vals[metric_name] = direct_vals.get(metric_name, 0.0) + float(sample_value)
                 except ValueError:
                     continue
         except (httpx.HTTPError, ValueError):
             pass
     if direct_vals:
         out = _finish_metrics(direct_vals)
-    # Direct node access is useful for low-latency values, but the central
-    # VictoriaMetrics store is the authoritative fallback for nodes whose
-    # model endpoint is not reachable from consoled (for example gb10).
+    # Use one source for each field when VM has it.  Mixing a low-latency direct
+    # gauge with a VM sample makes a card internally inconsistent (for example
+    # direct input=0 beside a non-zero VM output or activity count).  VM is also
+    # the source used by the trend endpoint, so it is the canonical dashboard
+    # snapshot; direct metrics remain the fallback for fields VM does not have.
     if VM_URL:
         vm_out = await vm_site_metrics(str(site.get("name") or "").strip())
         if vm_out:
-            # VM 独有字段（DCGM 温度/功耗/利用率只经 node-agent 入库）与直连值合并；
-            # 直连值更新鲜，同名字段以直连为准；llama.cpp 空闲时吞吐 gauge
-            # 会归零，此时保留 VM 端由计数器 rate 派生的值。
-            for key, value in (out or {}).items():
-                if key in {"output_tok_s", "input_tok_s"} and value == 0 and vm_out.get(key) is not None:
+            merged = dict(out or {})
+            for key, value in vm_out.items():
+                # A VM response containing only DCGM fields has no runtime
+                # identity; preserve the direct exporter identity in that case.
+                if key == "runtime" and not value:
                     continue
-                vm_out[key] = value
-            return vm_out
+                merged[key] = value
+            return merged
     return out or {}
 
 
@@ -1099,6 +1137,27 @@ async def vm_site_metrics(site_name: str) -> dict:
         if vals and "vllm:prompt_tokens_total" in vals:
             rate_in = await vm_query_instant(
                 "sum(" + _TPS_RATE_FUNCTION + "(vllm:prompt_tokens_total" +
+                matcher[matcher.index("{"):] + "[" + _TPS_RATE_WINDOW + "]))")
+            if rate_in:
+                vals["prompt_tokens_per_second"] = next(iter(rate_in.values()))
+        # During a profile rollout vmagent may contain the raw TensorFold
+        # counters before the adapter has been refreshed.  Keep the same
+        # low-latency rate fallback for that window so activity and throughput
+        # do not disappear between the two deployments.
+        raw_output_counter = next((name for name in (
+            "tensorfold:generation_tokens_total",
+            "tensorfold_health:completion_tokens_total") if name in vals), None)
+        if raw_output_counter:
+            rate = await vm_query_instant(
+                "sum(" + _TPS_RATE_FUNCTION + "(" + raw_output_counter +
+                matcher[matcher.index("{"):] + "[" + _TPS_RATE_WINDOW + "]))")
+            if rate:
+                vals["generation_tokens_per_second"] = next(iter(rate.values()))
+        raw_prompt_counter = "tensorfold:prompt_tokens_total" if \
+            "tensorfold:prompt_tokens_total" in vals else None
+        if raw_prompt_counter:
+            rate_in = await vm_query_instant(
+                "sum(" + _TPS_RATE_FUNCTION + "(" + raw_prompt_counter +
                 matcher[matcher.index("{"):] + "[" + _TPS_RATE_WINDOW + "]))")
             if rate_in:
                 vals["prompt_tokens_per_second"] = next(iter(rate_in.values()))
@@ -1276,7 +1335,9 @@ async def api_metrics_query(request: Request) -> Response:
         return jerr("metrics unavailable", 502)
 
 
-_RANGE_HOURS = {1: 60, 6: 300, 24: 600, 168: 3600}  # 窗口小时 → 步长秒（≤168 点）
+# Keep the live one-hour view responsive to short inference bursts.  Longer
+# windows stay coarser so a multi-node page does not request an oversized range.
+_RANGE_HOURS = {1: 10, 6: 300, 24: 600, 168: 3600}  # 窗口小时 → 步长秒
 
 
 async def api_metrics_range(request: Request) -> Response:
@@ -1296,21 +1357,30 @@ async def api_metrics_range(request: Request) -> Response:
     step = _RANGE_HOURS.get(hours)
     if not step:
         return jerr("hours must be one of 1/6/24/168", 400)
-    matcher = vm_site_matcher(site)
-    expr = " or ".join("(" + frag.replace("{M}", matcher) + ")"
-                       for frag in LOGICAL_RANGE_METRICS[metric])
     end = int(time.time())
     start = end - hours * 3600
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            r = await client.get(VM_URL.rstrip("/") + "/api/v1/query_range",
-                                 params={"query": expr, "start": start, "end": end, "step": step})
-        if r.status_code != 200:
-            return jerr("metrics unavailable", 502)
-        result = (r.json().get("data") or {}).get("result") or []
+            result = []
+            matcher = vm_site_matcher(site)
+            # Keep the same source priority as the live card.  Querying all
+            # alternatives with PromQL `or` and averaging the returned series
+            # blended llama.cpp and adapter samples when both profiles existed.
+            for frag in LOGICAL_RANGE_METRICS[metric]:
+                expr = frag.replace("{M}", matcher)
+                r = await client.get(VM_URL.rstrip("/") + "/api/v1/query_range",
+                                     params={"query": expr, "start": start,
+                                             "end": end, "step": step})
+                if r.status_code != 200:
+                    return jerr("metrics unavailable", 502)
+                candidate = (r.json().get("data") or {}).get("result") or []
+                if any(s.get("values") for s in candidate):
+                    result = candidate
+                    break
     except (httpx.HTTPError, ValueError):
         return jerr("metrics unavailable", 502)
-    # 单序列（or 合并后只命中一路）；跨实例多序列时按时间戳取均值
+    # 跨实例多序列时按时间戳取均值；每个 query fragment 已在 VM 侧完成
+    # 同一来源的聚合，因此不会把不同 profile 的值再混平均。
     by_ts: dict[int, list[float]] = {}
     for s in result:
         for ts, v in s.get("values") or []:
