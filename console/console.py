@@ -1058,20 +1058,22 @@ async def site_metrics(site: dict, deps: list[dict]) -> dict:
             pass
     if direct_vals:
         out = _finish_metrics(direct_vals)
-    # Direct node access is useful for low-latency values, but the central
-    # VictoriaMetrics store is the authoritative fallback for nodes whose
-    # model endpoint is not reachable from consoled (for example gb10).
+    # Use one source for each field when VM has it.  Mixing a low-latency direct
+    # gauge with a VM sample makes a card internally inconsistent (for example
+    # direct input=0 beside a non-zero VM output or activity count).  VM is also
+    # the source used by the trend endpoint, so it is the canonical dashboard
+    # snapshot; direct metrics remain the fallback for fields VM does not have.
     if VM_URL:
         vm_out = await vm_site_metrics(str(site.get("name") or "").strip())
         if vm_out:
-            # VM 独有字段（DCGM 温度/功耗/利用率只经 node-agent 入库）与直连值合并；
-            # 直连值更新鲜，同名字段以直连为准；llama.cpp 空闲时吞吐 gauge
-            # 会归零，此时保留 VM 端由计数器 rate 派生的值。
-            for key, value in (out or {}).items():
-                if key in {"output_tok_s", "input_tok_s"} and value == 0 and vm_out.get(key) is not None:
+            merged = dict(out or {})
+            for key, value in vm_out.items():
+                # A VM response containing only DCGM fields has no runtime
+                # identity; preserve the direct exporter identity in that case.
+                if key == "runtime" and not value:
                     continue
-                vm_out[key] = value
-            return vm_out
+                merged[key] = value
+            return merged
     return out or {}
 
 
@@ -1353,21 +1355,30 @@ async def api_metrics_range(request: Request) -> Response:
     step = _RANGE_HOURS.get(hours)
     if not step:
         return jerr("hours must be one of 1/6/24/168", 400)
-    matcher = vm_site_matcher(site)
-    expr = " or ".join("(" + frag.replace("{M}", matcher) + ")"
-                       for frag in LOGICAL_RANGE_METRICS[metric])
     end = int(time.time())
     start = end - hours * 3600
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            r = await client.get(VM_URL.rstrip("/") + "/api/v1/query_range",
-                                 params={"query": expr, "start": start, "end": end, "step": step})
-        if r.status_code != 200:
-            return jerr("metrics unavailable", 502)
-        result = (r.json().get("data") or {}).get("result") or []
+            result = []
+            matcher = vm_site_matcher(site)
+            # Keep the same source priority as the live card.  Querying all
+            # alternatives with PromQL `or` and averaging the returned series
+            # blended llama.cpp and adapter samples when both profiles existed.
+            for frag in LOGICAL_RANGE_METRICS[metric]:
+                expr = frag.replace("{M}", matcher)
+                r = await client.get(VM_URL.rstrip("/") + "/api/v1/query_range",
+                                     params={"query": expr, "start": start,
+                                             "end": end, "step": step})
+                if r.status_code != 200:
+                    return jerr("metrics unavailable", 502)
+                candidate = (r.json().get("data") or {}).get("result") or []
+                if any(s.get("values") for s in candidate):
+                    result = candidate
+                    break
     except (httpx.HTTPError, ValueError):
         return jerr("metrics unavailable", 502)
-    # 单序列（or 合并后只命中一路）；跨实例多序列时按时间戳取均值
+    # 跨实例多序列时按时间戳取均值；每个 query fragment 已在 VM 侧完成
+    # 同一来源的聚合，因此不会把不同 profile 的值再混平均。
     by_ts: dict[int, list[float]] = {}
     for s in result:
         for ts, v in s.get("values") or []:
