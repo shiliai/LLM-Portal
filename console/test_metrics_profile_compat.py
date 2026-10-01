@@ -41,3 +41,9 @@ def test_finish_metrics_deduplicates_raw_tensorfold_activity_with_adapter_contra
     })
     assert out["requests_running"] == 2
     assert out["requests_waiting"] == 1
+
+
+def test_vm_matcher_includes_raw_tensorfold_namespace(tmp_path):
+    console = _load_console(tmp_path)
+    matcher = console.vm_site_matcher("gb10")
+    assert "tensorfold(_health)?" in matcher

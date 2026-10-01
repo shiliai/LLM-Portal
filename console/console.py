@@ -851,7 +851,7 @@ async def direct_health(sites: list[dict]) -> dict[str, bool]:
 # - 直连抓取：节点 /metrics（llama.cpp / vLLM 导出器）
 # - VM 回退：node-agent(vmagent+DCGM) remote_write 的中央库，带 site/instance 外部标签
 # 缺失指标一律不进结果 dict，前端渲染 "—"，绝不用 0 伪造。
-_VM_METRIC_RE = r"(llamacpp:[a-z_0-9]+|vllm:[a-z_0-9]+|DCGM_FI_DEV_[A-Z_0-9]+)"
+_VM_METRIC_RE = r"(llamacpp:[a-z_0-9]+|vllm:[a-z_0-9]+|tensorfold(_health)?:[a-z_0-9]+|DCGM_FI_DEV_[A-Z_0-9]+)"
 
 # Keep the historical registration key usable while showing the hardware's
 # actual name in the dashboard. The key is still used for API filters and VM
@@ -1135,6 +1135,27 @@ async def vm_site_metrics(site_name: str) -> dict:
         if vals and "vllm:prompt_tokens_total" in vals:
             rate_in = await vm_query_instant(
                 "sum(" + _TPS_RATE_FUNCTION + "(vllm:prompt_tokens_total" +
+                matcher[matcher.index("{"):] + "[" + _TPS_RATE_WINDOW + "]))")
+            if rate_in:
+                vals["prompt_tokens_per_second"] = next(iter(rate_in.values()))
+        # During a profile rollout vmagent may contain the raw TensorFold
+        # counters before the adapter has been refreshed.  Keep the same
+        # low-latency rate fallback for that window so activity and throughput
+        # do not disappear between the two deployments.
+        raw_output_counter = next((name for name in (
+            "tensorfold:generation_tokens_total",
+            "tensorfold_health:completion_tokens_total") if name in vals), None)
+        if raw_output_counter:
+            rate = await vm_query_instant(
+                "sum(" + _TPS_RATE_FUNCTION + "(" + raw_output_counter +
+                matcher[matcher.index("{"):] + "[" + _TPS_RATE_WINDOW + "]))")
+            if rate:
+                vals["generation_tokens_per_second"] = next(iter(rate.values()))
+        raw_prompt_counter = "tensorfold:prompt_tokens_total" if \
+            "tensorfold:prompt_tokens_total" in vals else None
+        if raw_prompt_counter:
+            rate_in = await vm_query_instant(
+                "sum(" + _TPS_RATE_FUNCTION + "(" + raw_prompt_counter +
                 matcher[matcher.index("{"):] + "[" + _TPS_RATE_WINDOW + "]))")
             if rate_in:
                 vals["prompt_tokens_per_second"] = next(iter(rate_in.values()))
