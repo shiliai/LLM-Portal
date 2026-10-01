@@ -1698,7 +1698,7 @@ def test_metrics_range_returns_points_from_vm(console_admin, monkeypatch):
     body = resp.json()
     assert body["points"] == [[1, 40.75], [2, 43.5]]   # 双实例均值
     assert len(seen) == 1
-    assert seen[0][1]["step"] == 60
+    assert seen[0][1]["step"] == 10
     query = seen[0][1]["query"]
     # The adapter interval gauge is the primary source. Counter irate fragments
     # are queried only when that source has no samples.

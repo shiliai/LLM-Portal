@@ -1335,7 +1335,9 @@ async def api_metrics_query(request: Request) -> Response:
         return jerr("metrics unavailable", 502)
 
 
-_RANGE_HOURS = {1: 60, 6: 300, 24: 600, 168: 3600}  # 窗口小时 → 步长秒（≤168 点）
+# Keep the live one-hour view responsive to short inference bursts.  Longer
+# windows stay coarser so a multi-node page does not request an oversized range.
+_RANGE_HOURS = {1: 10, 6: 300, 24: 600, 168: 3600}  # 窗口小时 → 步长秒
 
 
 async def api_metrics_range(request: Request) -> Response:
