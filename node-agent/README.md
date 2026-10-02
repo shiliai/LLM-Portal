@@ -38,6 +38,17 @@ Docker) work unchanged.
 Keep labels low cardinality (`site`, `instance`, and exporter labels). Never
 add request IDs, API keys, or user identifiers to metric labels.
 
+### nasubuntu dual-write
+
+The GB10 worker can retain the existing Tokyo archive and send a second copy to
+the nasubuntu Portal over the private LAN. On nasubuntu, set `LAN_VPS_IP` in
+`vps/.env` and start the VictoriaMetrics service with
+`vps/docker-compose.nasubuntu-vm-lan.yml`. On the worker, set
+`PORTAL_REMOTE_WRITE_URL` and start vmagent with
+`docker-compose.portal-dualwrite.yml` in addition to the base compose file.
+The overlay keeps the original WireGuard target, and vmagent buffers each target
+independently on its persistent queue when one endpoint is unavailable.
+
 ## Metrics adapter (engine swap isolation)
 
  freezes the dashboard contract ( series) behind a

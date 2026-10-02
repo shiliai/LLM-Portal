@@ -1029,6 +1029,42 @@ def test_usage_logs_api_passes_filters_to_database(console_admin, monkeypatch):
                     "status": "failure", "q": "timeout"}
 
 
+def test_usage_logs_api_normalizes_client_ip_and_returns_client(console_admin, monkeypatch):
+    install_litellm_stub(monkeypatch, _handler)
+
+    async def fake_logs(*args, **kwargs):
+        return ([{
+            "request_id": "req-client-1", "startTime": "2026-09-18T10:00:00",
+            "api_key": "a" * 64, "model": "qwen", "call_type": "acompletion",
+            "api_base": "http://10.77.0.11:8890/v1", "effort": "",
+            "prompt_tokens": 1, "completion_tokens": 2, "cached_tokens": 0,
+            "tft_ms": 10, "duration_ms": 20, "status": "success", "session_id": "",
+            "ip": "192.168.88.9, 192.168.88.1", "client": "User-Agent: OpenAI/Python 1.2",
+            "error": "",
+        }], None)
+
+    async def fake_aliases():
+        return {}
+
+    async def fake_meta():
+        return {}, []
+
+    async def fake_nodes():
+        return {}
+
+    monkeypatch.setattr(console_admin, "usage_logs", fake_logs)
+    monkeypatch.setattr(console_admin, "usage_aliases", fake_aliases)
+    monkeypatch.setattr(console_admin, "_usage_key_meta", fake_meta)
+    monkeypatch.setattr(console_admin, "_usage_node_map", fake_nodes)
+    client, hdr = _admin_login(console_admin)
+    response = client.get("/console/api/usage/logs?days=1&limit=20", headers=hdr)
+
+    assert response.status_code == 200
+    row = response.json()["logs"][0]
+    assert row["ip"] == "192.168.88.9"
+    assert row["client"] == "OpenAI/Python 1.2"
+
+
 def test_mcp_registration_uses_accessible_page_confirmation_without_native_dialogs():
     source = (CONSOLE_DIR / "static" / "mcp.html").read_text()
     assert "confirm(" not in source

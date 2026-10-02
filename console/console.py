@@ -1389,6 +1389,19 @@ def key_last4(row: dict) -> str:
     return f"…{ak[-4:]}" if len(ak) >= 8 else (ak or "—")
 
 
+def first_forwarded_ip(value) -> str:
+    """显示 X-Forwarded-For 首跳，隐藏后续反向代理/网关地址。"""
+    return str(value or "").split(",", 1)[0].strip()
+
+
+def client_label(value) -> str:
+    """把 request_tags 中的 User-Agent 标签变成紧凑的客户端名称。"""
+    text = str(value or "").strip()
+    if text.lower().startswith("user-agent:"):
+        text = text.split(":", 1)[1].strip()
+    return text[:200]
+
+
 def row_cached(row: dict) -> int:
     """缓存读取 token（vLLM/OpenAI：prompt_tokens_details.cached_tokens；Anthropic：cache_read_input_tokens）。"""
     uo = (row.get("metadata") or {}).get("usage_object") or {}
@@ -2128,6 +2141,8 @@ async def api_usage_logs(request: Request) -> Response:
         r["ts"]=iso_to_cst(str(r.pop("startTime"))); r["key"]=key_last4({"api_key":ak})
         r["alias"]=aliases.get(ak) or ("管理员（master key）" if ak=="litellm_proxy_master_key" else "已删除密钥")
         r["group"]=group_of.get(ak, "default"); r["node"]=node; r["endpoint"]=endpoint
+        r["ip"] = first_forwarded_ip(r.get("ip"))
+        r["client"] = client_label(r.get("client"))
         r["status"]="failure" if r["status"]=="failure" else "ok"
     return JSONResponse({"logs": rows[:2000], "count": len(rows),
                          "next_cursor": next_cursor, "has_more": bool(next_cursor)})

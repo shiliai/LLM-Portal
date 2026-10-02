@@ -1,0 +1,7 @@
+services:
+  victoriametrics:
+    ports:
+      # Keep the WireGuard endpoint and add the private LAN endpoint used by
+      # GB10 worker dual-write. LAN_VPS_IP must be set in the deployment .env.
+      - "${WG_VPS_IP:-10.77.0.1}:8428:8428"
+      - "${LAN_VPS_IP:?set LAN_VPS_IP}:8428:8428"
