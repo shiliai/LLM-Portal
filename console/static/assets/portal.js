@@ -39,6 +39,28 @@
     pageTimeouts.forEach(nativeClearTimeout); pageTimeouts = [];
   }
 
+  /* Page modules may carry small head-level style blocks.  SPA navigation only
+     imports <template id="page">, so copy those styles into the live document
+     and remove the previous page's block to keep navigation deterministic. */
+  var pageStyleAttr = 'data-pf-page-style';
+  function markInitialPageStyles() {
+    document.head.querySelectorAll('style').forEach(function (style) {
+      style.setAttribute(pageStyleAttr, '1');
+    });
+  }
+  function replacePageStyles(parsed) {
+    document.head.querySelectorAll('style[' + pageStyleAttr + ']').forEach(function (style) {
+      style.remove();
+    });
+    if (!parsed.head) return;
+    parsed.head.querySelectorAll('style').forEach(function (source) {
+      var style = document.createElement('style');
+      style.setAttribute(pageStyleAttr, '1');
+      style.textContent = source.textContent;
+      document.head.appendChild(style);
+    });
+  }
+
   /* ---------- 数据请求助手 ---------- */
   async function pfApi(method, path, body) {
     var opt = { method: method, headers: { 'X-Requested-With': 'XMLHttpRequest' } };
@@ -201,6 +223,7 @@
       if (!content) throw new Error('控制台壳未初始化');
       window.dispatchEvent(new CustomEvent('pfpagehide'));
       disposePage();
+      replacePageStyles(parsed);
       content.replaceChildren(document.importNode(tpl.content, true));
       document.body.dataset.page = pageKey;
       var item = null;
@@ -366,6 +389,7 @@
 
   /* ---------- 启动 ---------- */
   document.addEventListener('DOMContentLoaded', async function () {
+    markInitialPageStyles();
     var pageKey = document.body.dataset.page;
     if (pageKey) {                                    // 有壳页面先过会话守卫
       try {
