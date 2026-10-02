@@ -195,7 +195,7 @@
               : partial ? '<span class="pf-chip warn">exporter 部分</span>' : '') +
         '<span class="pf-desc" style="margin-left:auto">最近采集 <span style="color:var(--accent)">' + (online ? '刚刚' : '—') + '</span></span>' +
       '</div>' +
-      '<div class="pf-metric-grid" style="grid-template-columns:repeat(10,1fr)" id="nm-' + esc(key) + '"></div>' +
+      '<div class="pf-metric-grid" style="grid-template-columns:repeat(6,1fr)" id="nm-' + esc(key) + '"></div>' +
       '<div class="pf-grid" style="grid-template-columns:1fr 1fr">' +
         '<div><div class="pf-desc" style="font-size:11px;margin:2px 0 4px">吞吐趋势 · 输出 / Prefill tok/s</div><div id="ch-nd-tps-' + esc(key) + '" class="pf-chart h200"></div></div>' +
         '<div><div class="pf-desc" style="font-size:11px;margin:2px 0 4px">资源趋势 · KV / GPU %</div><div id="ch-nd-res-' + esc(key) + '" class="pf-chart h200"></div></div>' +
