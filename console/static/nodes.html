@@ -35,8 +35,9 @@
   .nd-stat-sub { margin-top:7px; color:var(--muted); font:10px var(--mono); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .nd-stat-sub.good { color:var(--green); }
   .nd-stat-sub.warn { color:var(--amber); }
-  .nd-mini-chart { height:66px; margin-top:7px; }
-  .nd-mini-chart svg { width:100%; height:100%; display:block; }
+  .nd-mini-chart { height:58px; margin-top:7px; }
+  .nd-mini-chart svg { width:100%; height:42px; display:block; }
+  .nd-mini-axis { display:flex; justify-content:space-between; margin-top:2px; color:var(--muted); font:9px var(--mono); }
   .nd-chart { height:220px; }
   .nd-chart.short { height:168px; }
   .nd-resource-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:7px; }
@@ -327,11 +328,15 @@
       '<div id="' + id + '" class="pf-chart nd-chart"></div></div>';
   }
 
+  function rangeLabel() {
+    return st.hours >= 24 ? Math.round(st.hours / 24) + 'd' : st.hours + 'h';
+  }
+
   function ndStatPanel(label, value, sub, cls, mini) {
     return '<div class="nd-panel nd-stat-panel' + (cls ? ' ' + cls : '') + '">' +
       '<div class="nd-panel-head"><span>' + label + '</span><small>now</small><span class="nd-panel-menu" aria-hidden="true">⋮</span></div>' +
       '<div class="nd-stat">' + value + '</div><div class="nd-stat-sub">' + sub + '</div>' +
-      (mini ? '<div class="nd-mini-chart">' + mini + '</div>' : '') + '</div>';
+      (mini ? '<div class="nd-mini-chart">' + mini + '<div class="nd-mini-axis"><span>' + rangeLabel() + ' ago</span><span>now</span></div></div>' : '') + '</div>';
   }
 
   function inferencePanels(s) {

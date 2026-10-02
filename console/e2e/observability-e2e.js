@@ -160,6 +160,7 @@ async function installFixtures(page, seen) {
   const sharedText = await shared.innerText();
   if (!sharedText.includes('86.4') || !/5\s*\/\s*1/.test(sharedText)) throw new Error('GB10 cluster inference metrics missing');
   if (await shared.locator('.nd-stat-panel').count() !== 5) throw new Error('GB10 inference metrics must render once at cluster level');
+  if (await shared.locator('.nd-mini-axis').count() < 3 || !(await shared.locator('.nd-mini-axis').first().innerText()).includes('1h ago')) throw new Error('stat panel mini charts must expose a time axis');
   if (await gb10Header.locator('.nd-stat-panel').count() !== 0 || await gb10Worker.locator('.nd-stat-panel').count() !== 0) throw new Error('GB10 members must not duplicate inference metrics');
   if (!workerText.includes('exporter 未提供内存指标')) throw new Error('GB10 Worker no-data memory state missing');
   if (Number(process.env.VIEWPORT_WIDTH || 1720) > 980) {
@@ -194,6 +195,7 @@ async function installFixtures(page, seen) {
       !seen.range.some(x => x.startsWith('gpu_temp_c@gb10@gb10-head'))) {
     throw new Error('GB10 inference history must be cluster-scoped while resources remain member-scoped: ' + seen.range.join(','));
   }
+  if (!(await page.locator('#ni-gb10 .nd-mini-axis').first().innerText()).includes('6h ago')) throw new Error('mini chart time axis must follow selected range');
   console.log('nodes range:', seen.range[0]);
   console.log('== 11. row 折叠/展开:');
   const collapse = page.locator('.nd-collapse').first();
