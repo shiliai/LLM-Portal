@@ -49,6 +49,13 @@ the nasubuntu Portal over the private LAN. On nasubuntu, set `LAN_VPS_IP` in
 The overlay keeps the original WireGuard target, and vmagent buffers each target
 independently on its persistent queue when one endpoint is unavailable.
 
+GB10 worker is a TensorFold rank-1 process and intentionally has no local LLM
+HTTP metrics endpoint. Deploy it with `docker-compose.gb10-worker.yml` as well
+as the dual-write overlay; that replaces the default scrape file with a
+worker-specific DCGM-only file. The GB10 head agent owns the serving/LLM scrape,
+so the Portal still gets one unified GB10 inference series without a permanent
+worker `down` target.
+
 ## Metrics adapter (engine swap isolation)
 
  freezes the dashboard contract ( series) behind a
