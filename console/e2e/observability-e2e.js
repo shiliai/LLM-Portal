@@ -71,7 +71,9 @@ async function installFixtures(page, seen) {
 
 (async () => {
   const browser = await chromium.launch(process.env.PLAYWRIGHT_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } : {});
-  const page = await browser.newPage({ viewport: { width: 1720, height: 1000 } });
+  const page = await browser.newPage({
+    viewport: { width: Number(process.env.VIEWPORT_WIDTH || 1720), height: Number(process.env.VIEWPORT_HEIGHT || 1000) }
+  });
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
   const seen = {};
@@ -141,37 +143,39 @@ async function installFixtures(page, seen) {
   await page.goto(BASE + '/console/nodes.html');
   await page.waitForTimeout(1200);
 
-  console.log('== 7. 节点详情块 + 指标网格:');
+  console.log('== 7. Grafana panel grid + cluster shared inference:');
   const blocks = await page.locator('.pf-node-block').count();
   if (blocks !== 4) throw new Error('expected 4 node blocks including GB10 members, got ' + blocks);
-  const tiles = await page.locator('.pf-node-block').first().locator('.pf-metric').count();
-  if (tiles !== 6) throw new Error('GB10 member resource block must have 6 metric tiles, got ' + tiles);
-  console.log('节点块:', blocks, '| 首块指标卡:', tiles);
+  const panels = await page.locator('.nd-panel').count();
+  if (panels < 8) throw new Error('Grafana dashboard must render at least 8 panels, got ' + panels);
+  console.log('节点块:', blocks, '| panel 数:', panels);
 
   const gb10Header = page.locator('.pf-node-block', { hasText: 'Header' });
   const gb10Worker = page.locator('.pf-node-block', { hasText: 'Worker' });
   if (await gb10Header.count() !== 1 || await gb10Worker.count() !== 1) throw new Error('GB10 Header/Worker cards must be separate');
-  const headerText = await gb10Header.locator('.pf-metric-grid').innerText();
+  const headerText = await gb10Header.locator('.nd-resource-grid').innerText();
   if (!headerText.includes('统一内存') || !headerText.includes('62,000') || !headerText.includes('99,246')) throw new Error('GB10 Header memory metrics missing');
-  const workerText = await gb10Worker.locator('.pf-metric-grid').innerText();
-  const sharedText = await page.locator('#nd-summary .pf-cluster-summary .pf-metric-grid').innerText();
-  if (!sharedText.includes('86.4') || !sharedText.includes('5 / 1')) throw new Error('GB10 cluster inference metrics missing');
-  if (await page.locator('#nd-summary .pf-cluster-summary .pf-metric').count() !== 5) throw new Error('GB10 inference metrics must render once at cluster level');
+  const workerText = await gb10Worker.locator('.nd-resource-grid').innerText();
+  const shared = page.locator('#ni-gb10');
+  const sharedText = await shared.innerText();
+  if (!sharedText.includes('86.4') || !/5\s*\/\s*1/.test(sharedText)) throw new Error('GB10 cluster inference metrics missing');
+  if (await shared.locator('.nd-stat-panel').count() !== 5) throw new Error('GB10 inference metrics must render once at cluster level');
+  if (await gb10Header.locator('.nd-stat-panel').count() !== 0 || await gb10Worker.locator('.nd-stat-panel').count() !== 0) throw new Error('GB10 members must not duplicate inference metrics');
   if (!workerText.includes('exporter 未提供内存指标')) throw new Error('GB10 Worker no-data memory state missing');
   console.log('GB10 cluster 单份推理区，Header/Worker 资源区独立: true');
 
   console.log('== 8. 缺失指标显示 —（m2s2 无 spec/温度/功耗/KV）:');
   const m2s2 = page.locator('.pf-node-block', { hasText: 'm2s2NasUbuntuVM-shili-dev' });
-  const m2s2Text = await m2s2.locator('.pf-metric-grid').innerText();
+  const m2s2Text = await m2s2.innerText();
   const dashCount = (m2s2Text.match(/—/g) || []).length;
   if (dashCount < 3) throw new Error('m2s2 must show ≥3 em-dashes for missing metrics, got ' + dashCount);
   if (/MTP\/TAR 接受率\n0/.test(m2s2Text)) throw new Error('missing spec metric must not render 0');
   console.log('m2s2 缺失指标 — 计数:', dashCount);
 
   console.log('== 9. dell 显示推测解码与 KV 命中、无 KV 占用:');
-  const dell = await page.locator('.pf-node-block', { hasText: 'dell-shili-7960' }).locator('.pf-metric-grid').innerText();
-  if (!/62\.1%/.test(dell)) throw new Error('dell spec accept rate missing');
-  if (!/58\.4%/.test(dell)) throw new Error('dell cache hit rate missing');
+  const dell = await page.locator('.pf-node-block', { hasText: 'dell-shili-7960' }).innerText();
+  if (!/62\.1\s*%/.test(dell)) throw new Error('dell spec accept rate missing');
+  if (!/58\.4\s*%/.test(dell)) throw new Error('dell cache hit rate missing');
   console.log('dell MTP/TAR=62.1% 命中=58.4%: true');
 
   console.log('== 10. 时间范围切换（hours 参数）+ 截图:');
@@ -187,6 +191,13 @@ async function installFixtures(page, seen) {
     throw new Error('GB10 inference history must be cluster-scoped while resources remain member-scoped: ' + seen.range.join(','));
   }
   console.log('nodes range:', seen.range[0]);
+  console.log('== 11. row 折叠/展开:');
+  const collapse = page.locator('.nd-collapse').first();
+  await collapse.click();
+  if (await collapse.getAttribute('aria-expanded') !== 'false' || await collapse.locator('xpath=../..').locator('.nd-content').isVisible()) throw new Error('dashboard row must collapse');
+  await collapse.click();
+  if (await collapse.getAttribute('aria-expanded') !== 'true' || !await collapse.locator('xpath=../..').locator('.nd-content').isVisible()) throw new Error('dashboard row must expand');
+  console.log('row collapse: true');
   await page.screenshot({ path: '/tmp/e2e/r106-nodes.png', fullPage: false });
 
   console.log('\nERRORS:', errors.length ? errors.join('\n') : 'none');

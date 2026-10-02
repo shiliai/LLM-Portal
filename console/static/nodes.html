@@ -1,11 +1,77 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><script>try{var q=new URLSearchParams(location.search).get("theme");var t=(q==="light"||q==="dark")?q:(localStorage.getItem("llm-portal-theme")||"dark");document.documentElement.setAttribute("data-theme",t);}catch(e){document.documentElement.setAttribute("data-theme","dark")}</script>
-<title>节点性能 · 远程模型网关</title><link rel="stylesheet" href="assets/portal.css"><link rel="icon" href="assets/brand/favicon.svg" type="image/svg+xml"></head>
+<title>节点性能 · 远程模型网关</title><link rel="stylesheet" href="assets/portal.css"><link rel="icon" href="assets/brand/favicon.svg" type="image/svg+xml">
+<style>
+  #nd-summary, #nd-blocks { margin-bottom: 12px; }
+  .nd-dashboard { background:var(--bg); border:1px solid var(--border); border-radius:4px; padding:10px; }
+  .nd-dashboard + .nd-dashboard { margin-top:12px; }
+  .nd-dashboard-bar { display:flex; align-items:center; gap:8px; min-height:28px; padding-bottom:9px; border-bottom:1px solid var(--border); }
+  .nd-dashboard-title { color:var(--heading); font-size:13px; font-weight:600; margin-right:auto; }
+  .nd-dashboard-title span { color:var(--muted); font-weight:400; }
+  .nd-dashboard-meta { color:var(--muted); font:10px var(--mono); }
+  .nd-row { margin-top:11px; }
+  .nd-row-head { display:flex; align-items:center; gap:7px; margin-bottom:6px; color:var(--heading); font-size:11px; font-weight:600; }
+  .nd-row-head button { width:20px; height:20px; padding:0; border:0; background:none; color:var(--muted); cursor:pointer; }
+  .nd-row-head button:hover { color:var(--accent); }
+  .nd-row-meta { margin-left:auto; color:var(--muted); font:10px var(--mono); font-weight:400; }
+  .nd-grid { display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); gap:8px; }
+  .nd-stats { grid-template-columns:repeat(5,minmax(0,1fr)); }
+  .nd-panel { min-width:0; padding:9px 10px; background:var(--panel); border:1px solid var(--border); border-radius:3px; }
+  .nd-panel.nd-span-3 { grid-column:span 3; }
+  .nd-panel.nd-span-4 { grid-column:span 4; }
+  .nd-panel.nd-span-6 { grid-column:span 6; }
+  .nd-panel.nd-span-7 { grid-column:span 7; }
+  .nd-panel.nd-span-8 { grid-column:span 8; }
+  .nd-panel.nd-span-12 { grid-column:span 12; }
+  .nd-panel-head { display:flex; align-items:center; gap:8px; margin-bottom:7px; color:var(--text2); font-size:11px; }
+  .nd-panel-head small { margin-left:auto; color:var(--muted); font:10px var(--mono); }
+  .nd-panel-menu { color:var(--muted); letter-spacing:1px; }
+  .nd-history-grid { margin-top:8px; }
+  .nd-cluster-members { display:flex; gap:9px; flex-wrap:wrap; margin-left:auto; }
+  .nd-cluster-dashboard .nd-dashboard-bar { align-items:flex-start; }
+  .nd-stat { display:flex; align-items:baseline; gap:5px; color:var(--heading); font:600 23px/1 var(--mono); }
+  .nd-stat small { color:var(--muted); font-size:10px; font-weight:400; }
+  .nd-stat-sub { margin-top:7px; color:var(--muted); font:10px var(--mono); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .nd-stat-sub.good { color:var(--green); }
+  .nd-stat-sub.warn { color:var(--amber); }
+  .nd-mini-chart { height:66px; margin-top:7px; }
+  .nd-mini-chart svg { width:100%; height:100%; display:block; }
+  .nd-chart { height:220px; }
+  .nd-chart.short { height:168px; }
+  .nd-resource-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:7px; }
+  .nd-resource { min-width:0; padding:8px; background:var(--panel2); border:1px solid var(--border); border-radius:3px; }
+  .nd-resource-label { color:var(--muted); font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .nd-resource-value { margin-top:5px; color:var(--heading); font:600 14px var(--mono); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .nd-resource-value small { color:var(--muted); font-size:10px; font-weight:400; }
+  .nd-resource-sub { margin-top:4px; color:var(--text2); font:10px var(--mono); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .nd-resource-sub.good { color:var(--green); }
+  .nd-resource-sub.warn { color:var(--amber); }
+  .nd-node-block { border-left:2px solid var(--accent); }
+  .nd-node-block.nd-span-6 { grid-column:span 6; }
+  .nd-node-head { display:flex; align-items:center; gap:7px; margin-bottom:9px; }
+  .nd-node-name { color:var(--heading); font-size:12px; font-weight:600; }
+  .nd-node-head .pf-desc { margin-left:auto; }
+  .nd-member-status { display:inline-flex; align-items:center; gap:5px; color:var(--text2); font-size:10px; }
+  .nd-member-list { display:grid; gap:6px; }
+  .nd-member-row { display:grid; grid-template-columns:minmax(145px,1fr) 100px 105px 105px; align-items:center; gap:9px; padding:8px 9px; border:1px solid var(--border); border-radius:3px; background:var(--panel2); }
+  .nd-member-main { min-width:0; }
+  .nd-member-name { color:var(--heading); font-size:11px; font-weight:600; }
+  .nd-member-meta { margin-top:3px; color:var(--muted); font:10px var(--mono); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .nd-member-metric { color:var(--muted); font:10px var(--mono); }
+  .nd-member-metric strong { display:block; color:var(--heading); font-size:12px; }
+  .nd-member-status { justify-self:end; }
+  .nd-empty { padding:30px 12px; color:var(--muted); text-align:center; font-size:11px; }
+  .nd-node-inference { margin-bottom:8px; }
+  .nd-node-inference .nd-panel { min-height:0; }
+  .nd-node-inference .nd-stat { font-size:18px; }
+  @media (max-width:980px) { .nd-stats { grid-template-columns:repeat(3,minmax(0,1fr)); } .nd-panel.nd-span-3,.nd-panel.nd-span-4,.nd-panel.nd-span-6,.nd-panel.nd-span-7,.nd-panel.nd-span-8 { grid-column:span 6; } .nd-resource-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+  @media (max-width:640px) { .nd-grid { grid-template-columns:1fr; } .nd-stats,.nd-resource-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .nd-panel.nd-span-3,.nd-panel.nd-span-4,.nd-panel.nd-span-6,.nd-panel.nd-span-7,.nd-panel.nd-span-8,.nd-panel.nd-span-12,.nd-node-block.nd-span-6 { grid-column:span 1; } .nd-cluster-dashboard .nd-dashboard-bar { display:block; } .nd-cluster-members { margin:8px 0 0; } .nd-member-row { grid-template-columns:1fr 1fr; } .nd-member-status { justify-self:start; } }
+</style></head>
 <body data-page="nodes"><template id="page">
   <div class="pf-toolbar">
     <div class="pf-tb-item"><label>节点</label><select class="pf-select" id="nd-node"><option value="">全部节点</option></select></div>
     <div class="pf-tb-item"><label>时间范围</label><div class="pf-seg" id="nd-win">
-      <button data-h="1" class="on">1小时</button><button data-h="6">6小时</button><button data-h="24">24小时</button>
+      <button data-h="1" class="on">1小时</button><button data-h="6">6小时</button><button data-h="24">24小时</button><button data-h="168">7天</button>
     </div></div>
     <div class="pf-tb-right">
       <span class="pf-tb-item"><label>自动刷新</label><label class="pf-switch" title="按所选间隔自动更新"><input type="checkbox" id="nd-auto" checked><span></span></label></span>
@@ -60,6 +126,12 @@
   }
   var NODE_COLORS = ['cyan', 'blue', 'green', 'violet', 'amber'];
   var charts = {};
+  function resetCharts() {
+    Object.keys(charts).forEach(function (id) {
+      try { if (charts[id] && !charts[id].isDisposed()) charts[id].dispose(); } catch (e) { /* stale canvas */ }
+    });
+    charts = {};
+  }
   function getChart(id) {
     var dom = document.getElementById(id);
     if (!dom) return null;
@@ -115,23 +187,40 @@
     if (!box) return;
     var rows = ((st.ov && st.ov.sites.rows) || []).filter(function (s) { return !st.node || s.name === st.node; });
     var clusters = rows.filter(function (s) { return s.cluster && Array.isArray(s.members) && s.members.length; });
+    if (!clusters.length) {
+      if (box.dataset.sig !== 'empty') resetCharts();
+      box.dataset.sig = 'empty';
+      box.innerHTML = '';
+      return;
+    }
+    var summarySig = clusters.map(clusterKey).join(',') + '|' + st.hours + '|' + st.interval;
+    if (box.dataset.sig === summarySig) return;
+    resetCharts();
+    box.dataset.sig = summarySig;
     box.innerHTML = clusters.map(function (s) {
       var online = s.members.filter(function (m) { return m.status === 'online'; }).length;
-      var member = sharedMember(s);
-      var memberText = s.members.map(function (m) {
+      var key = clusterKey(s);
+      var members = s.members.map(function (m) {
         var ok = m.status === 'online';
-        return '<span class="pf-cluster-member"><span class="pf-dot ' + (ok ? 'ok' : 'warn') + '"></span>' +
-          esc(m.display_name || m.instance) + ' <span class="pf-desc">' + (ok ? '在线' : '暂无数据') + '</span></span>';
+        return '<span class="nd-member-status"><span class="pf-dot ' + (ok ? 'ok' : 'warn') + '"></span>' +
+          esc(m.display_name || m.instance) + ' · ' + (ok ? '在线' : '暂无数据') + '</span>';
       }).join('');
-      return '<div class="pf-card pf-cluster-summary"><div class="pf-card-head"><div class="pf-card-title">' +
-        esc(s.display_name || s.name) + ' cluster</div><div class="pf-card-extra">' + online + '/' + s.members.length + ' 个成员在线</div></div>' +
-        '<div class="pf-cluster-members">' + memberText + '</div>' +
-        '<div class="pf-desc" style="margin:14px 0 6px">推理指标 · cluster 共享</div>' +
-        '<div class="pf-metric-grid" style="grid-template-columns:repeat(5,1fr)" id="ni-' + esc(clusterKey(s)) + '"></div>' +
-        '<div class="pf-grid" style="grid-template-columns:1fr 1fr;margin-top:12px">' +
-          '<div><div class="pf-desc" style="font-size:11px;margin:2px 0 4px">集群吞吐趋势 · 输出 / Prefill tok/s</div><div id="ch-nd-shared-tps-' + esc(clusterKey(s)) + '" class="pf-chart h160"></div></div>' +
-          '<div><div class="pf-desc" style="font-size:11px;margin:2px 0 4px">集群推理资源 · KV Cache %</div><div id="ch-nd-shared-res-' + esc(clusterKey(s)) + '" class="pf-chart h160"></div></div>' +
-        '</div></div>';
+      return '<div class="nd-dashboard nd-cluster-dashboard">' +
+        '<div class="nd-dashboard-bar"><div class="nd-dashboard-title">' + esc(s.display_name || s.name) + ' <span>/ cluster shared</span></div>' +
+          '<div class="nd-member-list nd-cluster-members">' + members + '</div>' +
+          '<span class="nd-dashboard-meta">' + online + '/' + s.members.length + ' online</span></div>' +
+        '<div class="nd-row">' +
+          '<div class="nd-row-head"><button class="nd-collapse" type="button" aria-expanded="true" aria-label="折叠推理区">⌄</button>' +
+            '<span>推理 / Cluster shared</span><span class="nd-row-meta">5 stat panels · refresh ' + st.interval + 's</span></div>' +
+          '<div class="nd-content">' +
+            '<div class="nd-grid nd-stats" id="ni-' + esc(key) + '"></div>' +
+            '<div class="nd-grid nd-history-grid">' +
+              ndChartPanel('吞吐趋势', 'last ' + st.hours + 'h', 'ch-nd-shared-tps-' + esc(key), 'nd-span-8') +
+              ndChartPanel('KV Cache / 请求压力', 'last ' + st.hours + 'h', 'ch-nd-shared-res-' + esc(key), 'nd-span-4') +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
     }).join('');
   }
 
@@ -194,32 +283,27 @@
     var key = rowKey(s);
     var online = s.status === 'online';
     var revoked = s.status === 'revoked';
-    var groups = [
-      m.output_tok_s != null,
-      m.requests_running != null,
-      m.kv_cache_pct != null || m.cache_hit_pct != null,
-      m.gpu_util_pct != null,
-      m.gpu_temp_c != null || m.power_w != null
-    ];
+    var groups = [m.memory_used_mib != null || m.memory_total_mib != null, m.gpu_memory_used_mib != null,
+      m.gpu_util_pct != null, m.gpu_temp_c != null, m.power_w != null];
     var nGroups = groups.filter(Boolean).length;
     var full = nGroups === 5;
     var partial = nGroups > 0 && !full;
     var addr = s.wg_ip || (s.address || '').replace(/^https?:\/\//, '') || '—';
     var statusText = s.status === 'no_data' ? '暂无数据' : (s.status || '未知');
     var chartsMarkup = s.cluster_member
-      ? '<div class="pf-grid" style="grid-template-columns:1fr 1fr">' +
-          '<div><div class="pf-desc" style="font-size:11px;margin:2px 0 4px">资源趋势 · GPU 活跃度 %</div><div id="ch-nd-res-' + esc(key) + '" class="pf-chart h200"></div></div>' +
-          '<div><div class="pf-desc" style="font-size:11px;margin:2px 0 4px">温度 / 功耗趋势 · °C / W</div><div id="ch-nd-thermal-' + esc(key) + '" class="pf-chart h200"></div></div>' +
+      ? '<div class="nd-grid nd-history-grid">' +
+          ndChartPanel('GPU 活跃度趋势', 'instance · last ' + st.hours + 'h', 'ch-nd-res-' + esc(key), 'nd-span-7') +
+          ndChartPanel('温度 / 功耗', 'instance · last ' + st.hours + 'h', 'ch-nd-thermal-' + esc(key), 'nd-span-5') +
         '</div>'
-      : '<div class="pf-grid" style="grid-template-columns:1fr 1fr">' +
-          '<div><div class="pf-desc" style="font-size:11px;margin:2px 0 4px">吞吐趋势 · 输出 / Prefill tok/s</div><div id="ch-nd-tps-' + esc(key) + '" class="pf-chart h200"></div></div>' +
-          '<div><div class="pf-desc" style="font-size:11px;margin:2px 0 4px">资源趋势 · KV / GPU %</div><div id="ch-nd-res-' + esc(key) + '" class="pf-chart h200"></div></div>' +
-          '<div style="grid-column:1 / -1"><div class="pf-desc" style="font-size:11px;margin:2px 0 4px">温度 / 功耗趋势 · °C / W</div><div id="ch-nd-thermal-' + esc(key) + '" class="pf-chart h200"></div></div>' +
+      : '<div class="nd-grid nd-history-grid">' +
+          ndChartPanel('吞吐趋势', 'last ' + st.hours + 'h', 'ch-nd-tps-' + esc(key), 'nd-span-8') +
+          ndChartPanel('KV / GPU 活跃度', 'last ' + st.hours + 'h', 'ch-nd-res-' + esc(key), 'nd-span-4') +
+          ndChartPanel('温度 / 功耗', 'last ' + st.hours + 'h', 'ch-nd-thermal-' + esc(key), 'nd-span-12') +
         '</div>';
-    return '<div class="pf-card pf-node-block' + (s.cluster_member ? ' pf-cluster-node' : '') + '">' +
-      '<div class="pf-node-head">' +
+    return '<section class="nd-panel nd-node-panel nd-node-block pf-node-block' + (s.cluster_member ? ' pf-cluster-node' : '') + ' nd-span-6">' +
+      '<div class="nd-node-head">' +
         '<span class="pf-dot ' + (online ? 'ok' : revoked ? 'gray' : 'warn') + '"></span>' +
-        '<span class="pf-node-name" style="color:' + color + '">' + esc(s.display_name || s.name) + '</span>' +
+        '<span class="nd-node-name" style="color:' + color + '">' + esc(s.display_name || s.name) + '</span>' +
         '<span class="pf-chip gray">' + esc(m.runtime || 'runtime —') + '</span>' +
         '<span class="pf-chip gray">' + esc(addr) + '</span>' +
         (online ? '<span class="pf-chip ok"><span class="pf-dot ok" style="margin-right:0"></span>up</span>'
@@ -227,20 +311,29 @@
                 : '<span class="pf-chip ' + (s.status === 'no_data' ? 'gray' : 'warn') + '">' + esc(statusText) + '</span>') +
         (full ? '<span class="pf-chip accent">exporter 完整</span>'
               : partial ? '<span class="pf-chip warn">exporter 部分</span>' : '') +
-        '<span class="pf-desc" style="margin-left:auto">最近采集 <span style="color:var(--accent)">' + (online ? '刚刚' : '—') + '</span></span>' +
+        '<span class="pf-desc">最近采集 <span style="color:var(--accent)">' + (online ? '刚刚' : '—') + '</span></span>' +
       '</div>' +
-      '<div class="pf-metric-grid" style="grid-template-columns:repeat(6,1fr)" id="nm-' + esc(key) + '"></div>' +
+      (s.cluster_member ? '<div class="nd-resource-grid" id="nm-' + esc(key) + '"></div>' :
+        '<div class="nd-grid nd-stats nd-node-inference" id="nm-' + esc(key) + '"></div>' +
+        '<div class="nd-resource-grid" id="nr-' + esc(key) + '"></div>') +
       chartsMarkup +
-    '</div>';
+    '</section>';
   }
 
-  function metricTile(label, val, sub, cls) {
-    return '<div class="pf-metric"><div class="m-label">' + label + '</div>' +
-      '<div class="m-val' + (cls ? ' ' + cls : '') + '">' + val + '</div>' +
-      '<div class="m-sub">' + sub + '</div></div>';
+  function ndChartPanel(title, meta, id, span) {
+    return '<div class="nd-panel ' + (span || 'nd-span-6') + '"><div class="nd-panel-head"><span>' + esc(title) + '</span>' +
+      '<small>' + esc(meta || '') + '</small><span class="nd-panel-menu" aria-hidden="true">⋮</span></div>' +
+      '<div id="' + id + '" class="pf-chart nd-chart"></div></div>';
   }
 
-  function inferenceTiles(s) {
+  function ndStatPanel(label, value, sub, cls, mini) {
+    return '<div class="nd-panel nd-stat-panel' + (cls ? ' ' + cls : '') + '">' +
+      '<div class="nd-panel-head"><span>' + label + '</span><small>now</small><span class="nd-panel-menu" aria-hidden="true">⋮</span></div>' +
+      '<div class="nd-stat">' + value + '</div><div class="nd-stat-sub">' + sub + '</div>' +
+      (mini ? '<div class="nd-mini-chart">' + mini + '</div>' : '') + '</div>';
+  }
+
+  function inferencePanels(s) {
     var m = s.metrics || {};
     var hist = st.hist[rowKey(s)] || {};
     var act = m.requests_running == null ? null : Math.round(m.requests_running);
@@ -248,48 +341,53 @@
     var kvHit = m.cache_hit_pct == null ? null : m.cache_hit_pct;
     var spec = m.spec_accept_pct == null ? null : m.spec_accept_pct;
     return [
-      metricTile('输出 TOK/S', num(m.output_tok_s, 1), spark(hist.speed, 78, 15, TC().s.cyan), 'c-accent'),
-      metricTile('输入 TOK/S · PREFILL', num(m.input_tok_s, 1), spark(hist.pre, 78, 15, TC().s.violet)),
-      metricTile('活动 / 排队',
+      ndStatPanel('输出吞吐', num(m.output_tok_s, 1, 'tok/s'), act == null ? 'cluster shared' : 'cluster shared · ' + act + ' active', 'c-accent', spark(hist.speed, 150, 32, TC().s.cyan)),
+      ndStatPanel('输入吞吐 / Prefill', num(m.input_tok_s, 1, 'tok/s'), 'cluster shared', 'c-violet', spark(hist.pre, 150, 32, TC().s.violet)),
+      ndStatPanel('活动 / 排队',
         (act == null ? dash() : act) + ' <span class="unit">/ ' + (que == null ? dash() : que) + '</span>',
-        '实时并发' + pctTile(act == null ? null : act * 12.5)),
-      metricTile('KV CACHE 占用 / 命中率',
+        '实时并发' + pctTile(act == null ? null : act * 12.5), 'c-green'),
+      ndStatPanel('KV Cache / 命中率',
         m.kv_cache_pct == null ? dash() : m.kv_cache_pct.toFixed(0) + '<span class="unit">%</span>',
-        '命中 ' + (kvHit == null ? '<span style="color:var(--muted)">—</span>' : kvHit.toFixed(1) + '%') + pctTile(m.kv_cache_pct, 'c-accent')),
-      metricTile('MTP/TAR 接受率',
+        '命中 ' + (kvHit == null ? '<span style="color:var(--muted)">—</span>' : kvHit.toFixed(1) + '%') + pctTile(m.kv_cache_pct, 'c-accent'), 'c-accent', spark(hist.kv, 150, 32, TC().s.cyan)),
+      ndStatPanel('MTP / TAR 接受率',
         spec == null ? dash() : spec.toFixed(1) + '<span class="unit">%</span>',
-        spec == null ? '该 cluster 无此指标' : '推测解码 · exporter')
+        spec == null ? 'exporter 未提供指标' : '推测解码 · exporter', spec == null ? '' : 'c-violet')
     ].join('');
   }
 
-  function resourceTiles(s) {
+  function resourceMetric(label, value, sub, cls) {
+    return '<div class="nd-resource"><div class="nd-resource-label">' + label + '</div><div class="nd-resource-value' +
+      (cls ? ' ' + cls : '') + '">' + value + '</div><div class="nd-resource-sub">' + sub + '</div></div>';
+  }
+
+  function resourceMetrics(s) {
     var m = s.metrics || {};
     var memoryLabel = m.memory_kind === 'unified' ? '统一内存' : '显存';
     var tiles = [
-      metricTile(memoryLabel + ' 已用 / 总量',
+      resourceMetric(memoryLabel + ' 已用 / 总量',
         (m.memory_used_mib == null ? dash() : Math.round(m.memory_used_mib).toLocaleString('zh-CN')) +
           ' <span class="unit">/ ' + (m.memory_total_mib == null ? '—' : Math.round(m.memory_total_mib).toLocaleString('zh-CN') + ' MiB') + '</span>',
         m.memory_used_mib == null && m.memory_total_mib == null ? 'exporter 未提供内存指标' : (m.memory_kind === 'unified' ? 'GB10 agent · MiB' : 'DCGM · MiB')),
-      metricTile(memoryLabel + ' 剩余', m.memory_free_mib == null ? dash() : Math.round(m.memory_free_mib).toLocaleString('zh-CN') + '<span class="unit"> MiB</span>',
+      resourceMetric(memoryLabel + ' 剩余', m.memory_free_mib == null ? dash() : Math.round(m.memory_free_mib).toLocaleString('zh-CN') + '<span class="unit"> MiB</span>',
         m.memory_free_mib == null ? 'exporter 未提供内存指标' : (m.memory_kind === 'unified' ? 'GB10 agent · mem_avail' : 'DCGM · FB_FREE'))
     ];
     if (m.gpu_memory_used_mib != null) {
-      tiles.push(metricTile('GPU 显存占用', Math.round(m.gpu_memory_used_mib).toLocaleString('zh-CN') + '<span class="unit"> MiB</span>', 'GB10 agent · gpu_mem'));
+      tiles.push(resourceMetric('GPU 显存占用', Math.round(m.gpu_memory_used_mib).toLocaleString('zh-CN') + '<span class="unit"> MiB</span>', 'GB10 agent · gpu_mem'));
     }
     tiles.push(
-      metricTile('GPU 活跃度',
+      resourceMetric('GPU 活跃度',
         m.gpu_util_pct == null ? dash() : m.gpu_util_pct.toFixed(0) + '<span class="unit">%</span>',
         'DCGM · exporter' + pctTile(m.gpu_util_pct)),
-      metricTile('GPU 温度',
+      resourceMetric('GPU 温度',
         m.gpu_temp_c == null ? dash() : m.gpu_temp_c.toFixed(0) + '<span class="unit">°C</span>', 'DCGM · exporter'),
-      metricTile('GPU 功耗',
+      resourceMetric('GPU 功耗',
         m.power_w == null ? dash() : m.power_w.toFixed(0) + '<span class="unit">W</span>', 'DCGM · 板卡功耗')
     );
     return tiles.join('');
   }
 
   function metricTiles(s) {
-    return s.cluster_member ? resourceTiles(s) : inferenceTiles(s) + resourceTiles(s);
+    return s.cluster_member ? resourceMetrics(s) : inferencePanels(s);
   }
 
   function lineChart(id, seriesDefs, yMax, yAxes) {
@@ -312,7 +410,7 @@
       var row = { name: s.name, site_name: s.name, instance: member.instance, metrics: member.metrics || {} };
       var key = clusterKey(s);
       var metricEl = document.getElementById('ni-' + key);
-      if (metricEl) metricEl.innerHTML = inferenceTiles(row);
+      if (metricEl) metricEl.innerHTML = inferencePanels(row);
       var hist = st.hist[rowKey(row)] || {};
       var toXY = function (pts) { return (pts || []).map(function (p) { return [p[0] * 1000, Math.round(p[1] * 10) / 10]; }); };
       lineChart('ch-nd-shared-tps-' + key, [
@@ -334,18 +432,23 @@
   function render() {
     var nodes = visibleNodes();
     var box = document.getElementById('nd-blocks');
-    /* 只在节点集合变化时重建 DOM（图表容器保持稳定，刷新只 setOption） */
-    var sig = nodes.map(rowKey).join(',');
+    /* Only rebuild panels when the visible set or time window changes. */
+    var sig = nodes.map(rowKey).join(',') + '|' + st.hours;
     if (box.dataset.sig !== sig) {
       box.dataset.sig = sig;
-      box.innerHTML = nodes.map(buildBlock).join('') || '<div class="pf-card"><div class="pf-empty"><div class="pf-empty-icon">▢</div>暂无节点数据</div></div>';
-      charts = {};     // 容器重建后旧实例作废
+      box.innerHTML = nodes.length
+        ? '<div class="nd-dashboard nd-resource-dashboard"><div class="nd-dashboard-bar"><div class="nd-dashboard-title">节点资源 <span>/ instance scoped</span></div><span class="nd-dashboard-meta">' + nodes.length + ' instances · refresh ' + st.interval + 's</span></div>' +
+            '<div class="nd-row"><div class="nd-row-head"><button class="nd-collapse" type="button" aria-expanded="true" aria-label="折叠成员资源区">⌄</button><span>成员资源与独立节点</span><span class="nd-row-meta">historical panels</span></div><div class="nd-grid nd-content">' + nodes.map(buildBlock).join('') + '</div></div></div>'
+        : '<div class="nd-dashboard"><div class="nd-empty">暂无节点数据</div></div>';
+      resetCharts();     // 容器重建后旧实例作废
     }
     renderSharedClusters();
     nodes.forEach(function (s, idx) {
       var key = rowKey(s);
       var el = document.getElementById('nm-' + key);
-      if (el) el.innerHTML = metricTiles(s);
+      if (el) el.innerHTML = s.cluster_member ? resourceMetrics(s) : inferencePanels(s);
+      var resourceEl = document.getElementById('nr-' + key);
+      if (resourceEl) resourceEl.innerHTML = resourceMetrics(s);
       var color = TC().s[NODE_COLORS[idx % NODE_COLORS.length]];
       var hist = st.hist[key] || {};
       var toXY = function (pts) { return pts.map(function (p) { return [p[0] * 1000, Math.round(p[1] * 10) / 10]; }); };
@@ -436,8 +539,19 @@
       this.querySelectorAll('button').forEach(function (x) { x.classList.toggle('on', x === b); });
     });
     document.getElementById('nd-refresh').addEventListener('click', function () { st.left = st.interval; load(); });
+    document.addEventListener('click', function (e) {
+      var button = e.target.closest('.nd-collapse');
+      if (!button) return;
+      var row = button.closest('.nd-row');
+      var content = row && row.querySelector('.nd-content');
+      var open = button.getAttribute('aria-expanded') !== 'false';
+      button.setAttribute('aria-expanded', open ? 'false' : 'true');
+      button.textContent = open ? '›' : '⌄';
+      if (content) content.style.display = open ? 'none' : '';
+    });
     document.addEventListener('pftheme', function () {
-      charts = {};
+      resetCharts();
+      renderSummary();
       render();
     });
     window.addEventListener('resize', function () {
