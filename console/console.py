@@ -858,6 +858,23 @@ _VM_METRIC_RE = r"(llamacpp:[a-z_0-9]+|vllm:[a-z_0-9]+|tensorfold(_health)?:[a-z
 # label matching, so existing deployments do not need a destructive rename.
 SITE_DISPLAY_NAMES = {"workstation": "x570"}
 
+# GB10 exports both machines with the same ``site`` label.  Keep the expected
+# members in the Portal contract so a missing exporter series is visible as a
+# real no-data member instead of silently removing the worker from the view.
+CLUSTER_MEMBER_CONFIG = {
+    "gb10": (
+        {"instance": "gb10-head", "display_name": "Header"},
+        {"instance": "gb10-worker", "display_name": "Worker"},
+    ),
+}
+
+MEMORY_METRIC_NAMES = {
+    "DCGM_FI_DEV_FB_USED",
+    "DCGM_FI_DEV_FB_FREE",
+    "DCGM_FI_DEV_FB_TOTAL",
+    "DCGM_FI_DEV_FB_RESERVED",
+}
+
 
 def site_display_name(name: str) -> str:
     return SITE_DISPLAY_NAMES.get(str(name), str(name))
@@ -941,6 +958,22 @@ def _derive_metrics(vals: dict) -> dict:
         hit = _ratio(vals, "tensorfold_health_cached_tokens_total", "tensorfold_prompt_tokens_total")
     if hit is not None:
         out["cache_hit_pct"] = round(hit, 1)
+    used = vals.get("DCGM_FI_DEV_FB_USED")
+    free = vals.get("DCGM_FI_DEV_FB_FREE")
+    reserved = vals.get("DCGM_FI_DEV_FB_RESERVED")
+    total = vals.get("DCGM_FI_DEV_FB_TOTAL")
+    # DCGM exporter versions commonly omit FB_TOTAL.  USED/FREE/RESERVED are
+    # all MiB, so their sum is the only honest fallback for total capacity.
+    if total is None and used is not None and free is not None:
+        total = used + free + (reserved or 0)
+    if used is not None:
+        out["memory_used_mib"] = round(used, 1)
+    if free is not None:
+        out["memory_free_mib"] = round(free, 1)
+    if total is not None:
+        out["memory_total_mib"] = round(total, 1)
+    if reserved is not None:
+        out["memory_reserved_mib"] = round(reserved, 1)
     return out
 
 
@@ -1077,8 +1110,9 @@ async def site_metrics(site: dict, deps: list[dict]) -> dict:
     return out or {}
 
 
-async def vm_query_instant(query: str, timeout: float = 3) -> dict[str, float]:
-    """一次 instant 查询，返回 {__name__: 跨序列均值}（DCGM 多 GPU / 双 vmagent 实例取均值）。"""
+async def vm_query_instant(query: str, timeout: float = 3,
+                           sum_names: set[str] | None = None) -> dict[str, float]:
+    """一次 instant 查询，保留逻辑名并按指标选择均值或求和。"""
     async with httpx.AsyncClient(timeout=timeout) as client:
         r = await client.get(VM_URL.rstrip("/") + "/api/v1/query", params={"query": query})
     if r.status_code != 200:
@@ -1091,29 +1125,36 @@ async def vm_query_instant(query: str, timeout: float = 3) -> dict[str, float]:
             acc.setdefault(name, []).append(float(s.get("value", [0, 0])[1]))
         except (TypeError, ValueError):
             continue
-    return {k: sum(v) / len(v) for k, v in acc.items()}
+    sum_names = sum_names or set()
+    return {k: sum(v) if k in sum_names else sum(v) / len(v) for k, v in acc.items()}
 
 
-def vm_site_matcher(site_name: str) -> str:
+def vm_site_matcher(site_name: str, instance_name: str | None = None) -> str:
     """portal 站点名 → VM 标签匹配：约定 NODE_INSTANCE=<site>-llm，兼容裸站点名
     （gb10 双 DGX 共用 site=gb10、instance=gb10-head/gb10-worker）。
     站点名只允许 [A-Za-z0-9_-]（与 NAME_RE 同口径）；不做 re.escape——Go 正则
     （VictoriaMetrics）不认 \\- 这类转义，遇连字符会整条查询 400。"""
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", site_name or ""):
         return '{__name__="__none__"}'
-    return '{__name__=~"' + _VM_METRIC_RE + '",site=~"^{name}(-llm)?$"}'.replace("{name}", site_name)
+    matcher = '{__name__=~"' + _VM_METRIC_RE + '",site=~"^{name}(-llm)?$"}'.replace("{name}", site_name)
+    if instance_name is None:
+        return matcher
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", instance_name):
+        return '{__name__="__none__"}'
+    return matcher[:-1] + ',instance="' + instance_name + '"}'
 
 
-async def vm_site_metrics(site_name: str) -> dict:
+async def vm_site_metrics(site_name: str, instance_name: str | None = None) -> dict:
     if not site_name:
         return {}
-    matcher = vm_site_matcher(site_name)
+    matcher = vm_site_matcher(site_name, instance_name)
     try:
-        vals = await vm_query_instant(matcher)
-        if not vals:
+        vals = await vm_query_instant(matcher, sum_names=MEMORY_METRIC_NAMES)
+        if not vals and instance_name is None:
             # 兜底：实例标签=站点名（如 instance="gb10-head" 的非 -llm 命名）
             vals = await vm_query_instant(
-                '{__name__=~"' + _VM_METRIC_RE + '",instance=~"^{name}(-llm)?$"}'.replace("{name}", site_name))
+                '{__name__=~"' + _VM_METRIC_RE + '",instance=~"^{name}(-llm)?$"}'.replace("{name}", site_name),
+                sum_names=MEMORY_METRIC_NAMES)
         # 用计数器最近两个采样点的即时速率作为 VM 吞吐，避免 llama.cpp
         # 的滚动 gauge 在采集间隔内归零造成卡片和曲线看起来没有变化。
         if vals and "llamacpp:tokens_predicted_total" in vals:
@@ -1164,6 +1205,29 @@ async def vm_site_metrics(site_name: str) -> dict:
     except (httpx.HTTPError, ValueError, TypeError, KeyError):
         return {}
     return _finish_metrics(vals)
+
+
+def cluster_member_config(site_name: str) -> list[dict]:
+    return [dict(member) for member in CLUSTER_MEMBER_CONFIG.get(site_name, ())]
+
+
+async def site_members(site_name: str) -> list[dict]:
+    """Return configured cluster members, including members with no samples."""
+    members = cluster_member_config(site_name)
+    if not members:
+        return []
+    metrics = await asyncio.gather(
+        *(vm_site_metrics(site_name, member["instance"]) for member in members),
+        return_exceptions=True,
+    )
+    rows = []
+    for member, metric in zip(members, metrics):
+        if not isinstance(metric, dict):
+            metric = {}
+        rows.append({**member, "id": member["instance"],
+                     "status": "online" if metric else "no_data",
+                     "metrics": metric})
+    return rows
 
 
 def _dep_port(dep: dict) -> int:
@@ -1238,6 +1302,10 @@ async def api_overview(request: Request) -> Response:
     deps, sites, hs = await litellm_deployments(), await onboard_sites(), wg_handshakes()
     health = await direct_health(sites)
     metrics = await asyncio.gather(*(site_metrics(s, deps) for s in sites), return_exceptions=True)
+    member_metrics = await asyncio.gather(
+        *(site_members(str(s.get("name") or "")) for s in sites),
+        return_exceptions=True,
+    )
     # KPI 使用本地只读账本聚合，避免每次刷新从 LiteLLM 下载约 17 MB 的全量 spend logs。
     # 账本暂不可用时保留旧回退路径，兼容迁移中的部署。
     filters = await _usage_dims(request)
@@ -1259,9 +1327,11 @@ async def api_overview(request: Request) -> Response:
                   "cached_tokens": sum(row_cached(r) for r in today),
                   "errors": sum(1 for r in today if r.get("status") == "failure")}
     site_rows = []
-    for s, metric in zip(sites, metrics):
+    for s, metric, members in zip(sites, metrics, member_metrics):
         if not isinstance(metric, dict):
             metric = {}
+        if not isinstance(members, list):
+            members = []
         direct = s.get("transport", "wireguard") == "direct"
         ago = None if direct else hs.get(s.get("pubkey") or "", -1)
         n_deps = sum(1 for d in deps if dep_of_site_row(d, s))
@@ -1269,10 +1339,13 @@ async def api_overview(request: Request) -> Response:
                  s["status"] in ("active", "partial") and 0 <= ago < HANDSHAKE_ONLINE
         status = "offline" if direct and s["status"] in ("active", "partial") and not online else \
                  "online" if online else s["status"]
+        if members and status != "online":
+            members = [{**member, "status": "offline"} for member in members]
         site_rows.append({"name": s["name"], "display_name": site_display_name(s["name"]),
                           "transport": "direct" if direct else "wireguard",
                           "address": s.get("address") if direct else None, "wg_ip": None if direct else s["wg_ip"], "handshake": ago,
-                          "deployments": n_deps, "status": status, "metrics": metric})
+                          "deployments": n_deps, "status": status, "metrics": metric,
+                          "cluster": bool(members), "members": members})
     per_dep = {}
     dep_source = today or usage_rows
     for r in dep_source:
@@ -1348,12 +1421,15 @@ async def api_metrics_range(request: Request) -> Response:
         return sess
     metric = request.query_params.get("metric", "").strip()
     site = request.query_params.get("site", "").strip()[:120]
+    instance = request.query_params.get("instance", "").strip()[:128] or None
     try:
         hours = int(request.query_params.get("hours", "1"))
     except ValueError:
         return jerr("invalid hours", 400)
     if metric not in LOGICAL_RANGE_METRICS or not site:
         return jerr("invalid metric or site", 400)
+    if instance and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", instance):
+        return jerr("invalid instance", 400)
     step = _RANGE_HOURS.get(hours)
     if not step:
         return jerr("hours must be one of 1/6/24/168", 400)
@@ -1362,7 +1438,7 @@ async def api_metrics_range(request: Request) -> Response:
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             result = []
-            matcher = vm_site_matcher(site)
+            matcher = vm_site_matcher(site, instance)
             # Keep the same source priority as the live card.  Querying all
             # alternatives with PromQL `or` and averaging the returned series
             # blended llama.cpp and adapter samples when both profiles existed.
@@ -1389,7 +1465,10 @@ async def api_metrics_range(request: Request) -> Response:
             except (TypeError, ValueError):
                 continue
     points = [[ts, round(sum(v) / len(v), 3)] for ts, v in sorted(by_ts.items())]
-    return JSONResponse({"metric": metric, "site": site, "step": step, "points": points})
+    body = {"metric": metric, "site": site, "step": step, "points": points}
+    if instance:
+        body["instance"] = instance
+    return JSONResponse(body)
 
 
 _ENDPOINT_OF = {

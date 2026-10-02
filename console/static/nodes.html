@@ -18,6 +18,7 @@
       <button class="pf-btn primary" id="nd-refresh" type="button">⟳ 刷新</button>
     </div>
   </div>
+  <div id="nd-summary"></div>
   <div id="nd-blocks"></div>
 </template>
 <script src="assets/vendor/echarts.min.js"></script>
@@ -75,23 +76,62 @@
       textStyle: { color: t.text2, fontSize: 11, fontFamily: 'ui-monospace,Menlo,monospace' } };
   }
 
-  var st = { hours: 1, node: '', interval: 10, left: 10, ov: null, hist: {} };  // hist[site]={speed,pre,kv,gpu,temp,power}
+  var st = { hours: 1, node: '', interval: 10, left: 10, ov: null, hist: {} };  // hist[rowKey]={speed,pre,kv,gpu,temp,power}
+
+  function rowKey(s) { return String(s.site_name || s.name || '').replace(/[^A-Za-z0-9_-]/g, '_') + (s.instance ? '--' + String(s.instance).replace(/[^A-Za-z0-9_-]/g, '_') : ''); }
+  function dashboardNodes() {
+    var rows = (st.ov && st.ov.sites.rows) || [];
+    rows = rows.filter(function (s) { return !st.node || s.name === st.node; });
+    var out = [];
+    rows.forEach(function (s) {
+      if (s.cluster && Array.isArray(s.members) && s.members.length) {
+        s.members.forEach(function (m) {
+          out.push({ site_name: s.name, name: s.name, instance: m.instance,
+            display_name: (s.display_name || s.name) + ' · ' + (m.display_name || m.instance),
+            parent_display_name: s.display_name || s.name, status: m.status,
+            wg_ip: s.wg_ip, address: s.address, metrics: m.metrics || {}, cluster_member: true });
+        });
+      } else {
+        out.push(Object.assign({}, s, { site_name: s.name }));
+      }
+    });
+    return out;
+  }
 
   function visibleNodes() {
-    var rows = (st.ov && st.ov.sites.rows) || [];
-    return rows.filter(function (s) { return !st.node || s.name === st.node; });
+    return dashboardNodes();
+  }
+
+  function renderSummary() {
+    var box = document.getElementById('nd-summary');
+    if (!box) return;
+    var rows = ((st.ov && st.ov.sites.rows) || []).filter(function (s) { return !st.node || s.name === st.node; });
+    var clusters = rows.filter(function (s) { return s.cluster && Array.isArray(s.members) && s.members.length; });
+    box.innerHTML = clusters.map(function (s) {
+      var online = s.members.filter(function (m) { return m.status === 'online'; }).length;
+      var memberText = s.members.map(function (m) {
+        var ok = m.status === 'online';
+        return '<span class="pf-cluster-member"><span class="pf-dot ' + (ok ? 'ok' : 'warn') + '"></span>' +
+          esc(m.display_name || m.instance) + ' <span class="pf-desc">' + (ok ? '在线' : '暂无数据') + '</span></span>';
+      }).join('');
+      return '<div class="pf-card pf-cluster-summary"><div class="pf-card-head"><div class="pf-card-title">' +
+        esc(s.display_name || s.name) + ' cluster</div><div class="pf-card-extra">' + online + '/' + s.members.length + ' 个成员在线</div></div>' +
+        '<div class="pf-cluster-members">' + memberText + '</div></div>';
+    }).join('');
   }
 
   async function fetchHist(nodes, hours) {
     var metrics = ['output_tok_s', 'input_tok_s', 'kv_cache_pct', 'gpu_util_pct', 'gpu_temp_c', 'power_w'];
     var jobs = [];
     nodes.forEach(function (s) {
+      var query = '&site=' + encodeURIComponent(s.site_name || s.name) + (s.instance ? '&instance=' + encodeURIComponent(s.instance) : '');
       metrics.forEach(function (m) {
-        jobs.push(window.pfApi('GET', '/metrics/range?metric=' + m + '&site=' + encodeURIComponent(s.name) + '&hours=' + hours).catch(function () { return null; }));
+        jobs.push(window.pfApi('GET', '/metrics/range?metric=' + m + query + '&hours=' + hours).catch(function () { return null; }));
       });
     });
     var out = await Promise.all(jobs);
     nodes.forEach(function (s, i) {
+      var key = rowKey(s);
       var hist = {
         speed: (out[i * 6] || {}).points || [],
         pre: (out[i * 6 + 1] || {}).points || [],
@@ -119,7 +159,7 @@
       hist.gpu = appendLive(hist.gpu, m.gpu_util_pct);
       hist.temp = appendLive(hist.temp, m.gpu_temp_c);
       hist.power = appendLive(hist.power, m.power_w);
-      st.hist[s.name] = hist;
+      st.hist[key] = hist;
     });
   }
 
@@ -127,6 +167,7 @@
     var t = TC();
     var color = t.s[NODE_COLORS[idx % NODE_COLORS.length]];
     var m = s.metrics || {};
+    var key = rowKey(s);
     var online = s.status === 'online';
     var revoked = s.status === 'revoked';
     var groups = [
@@ -140,7 +181,8 @@
     var full = nGroups === 5;
     var partial = nGroups > 0 && !full;
     var addr = s.wg_ip || (s.address || '').replace(/^https?:\/\//, '') || '—';
-    return '<div class="pf-card pf-node-block">' +
+    var statusText = s.status === 'no_data' ? '暂无数据' : (s.status || '未知');
+    return '<div class="pf-card pf-node-block' + (s.cluster_member ? ' pf-cluster-node' : '') + '">' +
       '<div class="pf-node-head">' +
         '<span class="pf-dot ' + (online ? 'ok' : revoked ? 'gray' : 'warn') + '"></span>' +
         '<span class="pf-node-name" style="color:' + color + '">' + esc(s.display_name || s.name) + '</span>' +
@@ -148,23 +190,23 @@
         '<span class="pf-chip gray">' + esc(addr) + '</span>' +
         (online ? '<span class="pf-chip ok"><span class="pf-dot ok" style="margin-right:0"></span>up</span>'
                 : revoked ? '<span class="pf-chip gray">已吊销</span>'
-                : '<span class="pf-chip warn">' + esc(s.status || '未知') + '</span>') +
+                : '<span class="pf-chip ' + (s.status === 'no_data' ? 'gray' : 'warn') + '">' + esc(statusText) + '</span>') +
         (full ? '<span class="pf-chip accent">exporter 完整</span>'
               : partial ? '<span class="pf-chip warn">exporter 部分</span>' : '') +
         '<span class="pf-desc" style="margin-left:auto">最近采集 <span style="color:var(--accent)">' + (online ? '刚刚' : '—') + '</span></span>' +
       '</div>' +
-      '<div class="pf-metric-grid" style="grid-template-columns:repeat(9,1fr)" id="nm-' + esc(s.name) + '"></div>' +
+      '<div class="pf-metric-grid" style="grid-template-columns:repeat(10,1fr)" id="nm-' + esc(key) + '"></div>' +
       '<div class="pf-grid" style="grid-template-columns:1fr 1fr">' +
-        '<div><div class="pf-desc" style="font-size:11px;margin:2px 0 4px">吞吐趋势 · 输出 / Prefill tok/s</div><div id="ch-nd-tps-' + esc(s.name) + '" class="pf-chart h200"></div></div>' +
-        '<div><div class="pf-desc" style="font-size:11px;margin:2px 0 4px">资源趋势 · KV / GPU %</div><div id="ch-nd-res-' + esc(s.name) + '" class="pf-chart h200"></div></div>' +
-        '<div style="grid-column:1 / -1"><div class="pf-desc" style="font-size:11px;margin:2px 0 4px">温度 / 功耗趋势 · °C / W</div><div id="ch-nd-thermal-' + esc(s.name) + '" class="pf-chart h200"></div></div>' +
+        '<div><div class="pf-desc" style="font-size:11px;margin:2px 0 4px">吞吐趋势 · 输出 / Prefill tok/s</div><div id="ch-nd-tps-' + esc(key) + '" class="pf-chart h200"></div></div>' +
+        '<div><div class="pf-desc" style="font-size:11px;margin:2px 0 4px">资源趋势 · KV / GPU %</div><div id="ch-nd-res-' + esc(key) + '" class="pf-chart h200"></div></div>' +
+        '<div style="grid-column:1 / -1"><div class="pf-desc" style="font-size:11px;margin:2px 0 4px">温度 / 功耗趋势 · °C / W</div><div id="ch-nd-thermal-' + esc(key) + '" class="pf-chart h200"></div></div>' +
       '</div>' +
     '</div>';
   }
 
   function metricTiles(s) {
     var m = s.metrics || {};
-    var hist = st.hist[s.name] || {};
+    var hist = st.hist[rowKey(s)] || {};
     var act = m.requests_running == null ? null : Math.round(m.requests_running);
     var que = m.requests_waiting == null ? null : Math.round(m.requests_waiting);
     var kvHit = m.cache_hit_pct == null ? null : m.cache_hit_pct;
@@ -186,7 +228,12 @@
       tile('MTP/TAR 接受率',
         spec == null ? dash() : spec.toFixed(1) + '<span class="unit">%</span>',
         spec == null ? '该节点无此指标' : '推测解码 · exporter'),
-      tile('内存 已用 / 可用', dash(), 'exporter 未提供显存指标'),
+      tile('显存 已用 / 总量',
+        (m.memory_used_mib == null ? dash() : Math.round(m.memory_used_mib).toLocaleString('zh-CN')) +
+          ' <span class="unit">/ ' + (m.memory_total_mib == null ? '—' : Math.round(m.memory_total_mib).toLocaleString('zh-CN') + ' MiB') + '</span>',
+        m.memory_used_mib == null && m.memory_total_mib == null ? 'exporter 未提供显存指标' : 'DCGM · MiB'),
+      tile('显存 剩余', m.memory_free_mib == null ? dash() : Math.round(m.memory_free_mib).toLocaleString('zh-CN') + '<span class="unit"> MiB</span>',
+        m.memory_free_mib == null ? 'exporter 未提供显存指标' : 'DCGM · FB_FREE'),
       tile('GPU 活跃度',
         m.gpu_util_pct == null ? dash() : m.gpu_util_pct.toFixed(0) + '<span class="unit">%</span>',
         'DCGM · exporter' + pctTile(m.gpu_util_pct)),
@@ -214,19 +261,20 @@
     var nodes = visibleNodes();
     var box = document.getElementById('nd-blocks');
     /* 只在节点集合变化时重建 DOM（图表容器保持稳定，刷新只 setOption） */
-    var sig = nodes.map(function (s) { return s.name; }).join(',');
+    var sig = nodes.map(rowKey).join(',');
     if (box.dataset.sig !== sig) {
       box.dataset.sig = sig;
       box.innerHTML = nodes.map(buildBlock).join('') || '<div class="pf-card"><div class="pf-empty"><div class="pf-empty-icon">▢</div>暂无节点数据</div></div>';
       charts = {};     // 容器重建后旧实例作废
     }
     nodes.forEach(function (s, idx) {
-      var el = document.getElementById('nm-' + s.name);
+      var key = rowKey(s);
+      var el = document.getElementById('nm-' + key);
       if (el) el.innerHTML = metricTiles(s);
       var color = TC().s[NODE_COLORS[idx % NODE_COLORS.length]];
-      var hist = st.hist[s.name] || {};
+      var hist = st.hist[key] || {};
       var toXY = function (pts) { return pts.map(function (p) { return [p[0] * 1000, Math.round(p[1] * 10) / 10]; }); };
-      lineChart('ch-nd-tps-' + s.name, [
+      lineChart('ch-nd-tps-' + key, [
         { name: '输出 tok/s', type: 'line', smooth: true, symbol: 'none', data: toXY(hist.speed),
           yAxisIndex: 0, lineStyle: { width: 1.5, color: color }, itemStyle: { color: color }, areaStyle: { color: color, opacity: 0.12 } },
         { name: 'Prefill tok/s', type: 'line', smooth: true, symbol: 'none', data: toXY(hist.pre),
@@ -235,13 +283,13 @@
         Object.assign({ type: 'value', name: '输出 tok/s', nameTextStyle: { color: color, fontSize: 10 }, splitNumber: 4 }, axisStyle(TC())),
         Object.assign({ type: 'value', name: 'Prefill', position: 'right', nameTextStyle: { color: TC().s.violet, fontSize: 10 }, splitNumber: 4 }, axisStyle(TC()))
       ]);
-      lineChart('ch-nd-res-' + s.name, [
+      lineChart('ch-nd-res-' + key, [
         { name: 'KV Cache %', type: 'line', smooth: true, symbol: 'none', data: toXY(hist.kv),
           lineStyle: { width: 1.4, color: TC().s.cyan }, itemStyle: { color: TC().s.cyan } },
         { name: 'GPU 活跃 %', type: 'line', smooth: true, symbol: 'none', data: toXY(hist.gpu),
           lineStyle: { width: 1.4, color: TC().s.green }, itemStyle: { color: TC().s.green } }
       ], 100);
-      lineChart('ch-nd-thermal-' + s.name, [
+      lineChart('ch-nd-thermal-' + key, [
         { name: 'GPU 温度 °C', type: 'line', smooth: true, symbol: 'none', data: toXY(hist.temp),
           yAxisIndex: 0, lineStyle: { width: 1.4, color: TC().s.amber }, itemStyle: { color: TC().s.amber } },
         { name: 'GPU 功耗 W', type: 'line', smooth: true, symbol: 'none', data: toXY(hist.power),
@@ -254,7 +302,7 @@
   }
 
   function fillFilter() {
-    var f = document.getElementById('nd-node'), old = f.value;
+    var f = document.getElementById('nd-node'), old = st.node || f.value;
     var rows = (st.ov && st.ov.sites.rows) || [];
     f.innerHTML = '<option value="">全部节点</option>' + rows.map(function (s) {
       return '<option value="' + esc(s.name) + '">' + esc(s.display_name || s.name) + '</option>'; }).join('');
@@ -274,6 +322,7 @@
       fillFilter();
       await fetchHist(visibleNodes(), st.hours);
       if (epoch !== loadEpoch) return;
+      renderSummary();
       render();
       var last = document.getElementById('nd-last'); if (last) last.textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false });
       st.left = st.interval;

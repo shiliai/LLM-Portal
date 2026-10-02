@@ -9,7 +9,15 @@ const SITES = [
     deployments: 2, status: 'online',
     metrics: { runtime: 'vllm', output_tok_s: 86.4, input_tok_s: 520, requests_running: 5,
       requests_waiting: 1, kv_cache_pct: 71, cache_hit_pct: 63.2, gpu_util_pct: 88,
-      gpu_temp_c: 72, power_w: 410 } },
+      gpu_temp_c: 72, power_w: 410 }, cluster: true,
+    members: [
+      { id: 'gb10-head', instance: 'gb10-head', display_name: 'Header', status: 'online',
+        metrics: { runtime: 'vllm', output_tok_s: 86.4, input_tok_s: 520, requests_running: 5,
+          requests_waiting: 1, kv_cache_pct: 71, cache_hit_pct: 63.2, gpu_util_pct: 88,
+          gpu_temp_c: 72, power_w: 410, memory_used_mib: 62000, memory_total_mib: 122000,
+          memory_free_mib: 60000 } },
+      { id: 'gb10-worker', instance: 'gb10-worker', display_name: 'Worker', status: 'no_data', metrics: {} }
+    ] },
   { name: 'dell-shili-7960', transport: 'wireguard', wg_ip: '10.77.0.14', address: null, handshake: 8,
     deployments: 1, status: 'online',
     metrics: { runtime: 'llamacpp', output_tok_s: 45.1, input_tok_s: 210, requests_running: 3,
@@ -46,7 +54,7 @@ function rangePoints(base) {
 }
 
 async function installFixtures(page, seen) {
-  await page.route('**/console/api/overview', route => route.fulfill({ json: OVERVIEW }));
+  await page.route('**/console/api/overview**', route => route.fulfill({ json: OVERVIEW }));
   await page.route('**/console/api/usage?**', route => route.fulfill({ json: USAGE }));
   await page.route('**/console/api/metrics/range?**', route => {
     const params = new URL(route.request().url()).searchParams;
@@ -91,23 +99,23 @@ async function installFixtures(page, seen) {
 
   console.log('== 3. 节点健康表 + exporter 覆盖:');
   const healthRows = await page.locator('#ov-health tr').count();
-  if (healthRows !== 3) throw new Error('health table must show 3 nodes, got ' + healthRows);
+  if (healthRows !== 4) throw new Error('health table must show 4 node members, got ' + healthRows);
   const healthText = await page.locator('#ov-health').innerText();
-  if (!healthText.includes('vllm') || !healthText.includes('llamacpp')) throw new Error('runtime column missing');
+  if (!healthText.includes('Header') || !healthText.includes('Worker') || !healthText.includes('vllm') || !healthText.includes('llamacpp')) throw new Error('cluster member/runtime column missing');
   if (!healthText.includes('部分')) throw new Error('partial exporter chip missing (m2s2)');
   console.log('节点行:', healthRows, '| exporter 部分标记: true');
 
   console.log('== 4. 时间窗口切换 → range 请求 hours:');
   seen.range = [];
   await page.locator('#ov-win button[data-win="0.25"]').click();
-  await page.waitForTimeout(600);
+  await page.waitForTimeout(1000);
   if (!seen.range.some(x => x.endsWith('h6'))) throw new Error('6h window must query hours=6: ' + seen.range.join(','));
   console.log('range 请求样例:', seen.range[0]);
 
-  console.log('== 5. 节点筛选 → 健康表只剩 1 行:');
+  console.log('== 5. 节点筛选 → 健康表只剩 2 个 GB10 成员:');
   await page.selectOption('#ov-node', 'gb10');
-  await page.waitForTimeout(600);
-  if (await page.locator('#ov-health tr').count() !== 1) throw new Error('node filter must narrow health table');
+  await page.waitForTimeout(1200);
+  if (await page.locator('#ov-health tr').count() !== 2) throw new Error('node filter must narrow cluster to 2 members');
   console.log('节点筛选后行数:', await page.locator('#ov-health tr').count());
   await page.selectOption('#ov-node', '');
   await page.waitForTimeout(500);
@@ -124,12 +132,19 @@ async function installFixtures(page, seen) {
   await page.goto(BASE + '/console/nodes.html');
   await page.waitForTimeout(1200);
 
-  console.log('== 7. 节点详情块 + 九宫格:');
+  console.log('== 7. 节点详情块 + 指标网格:');
   const blocks = await page.locator('.pf-node-block').count();
-  if (blocks !== 3) throw new Error('expected 3 node blocks, got ' + blocks);
+  if (blocks !== 4) throw new Error('expected 4 node blocks including GB10 members, got ' + blocks);
   const tiles = await page.locator('.pf-node-block').first().locator('.pf-metric').count();
-  if (tiles !== 9) throw new Error('each node block must have 9 metric tiles, got ' + tiles);
+  if (tiles !== 10) throw new Error('each node block must have 10 metric tiles, got ' + tiles);
   console.log('节点块:', blocks, '| 首块指标卡:', tiles);
+
+  const gb10Header = page.locator('.pf-node-block', { hasText: 'Header' });
+  const gb10Worker = page.locator('.pf-node-block', { hasText: 'Worker' });
+  if (await gb10Header.count() !== 1 || await gb10Worker.count() !== 1) throw new Error('GB10 Header/Worker cards must be separate');
+  if (!(await gb10Header.locator('.pf-metric-grid').innerText()).includes('62,000')) throw new Error('GB10 Header memory metrics missing');
+  if (!(await gb10Worker.locator('.pf-metric-grid').innerText()).includes('exporter 未提供显存指标')) throw new Error('GB10 Worker no-data memory state missing');
+  console.log('GB10 Header/Worker 分卡与显存空态: true');
 
   console.log('== 8. 缺失指标显示 —（m2s2 无 spec/温度/功耗/KV）:');
   const m2s2 = page.locator('.pf-node-block', { hasText: 'm2s2NasUbuntuVM-shili-dev' });

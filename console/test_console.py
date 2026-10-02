@@ -1544,6 +1544,69 @@ def test_finish_metrics_accepts_legacy_llamacpp_cache_counter_name(console_admin
     assert out["cache_hit_pct"] == pytest.approx(20.0)
 
 
+def test_finish_metrics_derives_dcgm_memory_total_when_exporter_omits_total(console_admin):
+    out = console_admin._finish_metrics({
+        "DCGM_FI_DEV_FB_USED": 19813,
+        "DCGM_FI_DEV_FB_FREE": 4361,
+        "DCGM_FI_DEV_FB_RESERVED": 401,
+    })
+    assert out["memory_used_mib"] == 19813
+    assert out["memory_free_mib"] == 4361
+    assert out["memory_total_mib"] == 24575
+    assert out["memory_reserved_mib"] == 401
+
+
+def test_vm_site_matcher_can_pin_cluster_member(console_admin):
+    matcher = console_admin.vm_site_matcher("gb10", "gb10-head")
+    assert 'site=~"^gb10(-llm)?$"' in matcher
+    assert 'instance="gb10-head"' in matcher
+
+
+def test_site_members_preserves_missing_cluster_member(console_admin, monkeypatch):
+    async def fake_metrics(site, instance=None):
+        return {"gpu_util_pct": 90} if instance == "gb10-head" else {}
+
+    monkeypatch.setattr(console_admin, "vm_site_metrics", fake_metrics)
+    rows = asyncio.run(console_admin.site_members("gb10"))
+    assert [(row["instance"], row["status"]) for row in rows] == [
+        ("gb10-head", "online"), ("gb10-worker", "no_data")]
+
+
+def test_overview_exposes_cluster_members_without_changing_site_summary(console_admin, monkeypatch):
+    async def fake_sites():
+        return [{"name": "gb10", "transport": "wireguard", "wg_ip": "10.77.0.11",
+                 "pubkey": "gb10-pub", "status": "active", "models": [], "groups": []}]
+
+    async def fake_deps():
+        return []
+
+    async def fake_metric(_site, _deps):
+        return {"output_tok_s": 80, "memory_used_mib": 1200}
+
+    async def fake_members(_site):
+        return [{"id": "gb10-head", "instance": "gb10-head", "display_name": "Header",
+                 "status": "online", "metrics": {"output_tok_s": 80}},
+                {"id": "gb10-worker", "instance": "gb10-worker", "display_name": "Worker",
+                 "status": "no_data", "metrics": {}}]
+
+    async def fake_usage(*_args, **_kwargs):
+        return ({"requests": 0, "prompt_tokens": 0, "completion_tokens": 0,
+                 "cached_tokens": 0, "failures": 0}, [], [], [])
+
+    monkeypatch.setattr(console_admin, "onboard_sites", fake_sites)
+    monkeypatch.setattr(console_admin, "litellm_deployments", fake_deps)
+    monkeypatch.setattr(console_admin, "site_metrics", fake_metric)
+    monkeypatch.setattr(console_admin, "site_members", fake_members)
+    monkeypatch.setattr(console_admin, "wg_handshakes", lambda: {"gb10-pub": 1})
+    monkeypatch.setattr(console_admin, "usage_aggregate", fake_usage)
+    client, hdr = _admin_login(console_admin)
+    body = client.get("/console/api/overview", headers=hdr).json()
+    row = body["sites"]["rows"][0]
+    assert row["cluster"] is True
+    assert [m["instance"] for m in row["members"]] == ["gb10-head", "gb10-worker"]
+    assert row["metrics"]["output_tok_s"] == 80
+
+
 def test_site_metrics_aggregates_distinct_upstream_endpoints(console_admin, monkeypatch):
     class _Resp:
         def __init__(self, text):
@@ -1703,6 +1766,10 @@ def test_metrics_range_returns_points_from_vm(console_admin, monkeypatch):
     # The adapter interval gauge is the primary source. Counter irate fragments
     # are queried only when that source has no samples.
     assert query == "avg(llamacpp:predicted_tokens_seconds{__name__=~\"(llamacpp:[a-z_0-9]+|vllm:[a-z_0-9]+|tensorfold(_health)?:[a-z_0-9]+|DCGM_FI_DEV_[A-Z_0-9]+)\",site=~\"^gb10(-llm)?$\"})"
+    member = client.get("/console/api/metrics/range?metric=output_tok_s&site=gb10&instance=gb10-head&hours=1", headers=hdr)
+    assert member.status_code == 200
+    assert member.json()["instance"] == "gb10-head"
+    assert 'instance="gb10-head"' in seen[-1][1]["query"]
 
 
 def test_usage_api_returns_node_endpoint_group_dimensions(console_admin, monkeypatch):
