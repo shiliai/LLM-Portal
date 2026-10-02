@@ -19,6 +19,7 @@
   .nd-panel { min-width:0; padding:9px 10px; background:var(--panel); border:1px solid var(--border); border-radius:3px; }
   .nd-panel.nd-span-3 { grid-column:span 3; }
   .nd-panel.nd-span-4 { grid-column:span 4; }
+  .nd-panel.nd-span-5 { grid-column:span 5; }
   .nd-panel.nd-span-6 { grid-column:span 6; }
   .nd-panel.nd-span-7 { grid-column:span 7; }
   .nd-panel.nd-span-8 { grid-column:span 8; }
@@ -64,8 +65,8 @@
   .nd-node-inference { margin-bottom:8px; }
   .nd-node-inference .nd-panel { min-height:0; }
   .nd-node-inference .nd-stat { font-size:18px; }
-  @media (max-width:980px) { .nd-stats { grid-template-columns:repeat(3,minmax(0,1fr)); } .nd-panel.nd-span-3,.nd-panel.nd-span-4,.nd-panel.nd-span-6,.nd-panel.nd-span-7,.nd-panel.nd-span-8 { grid-column:span 6; } .nd-resource-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } }
-  @media (max-width:640px) { .nd-grid { grid-template-columns:1fr; } .nd-stats,.nd-resource-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .nd-panel.nd-span-3,.nd-panel.nd-span-4,.nd-panel.nd-span-6,.nd-panel.nd-span-7,.nd-panel.nd-span-8,.nd-panel.nd-span-12,.nd-node-block.nd-span-6 { grid-column:span 1; } .nd-cluster-dashboard .nd-dashboard-bar { display:block; } .nd-cluster-members { margin:8px 0 0; } .nd-member-row { grid-template-columns:1fr 1fr; } .nd-member-status { justify-self:start; } }
+  @media (max-width:980px) { .nd-stats { grid-template-columns:repeat(3,minmax(0,1fr)); } .nd-panel.nd-span-3,.nd-panel.nd-span-4,.nd-panel.nd-span-5,.nd-panel.nd-span-6,.nd-panel.nd-span-7,.nd-panel.nd-span-8 { grid-column:span 6; } .nd-resource-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+  @media (max-width:640px) { .nd-grid { grid-template-columns:1fr; } .nd-stats,.nd-resource-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .nd-panel.nd-span-3,.nd-panel.nd-span-4,.nd-panel.nd-span-5,.nd-panel.nd-span-6,.nd-panel.nd-span-7,.nd-panel.nd-span-8,.nd-panel.nd-span-12,.nd-node-block.nd-span-6 { grid-column:span 1; } .nd-cluster-dashboard .nd-dashboard-bar { display:block; } .nd-cluster-members { margin:8px 0 0; } .nd-member-row { grid-template-columns:1fr 1fr; } .nd-member-status { justify-self:start; } }
 </style></head>
 <body data-page="nodes"><template id="page">
   <div class="pf-toolbar">

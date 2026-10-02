@@ -162,6 +162,10 @@ async function installFixtures(page, seen) {
   if (await shared.locator('.nd-stat-panel').count() !== 5) throw new Error('GB10 inference metrics must render once at cluster level');
   if (await gb10Header.locator('.nd-stat-panel').count() !== 0 || await gb10Worker.locator('.nd-stat-panel').count() !== 0) throw new Error('GB10 members must not duplicate inference metrics');
   if (!workerText.includes('exporter 未提供内存指标')) throw new Error('GB10 Worker no-data memory state missing');
+  if (Number(process.env.VIEWPORT_WIDTH || 1720) > 980) {
+    const thermalGridSpan = await page.locator('#ch-nd-thermal-gb10--gb10-head').evaluate(el => getComputedStyle(el.parentElement).gridColumn);
+    if (!/span 5/.test(thermalGridSpan)) throw new Error('member thermal panel must occupy the configured 5-column span, got ' + thermalGridSpan);
+  }
   console.log('GB10 cluster 单份推理区，Header/Worker 资源区独立: true');
 
   console.log('== 8. 缺失指标显示 —（m2s2 无 spec/温度/功耗/KV）:');
