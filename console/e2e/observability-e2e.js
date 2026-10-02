@@ -64,8 +64,9 @@ async function installFixtures(page, seen) {
     seen.range.push(params.get('metric') + '@' + params.get('site') + '@' + (params.get('instance') || 'site') + 'h' + params.get('hours'));
     const base = { output_tok_s: 40, input_tok_s: 200, requests_active: 4,
       kv_cache_pct: 60, gpu_util_pct: 80, gpu_temp_c: 68, power_w: 300 }[params.get('metric')] || 0;
+    const noHistory = params.get('instance') === 'gb10-worker';
     return route.fulfill({ json: { metric: params.get('metric'), site: params.get('site'),
-      step: 60, points: rangePoints(base) } });
+      step: 60, points: noHistory ? [] : rangePoints(base) } });
   });
 }
 
@@ -163,6 +164,7 @@ async function installFixtures(page, seen) {
   if (await shared.locator('.nd-mini-axis').count() < 3 || !(await shared.locator('.nd-mini-axis').first().innerText()).includes('1h ago')) throw new Error('stat panel mini charts must expose a time axis');
   if (await gb10Header.locator('.nd-stat-panel').count() !== 0 || await gb10Worker.locator('.nd-stat-panel').count() !== 0) throw new Error('GB10 members must not duplicate inference metrics');
   if (!workerText.includes('exporter 未提供内存指标')) throw new Error('GB10 Worker no-data memory state missing');
+  if (await gb10Worker.locator('.nd-chart[data-empty="true"]').count() !== 2) throw new Error('GB10 Worker no-data charts must show an explicit empty state');
   if (Number(process.env.VIEWPORT_WIDTH || 1720) > 980) {
     const thermalGridSpan = await page.locator('#ch-nd-thermal-gb10--gb10-head').evaluate(el => getComputedStyle(el.parentElement).gridColumn);
     if (!/span 5/.test(thermalGridSpan)) throw new Error('member thermal panel must occupy the configured 5-column span, got ' + thermalGridSpan);
@@ -204,7 +206,7 @@ async function installFixtures(page, seen) {
   await collapse.click();
   if (await collapse.getAttribute('aria-expanded') !== 'true' || !await collapse.locator('xpath=../..').locator('.nd-content').isVisible()) throw new Error('dashboard row must expand');
   console.log('row collapse: true');
-  await page.screenshot({ path: '/tmp/e2e/r106-nodes.png', fullPage: false });
+  await page.screenshot({ path: '/tmp/e2e/r106-nodes.png', fullPage: process.env.FULL_PAGE === '1' });
 
   console.log('\nERRORS:', errors.length ? errors.join('\n') : 'none');
   if (errors.length) process.exit(1);

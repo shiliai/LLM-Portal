@@ -399,6 +399,21 @@
   function lineChart(id, seriesDefs, yMax, yAxes) {
     var ch = getChart(id); if (!ch) return;
     var t = TC();
+    var dom = document.getElementById(id);
+    var hasData = seriesDefs.some(function (series) { return Array.isArray(series.data) && series.data.length; });
+    if (!hasData) {
+      if (dom) dom.dataset.empty = 'true';
+      ch.clear();
+      ch.setOption({
+        backgroundColor: 'transparent',
+        graphic: { type: 'group', left: 'center', top: 'middle', children: [
+          { type: 'text', left: 'center', top: -12, style: { text: '暂无历史数据', fill: t.text2, fontSize: 12, fontFamily: 'system-ui,sans-serif' } },
+          { type: 'text', left: 'center', top: 12, style: { text: '最近 ' + rangeLabel() + ' · 无采样', fill: t.muted, fontSize: 10, fontFamily: 'ui-monospace,Menlo,monospace' } }
+        ] }
+      });
+      return;
+    }
+    if (dom) delete dom.dataset.empty;
     ch.setOption({
       backgroundColor: 'transparent', tooltip: baseTooltip(t),
       legend: { textStyle: { color: t.text2, fontSize: 10 }, top: 0, icon: 'roundRect', itemWidth: 10, itemHeight: 3 },
