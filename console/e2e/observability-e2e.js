@@ -145,7 +145,7 @@ async function installFixtures(page, seen) {
   const blocks = await page.locator('.pf-node-block').count();
   if (blocks !== 4) throw new Error('expected 4 node blocks including GB10 members, got ' + blocks);
   const tiles = await page.locator('.pf-node-block').first().locator('.pf-metric').count();
-  if (tiles !== 11) throw new Error('each node block must have 11 metric tiles, got ' + tiles);
+  if (tiles !== 6) throw new Error('GB10 member resource block must have 6 metric tiles, got ' + tiles);
   console.log('节点块:', blocks, '| 首块指标卡:', tiles);
 
   const gb10Header = page.locator('.pf-node-block', { hasText: 'Header' });
@@ -154,9 +154,11 @@ async function installFixtures(page, seen) {
   const headerText = await gb10Header.locator('.pf-metric-grid').innerText();
   if (!headerText.includes('统一内存') || !headerText.includes('62,000') || !headerText.includes('99,246')) throw new Error('GB10 Header memory metrics missing');
   const workerText = await gb10Worker.locator('.pf-metric-grid').innerText();
-  if (!workerText.includes('86.4') || !workerText.includes('5 / 1')) throw new Error('GB10 Worker must reuse cluster inference metrics');
+  const sharedText = await page.locator('#nd-summary .pf-cluster-summary .pf-metric-grid').innerText();
+  if (!sharedText.includes('86.4') || !sharedText.includes('5 / 1')) throw new Error('GB10 cluster inference metrics missing');
+  if (await page.locator('#nd-summary .pf-cluster-summary .pf-metric').count() !== 5) throw new Error('GB10 inference metrics must render once at cluster level');
   if (!workerText.includes('exporter 未提供内存指标')) throw new Error('GB10 Worker no-data memory state missing');
-  console.log('GB10 Header/Worker 分卡，推理指标共享，资源空态独立: true');
+  console.log('GB10 cluster 单份推理区，Header/Worker 资源区独立: true');
 
   console.log('== 8. 缺失指标显示 —（m2s2 无 spec/温度/功耗/KV）:');
   const m2s2 = page.locator('.pf-node-block', { hasText: 'm2s2NasUbuntuVM-shili-dev' });
