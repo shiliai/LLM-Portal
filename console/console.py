@@ -883,8 +883,9 @@ def site_display_name(name: str) -> str:
 # vmagent 每 15 秒抓取一次节点指标。吞吐使用 irate 读取最近两个采样点，
 # 1 分钟只作为容错回看范围（允许一次抓取延迟/丢失），不再对过去 5 分钟做平滑平均。
 # 趋势查询的逻辑名 → PromQL 片段列表（{M} 为标签匹配占位符）。适配器的
-# interval gauge 先按站点聚合成一个无标签序列，再用历史计数器速率兜底；
-# 这样同一站点不会把「真实 gauge」和缺失计数器的 0 一起返回给前端均值。
+# 历史计数器速率优先，interval gauge 只在没有计数器时回退；
+# 这样趋势反映每个采样窗口真实发生的 token 数，而不是重复展示上一次
+# 请求的平均值或空闲时的 0。每个候选查询仍按站点聚合成一个序列。
 _TPS_RATE_FUNCTION = "irate"
 _TPS_RATE_WINDOW = "1m"
 
@@ -894,12 +895,15 @@ def _tps_rate(metric: str) -> str:
 
 
 LOGICAL_RANGE_METRICS: dict[str, list[str]] = {
-    "output_tok_s": ["avg(llamacpp:predicted_tokens_seconds{M})",
+    "output_tok_s": [_tps_rate("tensorfold:generation_tokens_total"),
+                     _tps_rate("tensorfold_health:completion_tokens_total"),
+                     _tps_rate("vllm:generation_tokens_total"),
                      _tps_rate("llamacpp:tokens_predicted_total"),
-                     _tps_rate("vllm:generation_tokens_total")],
-    "input_tok_s": ["avg(llamacpp:prompt_tokens_seconds{M})",
+                     "avg(llamacpp:predicted_tokens_seconds{M})"],
+    "input_tok_s": [_tps_rate("tensorfold:prompt_tokens_total"),
+                    _tps_rate("vllm:prompt_tokens_total"),
                     _tps_rate("llamacpp:prompt_tokens_total"),
-                    _tps_rate("vllm:prompt_tokens_total")],
+                    "avg(llamacpp:prompt_tokens_seconds{M})"],
     "requests_running": ["avg(llamacpp:requests_processing{M})",
                          "avg(vllm:num_requests_running{M})"],
     "requests_waiting": ["avg(llamacpp:requests_deferred{M})",

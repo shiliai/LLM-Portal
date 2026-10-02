@@ -1774,8 +1774,8 @@ def test_metrics_range_returns_points_from_vm(console_admin, monkeypatch):
         status_code = 200
         def json(self):
             return {"status": "success", "data": {"result": [
-                {"metric": {"__name__": "llamacpp:predicted_tokens_seconds"}, "values": [[1, "41.5"], [2, "43.0"]]},
-                {"metric": {"__name__": "llamacpp:predicted_tokens_seconds", "instance": "gb10-worker"},
+                {"metric": {"__name__": "tensorfold:generation_tokens_total"}, "values": [[1, "41.5"], [2, "43.0"]]},
+                {"metric": {"__name__": "tensorfold:generation_tokens_total", "instance": "gb10-worker"},
                  "values": [[1, "40.0"], [2, "44.0"]]},
             ]}}
 
@@ -1797,13 +1797,46 @@ def test_metrics_range_returns_points_from_vm(console_admin, monkeypatch):
     assert len(seen) == 1
     assert seen[0][1]["step"] == 10
     query = seen[0][1]["query"]
-    # The adapter interval gauge is the primary source. Counter irate fragments
-    # are queried only when that source has no samples.
-    assert query == "avg(llamacpp:predicted_tokens_seconds{__name__=~\"(llamacpp:[a-z_0-9]+|vllm:[a-z_0-9]+|tensorfold(_health)?:[a-z_0-9]+|DCGM_FI_DEV_[A-Z_0-9]+)\",site=~\"^gb10(-llm)?$\"})"
+    # Counter-derived rates are the primary source, so a stale adapter gauge
+    # cannot make several minutes of history appear flat.
+    assert query == "sum(irate(tensorfold:generation_tokens_total{__name__=~\"(llamacpp:[a-z_0-9]+|vllm:[a-z_0-9]+|tensorfold(_health)?:[a-z_0-9]+|DCGM_FI_DEV_[A-Z_0-9]+)\",site=~\"^gb10(-llm)?$\"}[1m]))"
     member = client.get("/console/api/metrics/range?metric=output_tok_s&site=gb10&instance=gb10-head&hours=1", headers=hdr)
     assert member.status_code == 200
     assert member.json()["instance"] == "gb10-head"
     assert 'instance="gb10-head"' in seen[-1][1]["query"]
+
+
+def test_metrics_range_falls_back_to_gauge_when_counter_is_missing(console_admin, monkeypatch):
+    install_litellm_stub(monkeypatch, _handler)
+    seen = []
+
+    class _Resp:
+        status_code = 200
+
+        def __init__(self, result):
+            self._result = result
+
+        def json(self):
+            return {"status": "success", "data": {"result": self._result}}
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, params=None):
+            seen.append((url, params))
+            if "predicted_tokens_seconds" not in (params or {}).get("query", ""):
+                return _Resp([])
+            return _Resp([{"metric": {"__name__": "llamacpp:predicted_tokens_seconds"},
+                           "values": [[1, "41.5"], [2, "43.0"]]}])
+
+    monkeypatch.setattr(console_admin, "VM_URL", "http://vm-stub.invalid")
+    monkeypatch.setattr(console_admin.httpx, "AsyncClient", _Client)
+    client, hdr = _admin_login(console_admin)
+    resp = client.get("/console/api/metrics/range?metric=output_tok_s&site=gb10&hours=1", headers=hdr)
+    assert resp.status_code == 200
+    assert resp.json()["points"] == [[1, 41.5], [2, 43.0]]
+    assert "predicted_tokens_seconds" in seen[-1][1]["query"]
 
 
 def test_usage_api_returns_node_endpoint_group_dimensions(console_admin, monkeypatch):
