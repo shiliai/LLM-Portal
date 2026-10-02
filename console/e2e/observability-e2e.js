@@ -14,8 +14,8 @@ const SITES = [
       { id: 'gb10-head', instance: 'gb10-head', display_name: 'Header', status: 'online',
         metrics: { runtime: 'vllm', output_tok_s: 86.4, input_tok_s: 520, requests_running: 5,
           requests_waiting: 1, kv_cache_pct: 71, cache_hit_pct: 63.2, gpu_util_pct: 88,
-          gpu_temp_c: 72, power_w: 410, memory_used_mib: 62000, memory_total_mib: 122000,
-          memory_free_mib: 60000 } },
+          gpu_temp_c: 72, power_w: 410, memory_kind: 'unified', memory_used_mib: 62000, memory_total_mib: 122000,
+          memory_free_mib: 60000, gpu_memory_used_mib: 99246 } },
       { id: 'gb10-worker', instance: 'gb10-worker', display_name: 'Worker', status: 'no_data', metrics: {} }
     ] },
   { name: 'dell-shili-7960', transport: 'wireguard', wg_ip: '10.77.0.14', address: null, handshake: 8,
@@ -136,14 +136,15 @@ async function installFixtures(page, seen) {
   const blocks = await page.locator('.pf-node-block').count();
   if (blocks !== 4) throw new Error('expected 4 node blocks including GB10 members, got ' + blocks);
   const tiles = await page.locator('.pf-node-block').first().locator('.pf-metric').count();
-  if (tiles !== 10) throw new Error('each node block must have 10 metric tiles, got ' + tiles);
+  if (tiles !== 11) throw new Error('each node block must have 11 metric tiles, got ' + tiles);
   console.log('节点块:', blocks, '| 首块指标卡:', tiles);
 
   const gb10Header = page.locator('.pf-node-block', { hasText: 'Header' });
   const gb10Worker = page.locator('.pf-node-block', { hasText: 'Worker' });
   if (await gb10Header.count() !== 1 || await gb10Worker.count() !== 1) throw new Error('GB10 Header/Worker cards must be separate');
-  if (!(await gb10Header.locator('.pf-metric-grid').innerText()).includes('62,000')) throw new Error('GB10 Header memory metrics missing');
-  if (!(await gb10Worker.locator('.pf-metric-grid').innerText()).includes('exporter 未提供显存指标')) throw new Error('GB10 Worker no-data memory state missing');
+  const headerText = await gb10Header.locator('.pf-metric-grid').innerText();
+  if (!headerText.includes('统一内存') || !headerText.includes('62,000') || !headerText.includes('99,246')) throw new Error('GB10 Header memory metrics missing');
+  if (!(await gb10Worker.locator('.pf-metric-grid').innerText()).includes('exporter 未提供内存指标')) throw new Error('GB10 Worker no-data memory state missing');
   console.log('GB10 Header/Worker 分卡与显存空态: true');
 
   console.log('== 8. 缺失指标显示 —（m2s2 无 spec/温度/功耗/KV）:');

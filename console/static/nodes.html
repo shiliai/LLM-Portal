@@ -211,12 +211,13 @@
     var que = m.requests_waiting == null ? null : Math.round(m.requests_waiting);
     var kvHit = m.cache_hit_pct == null ? null : m.cache_hit_pct;
     var spec = m.spec_accept_pct == null ? null : m.spec_accept_pct;
+    var memoryLabel = m.memory_kind === 'unified' ? '统一内存' : '显存';
     function tile(label, val, sub, cls) {
       return '<div class="pf-metric"><div class="m-label">' + label + '</div>' +
         '<div class="m-val' + (cls ? ' ' + cls : '') + '">' + val + '</div>' +
         '<div class="m-sub">' + sub + '</div></div>';
     }
-    return [
+    var tiles = [
       tile('输出 TOK/S', num(m.output_tok_s, 1), spark(hist.speed, 78, 15, TC().s.cyan), 'c-accent'),
       tile('输入 TOK/S · PREFILL', num(m.input_tok_s, 1), spark(hist.pre, 78, 15, TC().s.violet)),
       tile('活动 / 排队',
@@ -228,12 +229,17 @@
       tile('MTP/TAR 接受率',
         spec == null ? dash() : spec.toFixed(1) + '<span class="unit">%</span>',
         spec == null ? '该节点无此指标' : '推测解码 · exporter'),
-      tile('显存 已用 / 总量',
+      tile(memoryLabel + ' 已用 / 总量',
         (m.memory_used_mib == null ? dash() : Math.round(m.memory_used_mib).toLocaleString('zh-CN')) +
           ' <span class="unit">/ ' + (m.memory_total_mib == null ? '—' : Math.round(m.memory_total_mib).toLocaleString('zh-CN') + ' MiB') + '</span>',
-        m.memory_used_mib == null && m.memory_total_mib == null ? 'exporter 未提供显存指标' : 'DCGM · MiB'),
-      tile('显存 剩余', m.memory_free_mib == null ? dash() : Math.round(m.memory_free_mib).toLocaleString('zh-CN') + '<span class="unit"> MiB</span>',
-        m.memory_free_mib == null ? 'exporter 未提供显存指标' : 'DCGM · FB_FREE'),
+        m.memory_used_mib == null && m.memory_total_mib == null ? 'exporter 未提供内存指标' : (m.memory_kind === 'unified' ? 'GB10 agent · MiB' : 'DCGM · MiB')),
+      tile(memoryLabel + ' 剩余', m.memory_free_mib == null ? dash() : Math.round(m.memory_free_mib).toLocaleString('zh-CN') + '<span class="unit"> MiB</span>',
+        m.memory_free_mib == null ? 'exporter 未提供内存指标' : (m.memory_kind === 'unified' ? 'GB10 agent · mem_avail' : 'DCGM · FB_FREE')),
+    ];
+    if (m.gpu_memory_used_mib != null) {
+      tiles.push(tile('GPU 显存占用', Math.round(m.gpu_memory_used_mib).toLocaleString('zh-CN') + '<span class="unit"> MiB</span>', 'GB10 agent · gpu_mem'));
+    }
+    tiles.push(
       tile('GPU 活跃度',
         m.gpu_util_pct == null ? dash() : m.gpu_util_pct.toFixed(0) + '<span class="unit">%</span>',
         'DCGM · exporter' + pctTile(m.gpu_util_pct)),
@@ -241,7 +247,8 @@
         m.gpu_temp_c == null ? dash() : m.gpu_temp_c.toFixed(0) + '<span class="unit">°C</span>', 'DCGM · exporter'),
       tile('GPU 功耗',
         m.power_w == null ? dash() : m.power_w.toFixed(0) + '<span class="unit">W</span>', 'DCGM · 板卡功耗')
-    ].join('');
+    );
+    return tiles.join('');
   }
 
   function lineChart(id, seriesDefs, yMax, yAxes) {

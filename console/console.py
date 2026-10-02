@@ -98,6 +98,7 @@ LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://127.0.0.1:4000")
 ONBOARD_URL = os.environ.get("ONBOARDD_URL", "http://127.0.0.1:8100")
 MCP_HUB_URL = os.environ.get("MCP_HUB_URL", "http://127.0.0.1:8200")
 VM_URL = os.environ.get("VM_URL", "http://127.0.0.1:8428")
+GB10_STATUS_URL = os.environ.get("GB10_STATUS_URL", "").strip().rstrip("/")
 LITELLM_MASTER_KEY = os.environ["LITELLM_MASTER_KEY"]
 ONBOARD_ADMIN_TOKEN = os.environ["ONBOARD_ADMIN_TOKEN"]
 # 管理员网页登录凭据（console.env，deploy.sh 从 vps/.env 生成）：邮箱 + 密码 + 可选 TOTP。
@@ -1207,6 +1208,82 @@ async def vm_site_metrics(site_name: str, instance_name: str | None = None) -> d
     return _finish_metrics(vals)
 
 
+def _gb10_member_metrics(payload: dict, instance_name: str) -> dict:
+    """Map cluster-display-status host telemetry into the dashboard contract."""
+    host_key = "head" if instance_name == "gb10-head" else "worker"
+    host = payload.get(host_key) or {}
+    if not isinstance(host, dict):
+        return {}
+    out: dict[str, float | str] = {}
+    aliases = {
+        "gpu_util_pct": "gpu_util_pct",
+        "temp_c": "gpu_temp_c",
+        "power_w": "power_w",
+        "gpu_mem_mb": "gpu_memory_used_mib",
+    }
+    for source, target in aliases.items():
+        value = host.get(source)
+        if value is not None:
+            try:
+                out[target] = round(float(value), 1)
+            except (TypeError, ValueError):
+                continue
+    total = host.get("mem_total_mb")
+    free = host.get("mem_avail_mb")
+    try:
+        if total is not None:
+            total = float(total)
+            out["memory_total_mib"] = round(total, 1)
+        if free is not None:
+            free = float(free)
+            out["memory_free_mib"] = round(free, 1)
+        if total is not None and free is not None:
+            out["memory_used_mib"] = round(max(0.0, total - free), 1)
+    except (TypeError, ValueError):
+        pass
+    if out:
+        out["memory_kind"] = "unified"
+    if instance_name == "gb10-head":
+        model = payload.get("model") or {}
+        if isinstance(model, dict):
+            model_aliases = {
+                "running": "requests_running",
+                "waiting": "requests_waiting",
+                "kv_pct": "kv_cache_pct",
+                "prompt_tps": "input_tok_s",
+                "generation_tps": "output_tok_s",
+                "prefix_cache_hit_pct": "cache_hit_pct",
+                "spec_accept_pct": "spec_accept_pct",
+            }
+            for source, target in model_aliases.items():
+                value = model.get(source)
+                if value is not None:
+                    try:
+                        out[target] = round(float(value), 1)
+                    except (TypeError, ValueError):
+                        continue
+            if model.get("healthy") is not None:
+                out["runtime"] = "vllm"
+    return out
+
+
+async def gb10_status_members() -> dict[str, dict]:
+    if not GB10_STATUS_URL:
+        return {}
+    try:
+        async with httpx.AsyncClient(timeout=2, follow_redirects=False) as client:
+            response = await client.get(GB10_STATUS_URL + "/status")
+        if response.status_code != 200:
+            return {}
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return {}
+        return {member["instance"]: _gb10_member_metrics(payload, member["instance"])
+                for member in cluster_member_config("gb10")}
+    except (httpx.HTTPError, ValueError, TypeError):
+        return {}
+
+
 def cluster_member_config(site_name: str) -> list[dict]:
     return [dict(member) for member in CLUSTER_MEMBER_CONFIG.get(site_name, ())]
 
@@ -1216,6 +1293,7 @@ async def site_members(site_name: str) -> list[dict]:
     members = cluster_member_config(site_name)
     if not members:
         return []
+    agent_metrics = await gb10_status_members() if site_name == "gb10" else {}
     metrics = await asyncio.gather(
         *(vm_site_metrics(site_name, member["instance"]) for member in members),
         return_exceptions=True,
@@ -1224,9 +1302,11 @@ async def site_members(site_name: str) -> list[dict]:
     for member, metric in zip(members, metrics):
         if not isinstance(metric, dict):
             metric = {}
+        merged = dict(metric)
+        merged.update(agent_metrics.get(member["instance"], {}))
         rows.append({**member, "id": member["instance"],
-                     "status": "online" if metric else "no_data",
-                     "metrics": metric})
+                     "status": "online" if merged else "no_data",
+                     "metrics": merged})
     return rows
 
 

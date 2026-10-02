@@ -1562,6 +1562,22 @@ def test_vm_site_matcher_can_pin_cluster_member(console_admin):
     assert 'instance="gb10-head"' in matcher
 
 
+def test_gb10_status_maps_unified_memory_and_gpu_memory(console_admin):
+    out = console_admin._gb10_member_metrics({
+        "head": {"gpu_mem_mb": 99246, "mem_total_mb": 124547, "mem_avail_mb": 9451,
+                 "gpu_util_pct": 95, "temp_c": 51, "power_w": 40.6},
+        "model": {"healthy": True, "running": 2, "waiting": 1,
+                  "kv_pct": 12.5, "generation_tps": 88.4},
+    }, "gb10-head")
+    assert out["memory_kind"] == "unified"
+    assert out["memory_total_mib"] == 124547
+    assert out["memory_free_mib"] == 9451
+    assert out["memory_used_mib"] == 115096
+    assert out["gpu_memory_used_mib"] == 99246
+    assert out["requests_running"] == 2
+    assert out["output_tok_s"] == 88.4
+
+
 def test_site_members_preserves_missing_cluster_member(console_admin, monkeypatch):
     async def fake_metrics(site, instance=None):
         return {"gpu_util_pct": 90} if instance == "gb10-head" else {}
