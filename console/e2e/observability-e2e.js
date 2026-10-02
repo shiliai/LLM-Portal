@@ -16,7 +16,9 @@ const SITES = [
           requests_waiting: 1, kv_cache_pct: 71, cache_hit_pct: 63.2, gpu_util_pct: 88,
           gpu_temp_c: 72, power_w: 410, memory_kind: 'unified', memory_used_mib: 62000, memory_total_mib: 122000,
           memory_free_mib: 60000, gpu_memory_used_mib: 99246 } },
-      { id: 'gb10-worker', instance: 'gb10-worker', display_name: 'Worker', status: 'no_data', metrics: {} }
+      { id: 'gb10-worker', instance: 'gb10-worker', display_name: 'Worker', status: 'no_data',
+        metrics: { runtime: 'vllm', output_tok_s: 86.4, input_tok_s: 520, requests_running: 5,
+          requests_waiting: 1, kv_cache_pct: 71, cache_hit_pct: 63.2, spec_accept_pct: 88.9 } }
     ] },
   { name: 'dell-shili-7960', transport: 'wireguard', wg_ip: '10.77.0.14', address: null, handshake: 8,
     deployments: 1, status: 'online',
@@ -59,7 +61,7 @@ async function installFixtures(page, seen) {
   await page.route('**/console/api/metrics/range?**', route => {
     const params = new URL(route.request().url()).searchParams;
     seen.range = seen.range || [];
-    seen.range.push(params.get('metric') + '@' + params.get('site') + 'h' + params.get('hours'));
+    seen.range.push(params.get('metric') + '@' + params.get('site') + '@' + (params.get('instance') || 'site') + 'h' + params.get('hours'));
     const base = { output_tok_s: 40, input_tok_s: 200, requests_active: 4,
       kv_cache_pct: 60, gpu_util_pct: 80, gpu_temp_c: 68, power_w: 300 }[params.get('metric')] || 0;
     return route.fulfill({ json: { metric: params.get('metric'), site: params.get('site'),
@@ -119,6 +121,13 @@ async function installFixtures(page, seen) {
   console.log('节点筛选后行数:', await page.locator('#ov-health tr').count());
   await page.selectOption('#ov-node', '');
   await page.waitForTimeout(500);
+  await page.selectOption('#ov-model', 'qwen3-32b-instruct');
+  await page.waitForTimeout(800);
+  if (await page.locator('#ov-health tr').count() !== 1 || await page.locator('#ov-clusters').innerText() !== '') {
+    throw new Error('model filter must remove GB10 cluster summary when model is hosted elsewhere');
+  }
+  await page.selectOption('#ov-model', '');
+  await page.waitForTimeout(500);
   await page.screenshot({ path: '/tmp/e2e/r106-overview.png', fullPage: false });
 
   console.log('== 6. 主题切换（图表重渲染无错误）:');
@@ -144,8 +153,10 @@ async function installFixtures(page, seen) {
   if (await gb10Header.count() !== 1 || await gb10Worker.count() !== 1) throw new Error('GB10 Header/Worker cards must be separate');
   const headerText = await gb10Header.locator('.pf-metric-grid').innerText();
   if (!headerText.includes('统一内存') || !headerText.includes('62,000') || !headerText.includes('99,246')) throw new Error('GB10 Header memory metrics missing');
-  if (!(await gb10Worker.locator('.pf-metric-grid').innerText()).includes('exporter 未提供内存指标')) throw new Error('GB10 Worker no-data memory state missing');
-  console.log('GB10 Header/Worker 分卡与显存空态: true');
+  const workerText = await gb10Worker.locator('.pf-metric-grid').innerText();
+  if (!workerText.includes('86.4') || !workerText.includes('5 / 1')) throw new Error('GB10 Worker must reuse cluster inference metrics');
+  if (!workerText.includes('exporter 未提供内存指标')) throw new Error('GB10 Worker no-data memory state missing');
+  console.log('GB10 Header/Worker 分卡，推理指标共享，资源空态独立: true');
 
   console.log('== 8. 缺失指标显示 —（m2s2 无 spec/温度/功耗/KV）:');
   const m2s2 = page.locator('.pf-node-block', { hasText: 'm2s2NasUbuntuVM-shili-dev' });
@@ -168,6 +179,10 @@ async function installFixtures(page, seen) {
   if (!seen.range.every(x => x.endsWith('h6'))) throw new Error('nodes page must request hours=6: ' + seen.range.join(','));
   if (!seen.range.some(x => x.startsWith('gpu_temp_c@')) || !seen.range.some(x => x.startsWith('power_w@'))) {
     throw new Error('nodes page must query temperature and power history: ' + seen.range.join(','));
+  }
+  if (!seen.range.some(x => x.startsWith('output_tok_s@gb10@site')) ||
+      !seen.range.some(x => x.startsWith('gpu_temp_c@gb10@gb10-head'))) {
+    throw new Error('GB10 inference history must be cluster-scoped while resources remain member-scoped: ' + seen.range.join(','));
   }
   console.log('nodes range:', seen.range[0]);
   await page.screenshot({ path: '/tmp/e2e/r106-nodes.png', fullPage: false });

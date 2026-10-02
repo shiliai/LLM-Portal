@@ -965,8 +965,8 @@ def _derive_metrics(vals: dict) -> dict:
     total = vals.get("DCGM_FI_DEV_FB_TOTAL")
     # DCGM exporter versions commonly omit FB_TOTAL.  USED/FREE/RESERVED are
     # all MiB, so their sum is the only honest fallback for total capacity.
-    if total is None and used is not None and free is not None:
-        total = used + free + (reserved or 0)
+    if total is None and used is not None and free is not None and reserved is not None:
+        total = used + free + reserved
     if used is not None:
         out["memory_used_mib"] = round(used, 1)
     if free is not None:
@@ -1208,6 +1208,39 @@ async def vm_site_metrics(site_name: str, instance_name: str | None = None) -> d
     return _finish_metrics(vals)
 
 
+GB10_INFERENCE_METRICS = (
+    "output_tok_s", "input_tok_s", "requests_running", "requests_waiting",
+    "kv_cache_pct", "cache_hit_pct", "spec_accept_pct", "runtime",
+)
+
+
+def _gb10_model_metrics(payload: dict) -> dict:
+    """Map the cluster model status into shared inference metrics."""
+    model = payload.get("model") or {}
+    if not isinstance(model, dict):
+        return {}
+    aliases = {
+        "running": "requests_running",
+        "waiting": "requests_waiting",
+        "kv_pct": "kv_cache_pct",
+        "prompt_tps": "input_tok_s",
+        "generation_tps": "output_tok_s",
+        "prefix_cache_hit_pct": "cache_hit_pct",
+        "spec_accept_pct": "spec_accept_pct",
+    }
+    out: dict[str, float | str] = {}
+    for source, target in aliases.items():
+        value = model.get(source)
+        if value is not None:
+            try:
+                out[target] = round(float(value), 1)
+            except (TypeError, ValueError):
+                continue
+    if model.get("healthy") is not None:
+        out["runtime"] = "vllm"
+    return out
+
+
 def _gb10_member_metrics(payload: dict, instance_name: str) -> dict:
     """Map cluster-display-status host telemetry into the dashboard contract."""
     host_key = "head" if instance_name == "gb10-head" else "worker"
@@ -1241,29 +1274,11 @@ def _gb10_member_metrics(payload: dict, instance_name: str) -> dict:
             out["memory_used_mib"] = round(max(0.0, total - free), 1)
     except (TypeError, ValueError):
         pass
+    # The model endpoint describes the cluster, so inference values are
+    # intentionally copied to both Header and Worker member rows.
+    out.update(_gb10_model_metrics(payload))
     if out:
         out["memory_kind"] = "unified"
-    if instance_name == "gb10-head":
-        model = payload.get("model") or {}
-        if isinstance(model, dict):
-            model_aliases = {
-                "running": "requests_running",
-                "waiting": "requests_waiting",
-                "kv_pct": "kv_cache_pct",
-                "prompt_tps": "input_tok_s",
-                "generation_tps": "output_tok_s",
-                "prefix_cache_hit_pct": "cache_hit_pct",
-                "spec_accept_pct": "spec_accept_pct",
-            }
-            for source, target in model_aliases.items():
-                value = model.get(source)
-                if value is not None:
-                    try:
-                        out[target] = round(float(value), 1)
-                    except (TypeError, ValueError):
-                        continue
-            if model.get("healthy") is not None:
-                out["runtime"] = "vllm"
     return out
 
 
@@ -1278,7 +1293,8 @@ async def gb10_status_members() -> dict[str, dict]:
         payload = response.json()
         if not isinstance(payload, dict):
             return {}
-        return {member["instance"]: _gb10_member_metrics(payload, member["instance"])
+        shared = _gb10_model_metrics(payload)
+        return {member["instance"]: {**_gb10_member_metrics(payload, member["instance"]), **shared}
                 for member in cluster_member_config("gb10")}
     except (httpx.HTTPError, ValueError, TypeError):
         return {}
@@ -1307,6 +1323,17 @@ async def site_members(site_name: str) -> list[dict]:
         rows.append({**member, "id": member["instance"],
                      "status": "online" if merged else "no_data",
                      "metrics": merged})
+    # A cluster runs one inference service.  Keep the model/throughput view
+    # identical on every member card while leaving host resources member-local.
+    shared = {}
+    for row in rows:
+        shared.update({key: row["metrics"][key] for key in GB10_INFERENCE_METRICS
+                       if key in row["metrics"]})
+        if shared:
+            break
+    if shared:
+        for row in rows:
+            row["metrics"] = {**row["metrics"], **shared}
     return rows
 
 

@@ -173,7 +173,7 @@
     });
     return out;
   }
-  function visibleNodes() {
+  function visibleSiteRows() {
     var rows = (st.ov && st.ov.sites.rows) || [];
     var sel = rows.filter(function (s) { return !st.node || s.name === st.node; });
     if (st.model) {
@@ -183,13 +183,28 @@
       });
       sel = sel.filter(function (s) { return hosts[s.name]; });
     }
-    return expandRows(sel);
+    return sel;
+  }
+  function visibleNodes() {
+    return expandRows(visibleSiteRows());
+  }
+  function inferenceKey(s) {
+    return s.cluster_member ? 'cluster:' + s.name : rowKey(s);
+  }
+  function uniqueInferenceNodes(nodes) {
+    var seen = {};
+    return nodes.filter(function (s) {
+      var key = inferenceKey(s);
+      if (seen[key]) return false;
+      seen[key] = true;
+      return true;
+    });
   }
 
   function renderClusters() {
     var box = document.getElementById('ov-clusters');
     if (!box) return;
-    var rows = ((st.ov && st.ov.sites.rows) || []).filter(function (s) { return !st.node || s.name === st.node; });
+    var rows = visibleSiteRows();
     var clusters = rows.filter(function (s) { return s.cluster && Array.isArray(s.members) && s.members.length; });
     box.innerHTML = clusters.map(function (s) {
       var online = s.members.filter(function (m) { return m.status === 'online'; }).length;
@@ -205,7 +220,7 @@
   async function fetchSeries(nodes, hours) {
     var jobs = [];
     nodes.forEach(function (s) {
-      var q = '&site=' + encodeURIComponent(s.name) + (s.instance ? '&instance=' + encodeURIComponent(s.instance) : '');
+      var q = '&site=' + encodeURIComponent(s.name) + (s.cluster_member ? '' : (s.instance ? '&instance=' + encodeURIComponent(s.instance) : ''));
       jobs.push(window.pfApi('GET', '/metrics/range?metric=output_tok_s' + q + '&hours=' + hours).catch(function () { return null; }));
       jobs.push(window.pfApi('GET', '/metrics/range?metric=requests_active' + q + '&hours=' + hours).catch(function () { return null; }));
     });
@@ -221,21 +236,21 @@
 
   function kpis() {
     var t = TC(), ov = st.ov || {}, u = st.usage || { totals: {} };
-    var nodes = visibleNodes();
+    var nodes = visibleNodes(), inferenceNodes = uniqueInferenceNodes(nodes);
     var out = 0, act = 0, que = 0, hasMetric = false;
-    nodes.forEach(function (s) {
+    inferenceNodes.forEach(function (s) {
       var m = s.metrics || {};
       if (m.output_tok_s != null) { out += m.output_tok_s; hasMetric = true; }
       act += Number(m.requests_running || 0);
       que += Number(m.requests_waiting || 0);
     });
     var sparkData = null;
-    var hasSeries = nodes.some(function (s) { return (st.series[rowKey(s)] || { speed: [] }).speed.length; });
+    var hasSeries = inferenceNodes.some(function (s) { return (st.series[rowKey(s)] || { speed: [] }).speed.length; });
     if (hasSeries) {
-      var ref = nodes.map(function (s) { return (st.series[rowKey(s)] || { speed: [] }).speed; })
+      var ref = inferenceNodes.map(function (s) { return (st.series[rowKey(s)] || { speed: [] }).speed; })
         .find(function (x) { return x.length; });
       sparkData = ref.map(function (p, i) {
-        return nodes.reduce(function (a, s) {
+        return inferenceNodes.reduce(function (a, s) {
           var ser = (st.series[rowKey(s)] || { speed: [] }).speed;
           return a + (ser[i] ? ser[i][1] : 0);
         }, 0);
@@ -247,7 +262,7 @@
     var dash = '<span style="color:var(--muted)">—</span>';
     return [
       { label: '综合输出速度', val: hasMetric ? out.toFixed(1) : dash, unit: hasMetric ? 'tok/s' : '',
-        sub: nodes.length + ' 节点聚合 · 实时', spark: sparkData, color: t.s.cyan },
+        sub: inferenceNodes.length + ' 推理节点聚合 · 实时', spark: sparkData, color: t.s.cyan },
       { label: '活动请求', val: fmt(act), unit: '', sub: '排队 ' + fmt(que), color: t.s.green },
       { label: '今日请求', val: fmt(today.requests), unit: '', sub: '错误 ' + fmt(today.errors || 0) + ' 次', color: t.s.blue },
       { label: '成功率', val: sr === null ? dash : sr.toFixed(1), unit: sr === null ? '' : '%',
@@ -271,7 +286,7 @@
   function renderSpeed() {
     var ch = getChart('ch-speed'); if (!ch) return;
     var t = TC();
-    var nodes = visibleNodes();
+    var nodes = uniqueInferenceNodes(visibleNodes());
     var selectedNode = st.node ? (nodes.length === 1 ? nodeLabel(nodes[0]) : st.node) : '';
     document.getElementById('ov-speed-tag').textContent =
       selectedNode ? '节点 · ' + selectedNode : (st.model ? '模型 · ' + st.model : '按节点');
@@ -301,7 +316,7 @@
   function renderCap() {
     var ch = getChart('ch-cap'); if (!ch) return;
     var t = TC();
-    var nodes = visibleNodes();
+    var nodes = uniqueInferenceNodes(visibleNodes());
     /* 合并各节点活动+排队序列为聚合值（时间戳对齐求和） */
     var merged = {};
     nodes.forEach(function (s) {

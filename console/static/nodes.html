@@ -124,8 +124,11 @@
     var metrics = ['output_tok_s', 'input_tok_s', 'kv_cache_pct', 'gpu_util_pct', 'gpu_temp_c', 'power_w'];
     var jobs = [];
     nodes.forEach(function (s) {
-      var query = '&site=' + encodeURIComponent(s.site_name || s.name) + (s.instance ? '&instance=' + encodeURIComponent(s.instance) : '');
       metrics.forEach(function (m) {
+        /* GB10 inference is cluster-wide; only host resources are instance-scoped. */
+        var shared = s.cluster_member && ['output_tok_s', 'input_tok_s', 'kv_cache_pct'].indexOf(m) >= 0;
+        var query = '&site=' + encodeURIComponent(s.site_name || s.name) +
+          (shared ? '' : (s.instance ? '&instance=' + encodeURIComponent(s.instance) : ''));
         jobs.push(window.pfApi('GET', '/metrics/range?metric=' + m + query + '&hours=' + hours).catch(function () { return null; }));
       });
     });
@@ -193,6 +196,7 @@
                 : '<span class="pf-chip ' + (s.status === 'no_data' ? 'gray' : 'warn') + '">' + esc(statusText) + '</span>') +
         (full ? '<span class="pf-chip accent">exporter 完整</span>'
               : partial ? '<span class="pf-chip warn">exporter 部分</span>' : '') +
+        (s.cluster_member ? '<span class="pf-chip accent">推理指标 · cluster 共享</span>' : '') +
         '<span class="pf-desc" style="margin-left:auto">最近采集 <span style="color:var(--accent)">' + (online ? '刚刚' : '—') + '</span></span>' +
       '</div>' +
       '<div class="pf-metric-grid" style="grid-template-columns:repeat(6,1fr)" id="nm-' + esc(key) + '"></div>' +

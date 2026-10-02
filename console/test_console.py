@@ -1556,6 +1556,16 @@ def test_finish_metrics_derives_dcgm_memory_total_when_exporter_omits_total(cons
     assert out["memory_reserved_mib"] == 401
 
 
+def test_finish_metrics_keeps_total_empty_when_reserved_is_missing(console_admin):
+    out = console_admin._finish_metrics({
+        "DCGM_FI_DEV_FB_USED": 19813,
+        "DCGM_FI_DEV_FB_FREE": 4361,
+    })
+    assert out["memory_used_mib"] == 19813
+    assert out["memory_free_mib"] == 4361
+    assert "memory_total_mib" not in out
+
+
 def test_vm_site_matcher_can_pin_cluster_member(console_admin):
     matcher = console_admin.vm_site_matcher("gb10", "gb10-head")
     assert 'site=~"^gb10(-llm)?$"' in matcher
@@ -1576,6 +1586,14 @@ def test_gb10_status_maps_unified_memory_and_gpu_memory(console_admin):
     assert out["gpu_memory_used_mib"] == 99246
     assert out["requests_running"] == 2
     assert out["output_tok_s"] == 88.4
+
+    worker = console_admin._gb10_member_metrics({
+        "worker": {"gpu_mem_mb": 98162, "mem_total_mb": 124547, "mem_avail_mb": 10973},
+        "model": {"healthy": True, "running": 2, "waiting": 1,
+                  "kv_pct": 12.5, "generation_tps": 88.4},
+    }, "gb10-worker")
+    assert worker["requests_running"] == 2
+    assert worker["output_tok_s"] == 88.4
 
 
 def test_site_members_preserves_missing_cluster_member(console_admin, monkeypatch):
