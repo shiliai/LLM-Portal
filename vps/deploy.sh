@@ -156,14 +156,10 @@ sleep 3
 # capture worker and readable by the console container.
 lock_conversation_monitor_db
 docker compose ps
-# Materialize the two supported cache-token shapes once.  Spend-log aggregates
-# then avoid decompressing metadata JSON for every historical row.
-docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<'SQL'
-ALTER TABLE public."LiteLLM_SpendLogs" ADD COLUMN IF NOT EXISTS portal_cached_tokens bigint GENERATED ALWAYS AS (coalesce(nullif(metadata #>> '{usage_object,prompt_tokens_details,cached_tokens}','')::bigint,nullif(metadata #>> '{usage_object,cache_read_input_tokens}','')::bigint,0)) STORED;
-SQL
-# Existing volumes skip docker-entrypoint-initdb.d, so converge the dedicated
-# console role on every deploy without exposing the database owner URL to it.
-converge_console_usage_role
+# Existing volumes skip postgres-init scripts. Run the Compose maintenance
+# profile after LiteLLM is healthy so its migrations cannot delete the Portal-
+# owned generated column after we create it.
+docker compose --profile maintenance run --rm schema-converge
 
 echo "== [4/7] edge certificate/site ($DOMAIN)"
 EDGE_DIR=$STATE_DIR/edge
@@ -295,14 +291,6 @@ code=$(http_code "$CHECK_BASE/console/")
 { [ "$code" = "200" ] || [ "$code" = "302" ] || [ "$code" = "307" ]; } || fail_smoke "/console/ 应可达（实际 $code）"
 [ "$SMOKE_FAILURES" -eq 0 ] || { echo "deployment smoke failed: $SMOKE_FAILURES check(s)"; exit 1; }
 echo "   收敛检查完成"
-
-# 物化 portal_cached_tokens（issue #149 后置收敛）：litellm ≥ v1.103.2 启动时的 v1 迁移
-# resolver 会做 diff-and-force，把不在其 schema 里的生成列当 drift 删掉（实测升级当日
-# 13:38:58 删列）——步骤 3 里先建也会被删。此处 litellm 已 healthy（迁移必已完成），
-# 幂等重建；常规重启（migrate deploy 无 pending 时不 force）不会删列。
-docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<'SQL'
-ALTER TABLE public."LiteLLM_SpendLogs" ADD COLUMN IF NOT EXISTS portal_cached_tokens bigint GENERATED ALWAYS AS (coalesce(nullif(metadata #>> '{usage_object,prompt_tokens_details,cached_tokens}','')::bigint,nullif(metadata #>> '{usage_object,cache_read_input_tokens}','')::bigint,0)) STORED;
-SQL
 
 echo "== done"
 echo "next: site-add <name> --model <model>:<port> ...   # 然后把输出的命令拷到站点机器执行"

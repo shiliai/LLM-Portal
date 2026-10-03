@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -71,46 +70,20 @@ def test_restore_file_preserves_target_inode_and_backup_bytes(tmp_path):
     assert target.read_bytes() == backup.read_bytes()
 
 
-def test_console_usage_role_convergence_preserves_sql_and_hides_password(tmp_path):
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    fake_docker = fake_bin / "docker"
-    fake_docker.write_text("""#!/bin/sh
-printf '%s\\n' "$@" > "$CAPTURE_ARGS"
-cat > "$CAPTURE_STDIN"
-printf '%s\\n' "$CONSOLE_USAGE_PASSWORD" > "$CAPTURE_ENV"
-""")
-    fake_docker.chmod(0o755)
-    args_path = tmp_path / "args"
-    stdin_path = tmp_path / "stdin"
-    env_path = tmp_path / "env"
-    password = "a" * 48
-    env = {
-        **os.environ,
-        "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "CAPTURE_ARGS": str(args_path),
-        "CAPTURE_STDIN": str(stdin_path),
-        "CAPTURE_ENV": str(env_path),
-        "CONSOLE_USAGE_PASSWORD": password,
-    }
+def test_compose_schema_convergence_is_idempotent_and_waits_for_litellm():
+    source = (HERE / "docker-compose.yml").read_text()
+    assert "schema-converge:" in source
+    assert 'profiles: ["maintenance"]' in source
+    assert "condition: service_healthy" in source
+    assert "ADD COLUMN IF NOT EXISTS portal_cached_tokens" in source
+    assert "CREATE ROLE console_usage LOGIN PASSWORD %L" in source
+    assert 'GRANT SELECT ON TABLE public."LiteLLM_SpendLogs" TO console_usage;' in source
 
-    subprocess.run([
-        "bash", "-c", 'source "$1"; converge_console_usage_role', "bash",
-        str(HERE / "deploy-lib.sh"),
-    ], env=env, check=True, capture_output=True, text=True)
 
-    args = args_path.read_text().splitlines()
-    sql = stdin_path.read_text()
-    assert args == [
-        "compose", "exec", "-T", "-e", "CONSOLE_USAGE_PASSWORD", "postgres",
-        "psql", "-v", "ON_ERROR_STOP=1", "-U", "litellm", "-d", "litellm",
-    ]
-    assert password not in " ".join(args)
-    assert env_path.read_text().strip() == password
-    assert "\\getenv usage_password CONSOLE_USAGE_PASSWORD" in sql
-    assert "SELECT format('CREATE ROLE console_usage LOGIN PASSWORD %L" in sql
-    assert "ALTER ROLE console_usage PASSWORD :'usage_password';" in sql
-    assert sql.rstrip().endswith('GRANT SELECT ON TABLE public."LiteLLM_SpendLogs" TO console_usage;')
+def test_deploy_routes_schema_convergence_through_compose_profile():
+    source = (HERE / "deploy.sh").read_text()
+    assert "docker compose --profile maintenance run --rm schema-converge" in source
+    assert 'docker compose exec -T postgres psql' not in source
 
 
 def test_deploy_registry_backup_gate_is_durable_and_non_secret():

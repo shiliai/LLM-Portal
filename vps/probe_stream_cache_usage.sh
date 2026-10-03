@@ -58,8 +58,10 @@ else:
 '
 
 PASS=0
+DB_PASS=1
+PROBE_ID="portal-cache-probe-$(date +%s)-$$"
 for r in $(seq 1 "$ROUNDS"); do
-  BODY=$(python3 -c 'import json,sys;print(json.dumps({"model":sys.argv[1],"messages":[{"role":"system","content":sys.argv[2]},{"role":"user","content":"Reply with the single word: ok"}],"stream":True,"stream_options":{"include_usage":True},"max_tokens":8}))' "$MODEL" "$PREFIX")
+  BODY=$(python3 -c 'import json,sys;print(json.dumps({"model":sys.argv[1],"messages":[{"role":"system","content":sys.argv[2]},{"role":"user","content":"Reply with the single word: ok"}],"metadata":{"spend_logs_metadata":{"portal_probe_id":sys.argv[3]}},"stream":True,"stream_options":{"include_usage":True},"max_tokens":8}))' "$MODEL" "$PREFIX" "$PROBE_ID")
   RAW=$(curl -sS -m 60 -N "$BASE/v1/chat/completions" \
     -H "authorization: Bearer $KEY" -H 'content-type: application/json' -d "$BODY")
   RESULT=$(printf '%s' "$RAW" | python3 -c "$PARSE_PROG")
@@ -68,11 +70,26 @@ for r in $(seq 1 "$ROUNDS"); do
 done
 
 if [ "$CHECK_DB" = 1 ]; then
-  echo "-- SpendLogs 最新行 usage_object（缓存明细应落库）:"
-  docker compose exec -T postgres psql -U litellm -d litellm -t -A -c \
-    "select metadata->'usage_object' from \"LiteLLM_SpendLogs\" order by \"endTime\" desc limit 1"
+  echo "-- SpendLogs 本次探针行 usage_object（缓存明细应落库）:"
+  for _ in $(seq 1 10); do
+    DB_RESULT=$(docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -v probe_id="$PROBE_ID" -U litellm -d litellm -t -A -c \
+      "select case when coalesce(metadata #>> '{usage_object,prompt_tokens_details,cached_tokens}', metadata #>> '{usage_object,cache_read_input_tokens}', metadata #>> '{usage_object,prompt_cache_hit_tokens}') ~ '^[0-9]+$' then 'OK' else 'MISSING' end from \"LiteLLM_SpendLogs\" where metadata #>> '{spend_logs_metadata,portal_probe_id}' = :'probe_id' and \"endTime\" is not null order by \"endTime\" desc nulls last limit 1")
+    DB_RESULT=$(printf '%s' "$DB_RESULT" | tr -d '[:space:]')
+    [ "$DB_RESULT" = OK ] && break
+    sleep 1
+  done
+  echo "db: $DB_RESULT"
+  if [ "$DB_RESULT" != OK ]; then
+    echo "FAIL: SpendLogs 没有本次探针对应的可读缓存 usage 明细" >&2
+    DB_PASS=0
+  fi
 fi
 
-[ "$PASS" -gt 0 ] && { echo "PASS: 流式 usage 缓存明细未被剥离（$PASS/$ROUNDS 轮）"; exit 0; }
-echo "FAIL: 所有轮次最终 chunk 均无缓存明细（字段被剥离或上游未返回）"
+[ "$PASS" -gt 0 ] && [ "$DB_PASS" = 1 ] && {
+  echo "PASS: 流式 usage 缓存明细未被剥离（$PASS/$ROUNDS 轮）"
+  exit 0
+}
+if [ "$PASS" -eq 0 ]; then
+  echo "FAIL: 所有轮次最终 chunk 均无缓存明细（字段被剥离或上游未返回）"
+fi
 exit 1
