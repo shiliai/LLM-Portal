@@ -296,5 +296,13 @@ code=$(http_code "$CHECK_BASE/console/")
 [ "$SMOKE_FAILURES" -eq 0 ] || { echo "deployment smoke failed: $SMOKE_FAILURES check(s)"; exit 1; }
 echo "   收敛检查完成"
 
+# 物化 portal_cached_tokens（issue #149 后置收敛）：litellm ≥ v1.103.2 启动时的 v1 迁移
+# resolver 会做 diff-and-force，把不在其 schema 里的生成列当 drift 删掉（实测升级当日
+# 13:38:58 删列）——步骤 3 里先建也会被删。此处 litellm 已 healthy（迁移必已完成），
+# 幂等重建；常规重启（migrate deploy 无 pending 时不 force）不会删列。
+docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<'SQL'
+ALTER TABLE public."LiteLLM_SpendLogs" ADD COLUMN IF NOT EXISTS portal_cached_tokens bigint GENERATED ALWAYS AS (coalesce(nullif(metadata #>> '{usage_object,prompt_tokens_details,cached_tokens}','')::bigint,nullif(metadata #>> '{usage_object,cache_read_input_tokens}','')::bigint,0)) STORED;
+SQL
+
 echo "== done"
 echo "next: site-add <name> --model <model>:<port> ...   # 然后把输出的命令拷到站点机器执行"
