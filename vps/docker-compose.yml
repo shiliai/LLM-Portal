@@ -17,8 +17,11 @@ name: private-llm
 
 services:
   litellm:
-    # 固定版本 tag（issue #10）：与开发/验证基线 LiteLLM 1.96.2 一致，避免 main-stable 滚动漂移
-    image: ghcr.io/berriai/litellm:v1.96.2
+    # 固定版本 tag（issue #10，避免 main-stable 滚动漂移）。v1.103.2（issue #149）：
+    # v1.96.2 流式转发会剥离 usage 缓存明细（prompt_tokens_details.cached_tokens 等），
+    # SpendLogs.usage_object 恒 null → 请求日志「缓存 Token」恒未命中；v1.103.2 实测
+    # 完整透传且 token 数忠实（探针见 docs/runbook.md §LiteLLM 升级 / vps/probe_stream_cache_usage.sh）
+    image: ghcr.io/berriai/litellm:v1.103.2
     container_name: litellm
     restart: unless-stopped
     # BBR：litellm→站点 vLLM 的内层 TCP 走 wg 隧道（跨境 ~25% 晚高峰丢包），
