@@ -44,6 +44,9 @@
   .nd-resource { min-width:0; padding:8px; background:var(--panel2); border:1px solid var(--border); border-radius:3px; }
   .nd-resource-label { color:var(--muted); font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .nd-resource-value { margin-top:5px; color:var(--heading); font:600 14px var(--mono); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .nd-resource-value.nd-memory-value { font-size:11px; line-height:1.15; white-space:normal; overflow:visible; text-overflow:clip; }
+  .nd-memory-pair { display:block; white-space:nowrap; }
+  .nd-resource-value.nd-memory-value .unit { display:block; margin-top:2px; color:var(--muted); font-size:9px; font-weight:400; }
   .nd-resource-value small { color:var(--muted); font-size:10px; font-weight:400; }
   .nd-resource-sub { margin-top:4px; color:var(--text2); font:10px var(--mono); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .nd-resource-sub.good { color:var(--green); }
@@ -102,7 +105,11 @@
     return (digits ? v.toFixed(digits) : Math.round(v).toLocaleString('zh-CN')) + (unit ? '<span class="unit"> ' + unit + '</span>' : '');
   }
   function pad(n) { return n < 10 ? '0' + n : '' + n; }
-  function tsLabel(ts) { var d = new Date(ts); return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+  function tsLabel(ts) {
+    var d = new Date(ts);
+    if (st.hours >= 24) return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    return pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
   function spark(points, w, h, color) {
     w = w || 78; h = h || 15;
     var data = (points || []).map(function (p) { return p[1]; });
@@ -143,6 +150,23 @@
   }
   function axisStyle(t) {
     return { axisLine: { lineStyle: { color: t.border } }, axisLabel: { color: t.muted, fontSize: 10, fontFamily: 'ui-monospace,Menlo,monospace' }, splitLine: { lineStyle: { color: t.panel2 } } };
+  }
+  function timeAxis(t) {
+    var span = st.hours * 60 * 60 * 1000;
+    var minute = 60 * 1000;
+    var minInterval = Math.max(10 * minute, Math.ceil((span / 5) / (5 * minute)) * (5 * minute));
+    var axis = axisStyle(t);
+    axis.type = 'time';
+    axis.splitNumber = 4;
+    axis.minInterval = minInterval;
+    axis.axisLabel = Object.assign({}, axis.axisLabel, {
+      formatter: tsLabel,
+      hideOverlap: true,
+      showMinLabel: true,
+      showMaxLabel: true,
+      margin: 9
+    });
+    return axis;
   }
   function baseGrid() { return { left: 44, right: 38, top: 26, bottom: 24 }; }
   function baseTooltip(t) {
@@ -369,11 +393,15 @@
   function resourceMetrics(s) {
     var m = s.metrics || {};
     var memoryLabel = m.memory_kind === 'unified' ? '统一内存' : '显存';
+    var memoryHasValue = m.memory_used_mib != null || m.memory_total_mib != null;
+    var memoryValue = '<span class="nd-memory-pair">' +
+      (m.memory_used_mib == null ? '—' : Math.round(m.memory_used_mib).toLocaleString('zh-CN')) +
+      ' / ' + (m.memory_total_mib == null ? '—' : Math.round(m.memory_total_mib).toLocaleString('zh-CN')) +
+      '</span>' + (memoryHasValue ? '<span class="unit">MiB</span>' : '');
     var tiles = [
       resourceMetric(memoryLabel + ' 已用 / 总量',
-        (m.memory_used_mib == null ? dash() : Math.round(m.memory_used_mib).toLocaleString('zh-CN')) +
-          ' <span class="unit">/ ' + (m.memory_total_mib == null ? '—' : Math.round(m.memory_total_mib).toLocaleString('zh-CN') + ' MiB') + '</span>',
-        m.memory_used_mib == null && m.memory_total_mib == null ? 'exporter 未提供内存指标' : (m.memory_kind === 'unified' ? 'GB10 agent · MiB' : 'DCGM · MiB')),
+        memoryValue,
+        m.memory_used_mib == null && m.memory_total_mib == null ? 'exporter 未提供内存指标' : (m.memory_kind === 'unified' ? 'GB10 agent · MiB' : 'DCGM · MiB'), 'nd-memory-value'),
       resourceMetric(memoryLabel + ' 剩余', m.memory_free_mib == null ? dash() : Math.round(m.memory_free_mib).toLocaleString('zh-CN') + '<span class="unit"> MiB</span>',
         m.memory_free_mib == null ? 'exporter 未提供内存指标' : (m.memory_kind === 'unified' ? 'GB10 agent · mem_avail' : 'DCGM · FB_FREE'))
     ];
@@ -418,7 +446,7 @@
       backgroundColor: 'transparent', tooltip: baseTooltip(t),
       legend: { textStyle: { color: t.text2, fontSize: 10 }, top: 0, icon: 'roundRect', itemWidth: 10, itemHeight: 3 },
       grid: baseGrid(),
-      xAxis: Object.assign({ type: 'time', axisLabel: { formatter: tsLabel, color: t.muted, fontSize: 10, hideOverlap: true } }, axisStyle(t)),
+      xAxis: timeAxis(t),
       yAxis: yAxes || Object.assign({ type: 'value', max: yMax, minInterval: yMax ? 1 : null }, axisStyle(t)),
       series: seriesDefs
     }, { notMerge: true });

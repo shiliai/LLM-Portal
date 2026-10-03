@@ -44,7 +44,7 @@ const OVERVIEW = {
 };
 const USAGE = { totals: { requests: 120, prompt_tokens: 250000, completion_tokens: 80000,
   cached_tokens: 40000, failures: 3, avg_tft: 780, avg_ms: 3300 },
-  rows: [{ key: '3f2a', alias: 'zhangsan-dev', group: '研发', model: 'deepseek-v3.1',
+  rows: [{ key: '3f2a', alias: '<PRIVATE_PERSON>', group: '研发', model: 'deepseek-v3.1',
     node: 'gb10', endpoint: '/v1/chat/completions', requests: 120, failures: 3,
     prompt_tokens: 250000, completion_tokens: 80000, cached_tokens: 40000, avg_ms: 3300 }],
   hourly: Array.from({ length: 12 }, (_, i) => ({ label: String(10 + i).padStart(2, '0') + ':00',
@@ -156,6 +156,10 @@ async function installFixtures(page, seen) {
   if (await gb10Header.count() !== 1 || await gb10Worker.count() !== 1) throw new Error('GB10 Header/Worker cards must be separate');
   const headerText = await gb10Header.locator('.nd-resource-grid').innerText();
   if (!headerText.includes('统一内存') || !headerText.includes('62,000') || !headerText.includes('99,246')) throw new Error('GB10 Header memory metrics missing');
+  const memoryPair = gb10Header.locator('.nd-memory-pair').first();
+  if (await memoryPair.innerText() !== '62,000 / 122,000') throw new Error('GB10 memory used/total must remain complete');
+  const memoryLayout = await memoryPair.evaluate(el => ({ width: el.parentElement.clientWidth, content: el.scrollWidth }));
+  if (memoryLayout.content > memoryLayout.width) throw new Error('GB10 memory used/total overflows its resource card');
   const workerText = await gb10Worker.locator('.nd-resource-grid').innerText();
   const shared = page.locator('#ni-gb10');
   const sharedText = await shared.innerText();
