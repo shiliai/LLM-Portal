@@ -156,14 +156,10 @@ sleep 3
 # capture worker and readable by the console container.
 lock_conversation_monitor_db
 docker compose ps
-# Materialize the two supported cache-token shapes once.  Spend-log aggregates
-# then avoid decompressing metadata JSON for every historical row.
-docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<'SQL'
-ALTER TABLE public."LiteLLM_SpendLogs" ADD COLUMN IF NOT EXISTS portal_cached_tokens bigint GENERATED ALWAYS AS (coalesce(nullif(metadata #>> '{usage_object,prompt_tokens_details,cached_tokens}','')::bigint,nullif(metadata #>> '{usage_object,cache_read_input_tokens}','')::bigint,0)) STORED;
-SQL
-# Existing volumes skip docker-entrypoint-initdb.d, so converge the dedicated
-# console role on every deploy without exposing the database owner URL to it.
-converge_console_usage_role
+# Existing volumes skip postgres-init scripts. Run the Compose maintenance
+# profile after LiteLLM is healthy so its migrations cannot delete the Portal-
+# owned generated column after we create it.
+docker compose --profile maintenance run --rm schema-converge
 
 echo "== [4/7] edge certificate/site ($DOMAIN)"
 EDGE_DIR=$STATE_DIR/edge

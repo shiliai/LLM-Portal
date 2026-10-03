@@ -41,6 +41,7 @@
     - **客户端 IP（2026-08-15 二次调查后解决）**：LiteLLM 实为支持 XFF——`general_settings.use_x_forwarded_for: true`（config.yaml 已加）即记录 nginx 传来的 `X-Forwarded-For`（consoled 取首跳）；此前记的是 nginx 容器地址（172.18.x，历史行页面标注「经 nginx」）。仅当上游为可信反代时开启：litellm 端口只在 docker 网内可达，安全。已实测：工作站经公网调用，日志记录真实出口 IP。
    **本地集成实测（2026-08-15）**：4 镜像本地构建 + 4 容器栈（wireguard 用隔离 netns 冒烟）——admin 容器内登录、console→docker.sock→wg sidecar 的 `wg show`/`wg set peer` 链路、`/mcp/register` 触发 `docker restart private-llm-mcp-hub`（容器 StartedAt 实变）、external-mcp.json 跨容器共享写读、LiteLLM 缺席容错，全部通过。
 11. **协议兼容层（2026-08-15，issue #9）**：nginx 与 LiteLLM 之间新增 compat-proxy（`compat/compat_proxy.py`，容器 `private-llm-compat:8400`，Starlette 单文件，随 compose 第 7 服务部署）。背景：[`tools/agent-compat/`](../tools/agent-compat/) 矩阵实测 forced tool choice 和内联 system 消息存在上游兼容差异。独立代理在 LiteLLM 解析前执行确定性规范化：单工具 forced choice 改写、多工具 forced choice 稳定 400、内联 system 合并、OpenAI 流式 finish_reason 修正，以及 DSML arguments 的安全 JSON 规范化。无变换请求保持原始字节透传；鉴权、路由和记账仍由 LiteLLM 负责。
+12. **LiteLLM 升级 v1.96.2 → v1.103.2（2026-10-03，issue #149）**：v1.96.2 流式转发在 chunk 转换层**剥离 usage 缓存明细并重算 token**（`prompt_tokens_details.cached_tokens`/`cache_read_input_tokens`/`prompt_cache_hit_tokens` 全丢）→ `SpendLogs.usage_object` 恒 null，请求日志「缓存 Token」恒未命中（缓存实际在工作，纯展示读不到数据）；非流式不受影响。v1.103.2 实测（BerriAI/litellm#41071 一类修复）完整透传且 token 数忠实，console 的 `row_cached()`/`usage_db.py` 无需改动。升级注意：① `STORE_MODEL_IN_DB=true`，容器启动自动跑 prisma 迁移——**迁移后回滚 v1.96.2 可能不再兼容新 schema**，升级前必须 `pg_dump` litellm 库；② 版本继续 pin 固定 tag（issue #10 原则），换版本走 commit 包流程重部署；③ 升级后用 `vps/probe_stream_cache_usage.sh --key <key> --model <带前缀缓存的上游模型> --db` 验收：流式最终 chunk 应含 `cached_tokens` 且同一探针标记的 SpendLogs `usage_object` 同步落库；④ 1.96.2 校准的管理面语义（`/key/list` size≤100、`blocked` 字段、tag 兜底池、SpendLogsMetadata 白名单）见上文注 3/10——升级后如发现行为漂移以实测为准回填。⑤ **v1 迁移 resolver 的 diff-and-force 会删掉不在其 schema 里的自定义列**：升级当日实测 `portal_cached_tokens` 生成列被删→ console 用量页 SQL 直接报错。`deploy.sh` 现在在 LiteLLM healthcheck 通过后调用 Compose `maintenance` profile，幂等重建该列和 `console_usage` 权限；常规重启无 pending 迁移时不 force、不会删列，但**每次跨版本升级后仍应运行一次 maintenance profile**。
 
 ## 2. VPS 部署（一次性）
 
@@ -203,7 +204,7 @@ Vision 后端在控制台「MCP 管理」选择。控制台缓存 `https://model
 页面，Zread 仅查询公开仓库结构或读取公开文件。任何预检、工具归属或调用失败时，立即停止后续
 两项注册；通过「移除」撤销刚注册的项，等待 mcp-hub 重启并确认旧 SHA/工具证明恢复后再排障。
 
-## 5. 验收记录（T1~T15，2026-08-14 首站 site-a 实测）
+## 5. 验收记录（T1~T15，<PRIVATE_DATE>）
 
 | # | 故事 | 验证步骤与通过标准 | 结果 |
 |---|---|---|---|
@@ -220,8 +221,8 @@ Vision 后端在控制台「MCP 管理」选择。控制台缓存 `https://model
 | T11 | US-P11 | `/v1/models` 见全部对外名；未知名→400/404 | ✅ 4 个对外名（deepseek/qwen 直选 + claude-opus-5/qwen3.6-35b-a3 别名） |
 | T12 | US-P12/#51 | 外部 MCP 注册后前缀工具可用，按 Key 分组裁剪 tools/list/tools/call | ✅ FastMCP 3.4.7 授权矩阵与 console 配置测试通过；Codex `web-reader` 真实注册为 `web_webReader`（home 标签）并经代理读取 example.com 通过 |
 | T13 | US-P13 | Key 绑组仅组内路由；伪造 tag 无法越组；组内无部署→可判读错误 | ✅ 六项矩阵全过：home Key→组外模型 401 可判读、组内 200、伪造 x-litellm-tags 双向无效、未绑组全量 |
-| T14 | US-P9 修订/P14 | 控制台全流程（2026-08-14~15 实测） | ✅ 管理员邮箱+密码（可选 TOTP）→admin / 用户 Key→user / 错凭据 401，连错 5 次 60s 内 429；user 访问管理 API 全 403；Key 建/禁/解禁/删、分组 retag、站点 token、别名和 MCP 注册/移除链路通过 |
-| T15 | US-P14 | 暴露面收敛回归（2026-08-14 晚实测） | ✅ 管理面 404 矩阵：/ui、/login、/sso、/openapi.json、/redoc、/health、/key/generate、/key/block、/key/update、/key/list、/model/new、/model/info、/team/list、/global/spend、/spend/logs、/onboard/admin/*、任意未知名全 404；保留面正常：/（主页 200）、/v1/models（带 Key 200）、SSE 流式 chat、/v1/messages（CC 协议 200）、/key/info、/health/liveliness、/mcp（无 Key 401）、/onboard/install（坏 token 403）、/console/（200）；site-add/list CLI 走本机 8100 不受影响；deploy.sh 冒烟含收敛自检 |
+| T14 | US-P9 修订/P14 | 控制台全流程（2026-08-14~15 实测） | ✅ 管理员邮箱+密码（可选 TOTP）→admin / 用户 Key→user / 错凭据 401，连错 <SECRET>；user 访问管理 API 全 403；Key 建/禁/解禁/删、分组 retag、站点 token、别名和 MCP 注册/移除链路通过 |
+| T15 | US-P14 | 暴露面收敛回归（<PRIVATE_DATE> | ✅ 管理面 404 矩阵：/ui、/login、/sso、/openapi.json、/redoc、/health、/key/generate、/key/block、/key/update、/key/list、/model/new、/model/info、/team/list、/global/spend、/spend/logs、/onboard/admin/*、任意未知名全 404；保留面正常：/（主页 200）、/v1/models（带 Key 200）、SSE 流式 chat、/v1/messages（CC 协议 200）、/key/info、/health/liveliness、/mcp（无 Key 401）、/onboard/install（坏 token 403）、/console/（200）；site-add/list CLI 走本机 8100 不受影响；deploy.sh 冒烟含收敛自检 |
 
 **部署当日实测补充**：本地 pi CLI（badlogic/pi-mono 0.84.1）以 `private-llm` provider（baseUrl `https://llm-portal.example.com/v1`）直调 deepseek 与 qwen 均通过——US 的「本地 pi 直接调用网关模型」目标达成。
 

@@ -17,8 +17,11 @@ name: private-llm
 
 services:
   litellm:
-    # 固定版本 tag（issue #10）：与开发/验证基线 LiteLLM 1.96.2 一致，避免 main-stable 滚动漂移
-    image: ghcr.io/berriai/litellm:v1.96.2
+    # 固定版本 tag（issue #10，避免 main-stable 滚动漂移）。v1.103.2（issue #149）：
+    # v1.96.2 流式转发会剥离 usage 缓存明细（prompt_tokens_details.cached_tokens 等），
+    # SpendLogs.usage_object 恒 null → 请求日志「缓存 Token」恒未命中；v1.103.2 实测
+    # 完整透传且 token 数忠实（探针见 docs/runbook.md §LiteLLM 升级 / vps/probe_stream_cache_usage.sh）
+    image: ghcr.io/berriai/litellm:v1.103.2
     container_name: litellm
     restart: unless-stopped
     # BBR：litellm→站点 vLLM 的内层 TCP 走 wg 隧道（跨境 ~25% 晚高峰丢包），
@@ -40,7 +43,18 @@ services:
       - default
       - shared
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=2)"
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
 
   # 协议兼容层（issue #9 / US-13 us13-v1）：nginx 三条 API 路径经此转 LiteLLM。
   # 兼容层不持认证状态；conversation-monitor 仅落共享受限 SQLite 事件库
@@ -81,11 +95,56 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: litellm
       CONSOLE_USAGE_PASSWORD: ${CONSOLE_USAGE_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     volumes:
       # postgres 18+ 规范挂载点（镜像默认 PGDATA=/var/lib/postgresql/18/docker，须落在卷内；
       # 挂 …/data 会被 entrypoint 拒启）。注意：从旧布局（…/data）迁来需一次性 pg_dump 恢复
       - pgdata:/var/lib/postgresql
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
+
+  # Existing volumes do not rerun postgres-init scripts. Run this profile after
+  # every deployment so LiteLLM migrations finish before the Portal-owned
+  # generated column and read-only console role are converged.
+  schema-converge:
+    image: postgres:18.6-alpine
+    profiles: ["maintenance"]
+    restart: "no"
+    depends_on:
+      litellm:
+        condition: service_healthy
+    environment:
+      PGHOST: private-llm-postgres
+      PGUSER: litellm
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: litellm
+      CONSOLE_USAGE_PASSWORD: ${CONSOLE_USAGE_PASSWORD}
+    command:
+      - sh
+      - -ec
+      - |
+        psql -v ON_ERROR_STOP=1 <<'SQL'
+        ALTER TABLE public."LiteLLM_SpendLogs"
+          ADD COLUMN IF NOT EXISTS portal_cached_tokens bigint GENERATED ALWAYS AS (
+            coalesce(
+              nullif(metadata #>> '{usage_object,prompt_tokens_details,cached_tokens}','')::bigint,
+              nullif(metadata #>> '{usage_object,cache_read_input_tokens}','')::bigint,
+              0
+            )
+          ) STORED;
+        \getenv usage_password CONSOLE_USAGE_PASSWORD
+        SELECT format('CREATE ROLE console_usage LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT', :'usage_password')
+        WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='console_usage') \gexec
+        ALTER ROLE console_usage PASSWORD :'usage_password';
+        GRANT CONNECT ON DATABASE litellm TO console_usage;
+        GRANT USAGE ON SCHEMA public TO console_usage;
+        GRANT SELECT ON TABLE public."LiteLLM_SpendLogs" TO console_usage;
+        SQL
+    networks:
+      - default
 
   mcp-hub:
     build: ../mcp-hub
