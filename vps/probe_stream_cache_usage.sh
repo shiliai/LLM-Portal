@@ -70,7 +70,7 @@ done
 if [ "$CHECK_DB" = 1 ]; then
   echo "-- SpendLogs 最新行 usage_object（缓存明细应落库）:"
   docker compose exec -T postgres psql -U litellm -d litellm -t -A -c \
-    "select metadata->'usage_object' from \"LiteLLM_SpendLogs\" order by endTime desc limit 1"
+    "select metadata->'usage_object' from \"LiteLLM_SpendLogs\" order by \"endTime\" desc limit 1"
 fi
 
 [ "$PASS" -gt 0 ] && { echo "PASS: 流式 usage 缓存明细未被剥离（$PASS/$ROUNDS 轮）"; exit 0; }
