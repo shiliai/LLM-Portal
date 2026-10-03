@@ -42,6 +42,10 @@ async def connection():
 _VALID_KEY = "(api_key = ('litellm_proxy_' || 'master' || '_key') OR api_key ~ '^[0-9a-f]{64}$')"
 _CACHED = "coalesce(nullif(metadata #>> '{usage_object,prompt_tokens_details,cached_tokens}','')::bigint,nullif(metadata #>> '{usage_object,cache_read_input_tokens}','')::bigint,0)"
 _ERROR = "coalesce(metadata #>> '{error_information,error_message}',metadata->>'error_str',metadata->>'status_code','failure')"
+# LiteLLM stores forwarded User-Agent values in the request_tags array.  Pick
+# the most specific (longest) UA when a client adds both a product and version
+# tag, while remaining compatible with older rows where request_tags was null.
+_CLIENT = "coalesce((SELECT tag FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(request_tags)='array' THEN request_tags ELSE '[]'::jsonb END) AS tag WHERE lower(tag) LIKE 'user-agent:%' ORDER BY length(tag) DESC LIMIT 1),nullif(\"user\",''),nullif(end_user,''),nullif(agent_id,''),'')"
 
 def _plain(row):
     return {key: int(value) if isinstance(value, Decimal) else value for key, value in dict(row).items()}
@@ -124,7 +128,7 @@ async def logs(days, cursor, limit, key_suffix="", model="", filters=None, q="",
     if q:
         args.append(f"%{q}%")
         w = f"${len(args)}"
-        where.append(f"(request_id ILIKE {w} OR requester_ip_address ILIKE {w} OR model ILIKE {w} OR model_group ILIKE {w} OR coalesce(metadata #>> '{{error_information,error_message}}',metadata->>'error_str','') ILIKE {w})")
+        where.append(f"(request_id ILIKE {w} OR requester_ip_address ILIKE {w} OR request_tags::text ILIKE {w} OR model ILIKE {w} OR model_group ILIKE {w} OR coalesce(metadata #>> '{{error_information,error_message}}',metadata->>'error_str','') ILIKE {w})")
     if cur:
         args += list(cur)
         where.append(f'("startTime",request_id)<(${len(args)-1},${len(args)})')
@@ -135,7 +139,7 @@ async def logs(days, cursor, limit, key_suffix="", model="", filters=None, q="",
           coalesce(prompt_tokens,0) prompt_tokens,coalesce(completion_tokens,0) completion_tokens,
           {_CACHED} cached_tokens,
           coalesce(round(extract(epoch from ("completionStartTime"-"startTime"))*1000)::bigint,0) tft_ms,
-          coalesce(request_duration_ms,0) duration_ms,status,session_id,requester_ip_address ip,
+          coalesce(request_duration_ms,0) duration_ms,status,session_id,requester_ip_address ip,{_CLIENT} client,
           left(coalesce(metadata #>> '{{error_information,error_message}}',metadata->>'error_str',metadata->>'status_code',''),160) error
           FROM "LiteLLM_SpendLogs" WHERE ''' + ' AND '.join(where) + ' ORDER BY "startTime" DESC,request_id DESC LIMIT $' + str(len(args))
         rows = [_plain(x) for x in await conn.fetch(sql,*args)]; more=len(rows)>limit; rows=rows[:limit]

@@ -1,0 +1,14 @@
+global:
+  scrape_interval: 15s
+  external_labels:
+    site: "%{SITE_NAME}"
+    instance: "%{NODE_INSTANCE}"
+
+# GB10 worker runs TensorFold rank 1 and has no HTTP inference server. The
+# head rank owns the serving/LLM metrics; this agent collects worker-local GPU
+# telemetry without creating a permanent down target for a nonexistent port.
+scrape_configs:
+  - job_name: dcgm
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:9400"]

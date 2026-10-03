@@ -27,6 +27,12 @@ def test_sql_preserves_anthropic_cache_and_litellm_failure_semantics():
     assert "error_information,error_message" in usage_db._ERROR
 
 
+def test_sql_extracts_client_from_request_tags_with_legacy_fallback():
+    assert "jsonb_array_elements_text" in usage_db._CLIENT
+    assert "user-agent:%" in usage_db._CLIENT.lower()
+    assert 'nullif("user",\'\')' in usage_db._CLIENT
+
+
 def test_logs_uses_keyset_cursor_and_page_limit(monkeypatch):
     seen = {}
     class Conn:

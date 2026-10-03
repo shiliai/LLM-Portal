@@ -1,0 +1,11 @@
+services:
+  # Optional deployment overlay for nodes that should keep the existing
+  # WireGuard archive and also send a copy to the nasubuntu Portal VM.
+  vmagent:
+    command:
+      - -promscrape.config=/etc/vmagent/prometheus.yml
+      - -remoteWrite.url=${VM_REMOTE_WRITE_URL:?set VM_REMOTE_WRITE_URL}
+      - -remoteWrite.url=${PORTAL_REMOTE_WRITE_URL:?set PORTAL_REMOTE_WRITE_URL}
+      - -remoteWrite.tmpDataPath=/vmagent-data
+      - -remoteWrite.maxDiskUsagePerURL=2GB
+      - -httpListenAddr=127.0.0.1:8429

@@ -201,7 +201,7 @@
       <div class="pf-tb-item"><label>节点</label><select class="pf-select" id="ug-f-node"><option value="all">全部节点</option></select></div>
       <div class="pf-tb-item"><label>端点</label><select class="pf-select" id="ug-f-ep"><option value="all">全部端点</option></select></div>
       <div class="pf-tb-item"><label>状态</label><select class="pf-select" id="ug-f-status"><option value="">全部</option><option value="ok">成功</option><option value="failure">失败</option></select></div>
-      <div class="pf-tb-item"><input type="text" class="pf-input" id="ug-search" placeholder="搜索 Key / 用户 / IP / 模型 / 节点 / 端点 / request_id…" style="width:230px"></div>
+      <div class="pf-tb-item"><input type="text" class="pf-input" id="ug-search" placeholder="搜索 Key / 客户端 / IP / 模型 / 节点 / 端点 / request_id…" style="width:230px"></div>
       <div class="pf-tb-right">
         <span id="ug-count"></span>
         <button class="pf-btn" id="ug-reset" type="button">✕ 重置</button>
@@ -211,7 +211,7 @@
     </div>
     <div class="pf-card flush ug-rec-card">
       <table class="pf-table ug-request-table"><thead><tr>
-        <th>时间</th><th class="ug-detail-col">详情</th><th>Key / 用户</th><th>模型</th><th>推理强度</th><th>节点</th><th>IP</th><th>端点</th>
+        <th>时间</th><th class="ug-detail-col">详情</th><th>Key / 用户</th><th>模型</th><th>推理强度</th><th>节点</th><th>IP</th><th>客户端</th><th>端点</th>
         <th class="num">读 Token</th><th class="num">写 Token</th><th class="num">缓存 Token</th>
         <th class="num">首字延迟</th><th class="num">总时延</th><th>状态</th>
       </tr></thead><tbody id="ug-tbody"></tbody></table>
@@ -1158,6 +1158,7 @@
         '<dt>时间</dt><dd>' + esc(row.ts) + '</dd>' +
         '<dt>Key / 用户</dt><dd>' + esc((row.key ? '…' + row.key : '—') + (row.alias ? ' · ' + row.alias : '')) + '</dd>' +
         '<dt>模型 / 节点</dt><dd class="mono">' + esc((row.model || '—') + ' · ' + (row.node || '—')) + '</dd>' +
+        '<dt>IP / 客户端</dt><dd class="mono">' + esc(row.ip || '—') + ' · ' + esc(row.client || '—') + '</dd>' +
         '<dt>端点</dt><dd class="mono">' + esc(row.endpoint || '—') + '</dd>' +
         '<dt>状态</dt><dd>' + (row.status === 'failure' ? '<span class="pf-chip err">失败</span>' : '<span class="pf-chip ok">成功</span>') + '</dd>' +
         '<dt>Token</dt><dd class="mono">读 ' + esc(fmt(row.prompt_tokens)) + ' · 写 ' + esc(fmt(row.completion_tokens)) + ' · 缓存 ' + esc(fmt(row.cached_tokens)) + '</dd>' +
@@ -1166,7 +1167,7 @@
       '<section class="ug-detail-section"><h3>原文状态</h3>' + detailState('请在“采集策略”中确认该 Key 已加入 allowlist；只有后续请求才会按当前策略保存原文。') + '</section>';
   }
 
-  function renderConversationDetail(detail) {
+  function renderConversationDetail(detail, row) {
     var payload = detail.payload || {};
     var usage = payload.usage || {};
     var tools = payload.tool_calls || [];
@@ -1181,6 +1182,7 @@
         '<dt>时间</dt><dd>' + esc(detail.created_at) + '</dd>' +
         '<dt>Key</dt><dd class="mono">' + esc(detail.key_ref) + '</dd>' +
         '<dt>模型</dt><dd class="mono">' + esc(detail.model) + '</dd>' +
+        '<dt>IP / 客户端</dt><dd class="mono">' + esc((row && row.ip) || '—') + ' · ' + esc((row && row.client) || '—') + '</dd>' +
         '<dt>协议</dt><dd class="mono">' + esc(detail.protocol) + '</dd>' +
         '<dt>状态</dt><dd>' + esc(detail.status) + '</dd>' +
         '<dt>端点</dt><dd class="mono">' + esc(payload.endpoint || '—') + '</dd>' +
@@ -1208,7 +1210,7 @@
       var detail = await window.pfApi('GET', '/conversation-monitor/records/' + encodeURIComponent(requestId));
       if (epoch !== detailEpoch) return;
       if (!detail || !detail.payload) throw { status: 404, error: '此请求未采集原文，或已按 TTL / 容量清理。' };
-      renderConversationDetail(detail);
+      renderConversationDetail(detail, row);
     } catch (e) {
       if (epoch !== detailEpoch) return;
       var message;
@@ -1314,7 +1316,8 @@
         '<td class="mono" style="font-size:11px">' + esc(r.model) + '</td>' +
         '<td class="mono ug-effort" style="font-size:11px">' + (r.effort ? esc(r.effort) : dash()) + '</td>' +
         '<td class="mono" style="font-size:11px">' + esc(r.node || '—') + '</td>' +
-        '<td class="mono" style="font-size:11px;color:var(--muted)">' + esc(r.ip || '—') + '</td>' +
+        '<td class="mono" style="font-size:11px;color:var(--muted)" title="' + esc(r.ip || '') + '">' + esc(r.ip || '—') + '</td>' +
+        '<td class="mono" style="font-size:11px;color:var(--muted);max-width:180px;overflow:hidden;text-overflow:ellipsis" title="' + esc(r.client || '') + '">' + esc(r.client || '—') + '</td>' +
         '<td class="mono" style="font-size:11px;color:var(--muted)">' + esc(r.endpoint || '—') + '</td>' +
         '<td class="num">' + tokenMetricHtml(r.prompt_tokens, 'read') + '</td>' +
         '<td class="num">' + tokenMetricHtml(r.completion_tokens, 'write') + '</td>' +
@@ -1326,14 +1329,14 @@
           : '<span class="pf-chip ok"><span class="pf-dot ok" style="margin-right:0"></span>成功</span>') + '</td>' +
       '</tr>';
       if (fail && exp) {
-        tr += '<tr class="pf-err-row"><td colspan="14"><div class="pf-err-detail">' +
+        tr += '<tr class="pf-err-row"><td colspan="15"><div class="pf-err-detail">' +
           'request_id: ' + esc(r.request_id) + '\n' +
           'error: ' + esc(r.error || 'failure') + '\n' +
           'node: ' + esc(r.node || '—') + ' · model: ' + esc(r.model) + ' · endpoint: ' + esc(r.endpoint || '—') + '\n' +
-          'ip: ' + esc(r.ip || '—') + (r.effort ? ' · effort: ' + esc(r.effort) : '') + '</div></td></tr>';
+          'ip: ' + esc(r.ip || '—') + ' · client: ' + esc(r.client || '—') + (r.effort ? ' · effort: ' + esc(r.effort) : '') + '</div></td></tr>';
       }
       return tr;
-    }).join('') || '<tr><td colspan="14" style="padding:10px" class="pf-desc">当前过滤条件下暂无请求</td></tr>';
+    }).join('') || '<tr><td colspan="15" style="padding:10px" class="pf-desc">当前过滤条件下暂无请求</td></tr>';
     $('ug-count').textContent = '共 ' + fmt(rows.length) + ' 条 · 第 ' + rl.page + '/' + pages + ' 页';
     /* 分页（窗口页码） */
     var pager = $('ug-pager');
@@ -1356,10 +1359,10 @@
     return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   }
   function exportCsv() {
-    var head = ['时间', '请求ID', 'Key', '用户', '分组', '模型', '推理强度', '节点', 'IP', '端点', '读Token', '写Token', '缓存Token', '首字延迟ms', '总时延ms', '状态', '错误详情'];
+    var head = ['时间', '请求ID', 'Key', '用户', '分组', '模型', '推理强度', '节点', 'IP', '客户端', '端点', '读Token', '写Token', '缓存Token', '首字延迟ms', '总时延ms', '状态', '错误详情'];
     var lines = [head.join(',')];
     rl.logs.forEach(function (r) {
-      lines.push([r.ts, r.request_id, '…' + r.key, r.alias, r.group, r.model, r.effort, r.node, r.ip, r.endpoint,
+      lines.push([r.ts, r.request_id, '…' + r.key, r.alias, r.group, r.model, r.effort, r.node, r.ip, r.client, r.endpoint,
         r.prompt_tokens, r.completion_tokens, r.cached_tokens, r.tft_ms, r.duration_ms,
         r.status === 'failure' ? '失败' : '成功', r.error].map(csvCell).join(','));
     });

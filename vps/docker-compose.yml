@@ -153,6 +153,7 @@ services:
       LITELLM_BASE: http://litellm:4000
       ONBOARDD_URL: http://private-llm-onboardd:8100
       VM_URL: http://victoriametrics:8428
+      GB10_STATUS_URL: ${GB10_STATUS_URL:-}
       PORTAL_VERSION: ${PORTAL_VERSION:-dev}
       PORTAL_BUILD: ${PORTAL_BUILD:-unknown}
       MCP_HUB_URL: http://private-llm-mcp-hub:8200
