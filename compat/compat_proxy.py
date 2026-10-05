@@ -14,6 +14,10 @@
      多工具返回稳定 400，不静默删参、不代客户端选第一个。
   3. OpenAI 流式 finish_reason 修正：已观察到 tool_calls fragments 的 choice 最终
      报 stop 时规范化为 tool_calls（仅重写该行，其余字节原样）。
+  4. mojibake 修复（issue #162）：上游引擎偶发把多字节字符按 UTF-8 字节逐字输出
+     （'—' → 'â\x80\x94'），一旦进入会话历史，模型会在后续每轮模仿该损坏并滚雪球。
+     compat 在响应侧（流式跨 delta 状态机 + 非流式）与请求侧（仅 assistant/tool 历史）
+     把 Latin-1 字节拼写还原为正确字符；合法文本恒等，MOJIBAKE_REPAIR=off 可关闭。
 
 原则：请求不命中任何规则 → 原始字节透传（保护 prompt cache 前缀与上游语义）；
 SSE 逐行流式转发、绝不缓冲完整响应；指标脱敏——只记规则版本/索引/哈希，
@@ -38,10 +42,16 @@ from starlette.requests import Request
 from starlette.responses import Response, StreamingResponse
 from starlette.routing import Route
 
+try:
+    import mojibake_repair
+except ModuleNotFoundError:  # 从仓库根直接运行时的包导入
+    from compat import mojibake_repair
+
 LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://litellm:4000").rstrip("/")
 COMPAT_PORT = int(os.environ.get("COMPAT_PORT", "8400"))
 US13_VERSION = "us13-v1"
 PROXY_PATHS = ("/v1/messages", "/v1/messages/count_tokens", "/v1/chat/completions")
+MOJIBAKE_REPAIR = mojibake_repair.enabled()
 
 # 逐跳头 + 交给 httpx 按目标重建的头（Host/Content-Length/Accept-Encoding）；
 # Authorization、x-api-key、anthropic-version、anthropic-beta、X-Forwarded-For 等一律原样透传
@@ -267,6 +277,9 @@ class OpenAIStreamFixer:
     def __init__(self) -> None:
         self.saw_fragments: set[int] = set()
         self.fixed: list[int] = []
+        self._repairer = mojibake_repair.StreamRepairer()
+        self._repair_runs = 0
+        self._last_event: dict[str, Any] = {}
 
     def process_line(self, raw: bytes, endpoint: str = "") -> bytes:
         stripped = raw.rstrip(b"\r\n")
@@ -293,12 +306,51 @@ class OpenAIStreamFixer:
                 choice["finish_reason"] = "tool_calls"
                 changed = True
                 self.fixed.append(idx)
+        if MOJIBAKE_REPAIR:
+            if obj.get("id"):
+                self._last_event = {"id": obj.get("id"), "model": obj.get("model") or "",
+                                    "created": obj.get("created") or 0}
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                delta = choice.get("delta")
+                if not isinstance(delta, dict):
+                    continue
+                for field in ("content", "reasoning_content"):
+                    piece = delta.get(field)
+                    if isinstance(piece, str):
+                        fixed = self._repairer.feed(field, piece)
+                        if fixed != piece:
+                            delta[field] = fixed
+                            changed = True
+                            self._repair_runs += 1
         if not changed:
             return raw
         if endpoint:
             metric("compat.finish_reason_fix", endpoint=endpoint, choices=sorted(set(self.fixed)))
         terminator = b"\r\n" if raw.endswith(b"\r\n") else (b"\n" if raw.endswith(b"\n") else b"")
         return b"data: " + json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode() + terminator
+
+    def flush_events(self, endpoint: str = "") -> list[bytes]:
+        """回复结束时，把流式修复器仍持有的残片作为补充 delta 发出（issue #162）。"""
+
+        if not MOJIBAKE_REPAIR:
+            return []
+        held = self._repairer.resolve()
+        events: list[bytes] = []
+        for field, text in held.items():
+            if not text:
+                continue
+            event = {"id": self._last_event.get("id") or "chatcmpl-mojibake-flush",
+                     "object": "chat.completion.chunk",
+                     "created": self._last_event.get("created") or 0,
+                     "model": self._last_event.get("model") or "",
+                     "choices": [{"index": 0, "delta": {field: text}, "finish_reason": None}]}
+            events.append(b"data: " + json.dumps(event, ensure_ascii=False).encode() + b"\n\n")
+        if self._repair_runs or events:
+            metric("compat.mojibake_repaired", endpoint=endpoint, side="response_stream",
+                   runs=self._repair_runs, flushed=len(events))
+        return events
 
 
 class _LineSplitter:
@@ -340,6 +392,8 @@ async def _openai_sse_rewritten(chunks: AsyncIterator[bytes], endpoint: str) -> 
     tail = splitter.flush()
     if tail is not None:
         yield fixer.process_line(tail, endpoint)
+    for event in fixer.flush_events(endpoint):
+        yield event
 
 
 def error_response(reject: CompatReject, proto: str) -> Response:
@@ -385,6 +439,11 @@ async def compat_proxy(request: Request) -> Response:
                 metric("compat.transform", rule=US13_VERSION, endpoint=path, **sys_info)
             if dsml_info:
                 metric("compat.dsml_args_normalized", endpoint=path, side="request", **dsml_info)
+        if MOJIBAKE_REPAIR:
+            repaired = mojibake_repair.repair_history(parsed)
+            if repaired:
+                out_body = json.dumps(parsed, separators=(",", ":"), ensure_ascii=False).encode()
+                metric("compat.mojibake_repaired", endpoint=path, side="request", runs=repaired)
 
     fwd = [(k, v) for k, v in request.headers.items() if k.lower() not in REQ_DROP]
     fwd.append(("accept-encoding", "identity"))  # 响应不压缩：字节透传 + SSE 行改写的前提
@@ -409,6 +468,11 @@ async def compat_proxy(request: Request) -> Response:
         if isinstance(value, dict) and normalize_dsml_response(value):
             metric("compat.dsml_args_normalized", endpoint=path, side="response", calls=1)
             raw_response = json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
+        if isinstance(value, dict) and MOJIBAKE_REPAIR:
+            repaired = mojibake_repair.repair_reply(value)
+            if repaired:
+                raw_response = json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
+                metric("compat.mojibake_repaired", endpoint=path, side="response_json", runs=repaired)
         return Response(raw_response, status_code=upstream.status_code, headers=headers)
     if content_type == "text/event-stream" and path == "/v1/chat/completions":
         body_stream = _openai_sse_rewritten(upstream.aiter_raw(), path)
