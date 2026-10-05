@@ -16,3 +16,14 @@ b4f7a3952eb771625ad5ea83cb28bc2410627019:execution/proto-remote-access/console/e
 e3813f6842f2b0a5e1d8248abdfe9e6e4938ed14:execution/proto-remote-access/docs/bench-gateway.py:generic-api-key:7
 f136eb89bf76a607fb236c8c0c36f3a097e74e1d:.github/ISSUE_TEMPLATE/bug_report.yml:curl-auth-header:32
 f136eb89bf76a607fb236c8c0c36f3a097e74e1d:execution/proto-remote-access/mcp-hub/test_mcp_hub.py:generic-api-key:21
+
+# Issue #162：以下均为复现材料的 SHA-256 校验值，不是鉴权 token。
+# manifest 第 7 行为输入 token 序列摘要，第 34 行为 tokenizer 文件摘要；
+# observed-results 五处为已记录输出 token 序列摘要。仅豁免具体提交/文件/行的误报。
+b8bb3c3e7c76a00be800607ac95f8b40072f3cfb:tools/repro/issue-162/manifest.json:generic-api-key:7
+b8bb3c3e7c76a00be800607ac95f8b40072f3cfb:tools/repro/issue-162/manifest.json:generic-api-key:34
+b8bb3c3e7c76a00be800607ac95f8b40072f3cfb:tools/repro/issue-162/observed-results.json:generic-api-key:62
+b8bb3c3e7c76a00be800607ac95f8b40072f3cfb:tools/repro/issue-162/observed-results.json:generic-api-key:117
+b8bb3c3e7c76a00be800607ac95f8b40072f3cfb:tools/repro/issue-162/observed-results.json:generic-api-key:178
+b8bb3c3e7c76a00be800607ac95f8b40072f3cfb:tools/repro/issue-162/observed-results.json:generic-api-key:239
+b8bb3c3e7c76a00be800607ac95f8b40072f3cfb:tools/repro/issue-162/observed-results.json:generic-api-key:300
