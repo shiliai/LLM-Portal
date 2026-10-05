@@ -1,0 +1,309 @@
+{
+  "recorded_at": "2026-10-05T21:10:23.662925+08:00",
+  "case_id": "issue-162-anonymized-continuation-v1",
+  "request_file_sha256": "eb15525b3a47904188f0c439666d4f69688f95dc7886a248dbb2479e81f630d7",
+  "runs": [
+    {
+      "mode": "json-greedy",
+      "fixture_sha256": "eb15525b3a47904188f0c439666d4f69688f95dc7886a248dbb2479e81f630d7",
+      "results": [
+        {
+          "run": 0,
+          "status": "ok",
+          "seconds": 0.569,
+          "temperature": 0.0,
+          "stream": false,
+          "draft": true,
+          "text": " \u00e2\u0086\u0092 IQ3_S or",
+          "codepoints": [
+            "U+0020",
+            "U+00E2",
+            "U+0086",
+            "U+0092",
+            "U+0020",
+            "U+0049",
+            "U+0051",
+            "U+0033",
+            "U+005F",
+            "U+0053",
+            "U+0020",
+            "U+006F",
+            "U+0072"
+          ],
+          "mojibake_sequences": 1,
+          "C1_controls": 2,
+          "replacement_characters": 0,
+          "reproduced": true,
+          "usage": {
+            "prompt_tokens": 19438,
+            "completion_tokens": 8,
+            "total_tokens": 19446,
+            "prompt_tokens_details": {
+              "cached_tokens": 19392
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          "input_tokens_match_fixture": true,
+          "finish_reasons": [
+            "length"
+          ],
+          "token_ids": [
+            27810,
+            126,
+            228,
+            74558,
+            36520,
+            18,
+            1098,
+            476
+          ],
+          "token_sha256": "d64bee895f4499767a5abcc18f3bb41ea89d884b1a68fa03d5d49aa2a54ecde5",
+          "matches_recorded_greedy_tokens": true
+        },
+        {
+          "run": 1,
+          "status": "ok",
+          "seconds": 0.519,
+          "temperature": 0.0,
+          "stream": false,
+          "draft": true,
+          "text": " \u00e2\u0086\u0092 IQ3_S or",
+          "codepoints": [
+            "U+0020",
+            "U+00E2",
+            "U+0086",
+            "U+0092",
+            "U+0020",
+            "U+0049",
+            "U+0051",
+            "U+0033",
+            "U+005F",
+            "U+0053",
+            "U+0020",
+            "U+006F",
+            "U+0072"
+          ],
+          "mojibake_sequences": 1,
+          "C1_controls": 2,
+          "replacement_characters": 0,
+          "reproduced": true,
+          "usage": {
+            "prompt_tokens": 19438,
+            "completion_tokens": 8,
+            "total_tokens": 19446,
+            "prompt_tokens_details": {
+              "cached_tokens": 19392
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          "input_tokens_match_fixture": true,
+          "finish_reasons": [
+            "length"
+          ],
+          "token_ids": [
+            27810,
+            126,
+            228,
+            74558,
+            36520,
+            18,
+            1098,
+            476
+          ],
+          "token_sha256": "d64bee895f4499767a5abcc18f3bb41ea89d884b1a68fa03d5d49aa2a54ecde5",
+          "matches_recorded_greedy_tokens": true
+        }
+      ]
+    },
+    {
+      "mode": "sse-greedy",
+      "fixture_sha256": "eb15525b3a47904188f0c439666d4f69688f95dc7886a248dbb2479e81f630d7",
+      "results": [
+        {
+          "run": 0,
+          "status": "ok",
+          "seconds": 0.53,
+          "temperature": 0.0,
+          "stream": true,
+          "draft": true,
+          "text": " \u00e2\u0086\u0092 IQ3_S or",
+          "codepoints": [
+            "U+0020",
+            "U+00E2",
+            "U+0086",
+            "U+0092",
+            "U+0020",
+            "U+0049",
+            "U+0051",
+            "U+0033",
+            "U+005F",
+            "U+0053",
+            "U+0020",
+            "U+006F",
+            "U+0072"
+          ],
+          "mojibake_sequences": 1,
+          "C1_controls": 2,
+          "replacement_characters": 0,
+          "reproduced": true,
+          "usage": {
+            "prompt_tokens": 19438,
+            "completion_tokens": 8,
+            "total_tokens": 19446,
+            "prompt_tokens_details": {
+              "cached_tokens": 19392
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          "input_tokens_match_fixture": true,
+          "finish_reasons": [
+            "length"
+          ],
+          "token_ids": [
+            27810,
+            126,
+            228,
+            74558,
+            36520,
+            18,
+            1098,
+            476
+          ],
+          "token_sha256": "d64bee895f4499767a5abcc18f3bb41ea89d884b1a68fa03d5d49aa2a54ecde5",
+          "matches_recorded_greedy_tokens": true
+        }
+      ]
+    },
+    {
+      "mode": "no-draft-greedy",
+      "fixture_sha256": "eb15525b3a47904188f0c439666d4f69688f95dc7886a248dbb2479e81f630d7",
+      "results": [
+        {
+          "run": 0,
+          "status": "ok",
+          "seconds": 11.064,
+          "temperature": 0.0,
+          "stream": false,
+          "draft": false,
+          "text": " \u00e2\u0086\u0092 IQ3_S or",
+          "codepoints": [
+            "U+0020",
+            "U+00E2",
+            "U+0086",
+            "U+0092",
+            "U+0020",
+            "U+0049",
+            "U+0051",
+            "U+0033",
+            "U+005F",
+            "U+0053",
+            "U+0020",
+            "U+006F",
+            "U+0072"
+          ],
+          "mojibake_sequences": 1,
+          "C1_controls": 2,
+          "replacement_characters": 0,
+          "reproduced": true,
+          "usage": {
+            "prompt_tokens": 19438,
+            "completion_tokens": 8,
+            "total_tokens": 19446,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          "input_tokens_match_fixture": true,
+          "finish_reasons": [
+            "length"
+          ],
+          "token_ids": [
+            27810,
+            126,
+            228,
+            74558,
+            36520,
+            18,
+            1098,
+            476
+          ],
+          "token_sha256": "d64bee895f4499767a5abcc18f3bb41ea89d884b1a68fa03d5d49aa2a54ecde5",
+          "matches_recorded_greedy_tokens": true
+        }
+      ]
+    },
+    {
+      "mode": "json-temperature1",
+      "fixture_sha256": "eb15525b3a47904188f0c439666d4f69688f95dc7886a248dbb2479e81f630d7",
+      "results": [
+        {
+          "run": 0,
+          "status": "ok",
+          "seconds": 0.908,
+          "temperature": 1.0,
+          "stream": false,
+          "draft": true,
+          "text": " \u00e2\u0086\u0092 IQ3_S or",
+          "codepoints": [
+            "U+0020",
+            "U+00E2",
+            "U+0086",
+            "U+0092",
+            "U+0020",
+            "U+0049",
+            "U+0051",
+            "U+0033",
+            "U+005F",
+            "U+0053",
+            "U+0020",
+            "U+006F",
+            "U+0072"
+          ],
+          "mojibake_sequences": 1,
+          "C1_controls": 2,
+          "replacement_characters": 0,
+          "reproduced": true,
+          "usage": {
+            "prompt_tokens": 19438,
+            "completion_tokens": 8,
+            "total_tokens": 19446,
+            "prompt_tokens_details": {
+              "cached_tokens": 19392
+            },
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          },
+          "input_tokens_match_fixture": true,
+          "finish_reasons": [
+            "length"
+          ],
+          "token_ids": [
+            27810,
+            126,
+            228,
+            74558,
+            36520,
+            18,
+            1098,
+            476
+          ],
+          "token_sha256": "d64bee895f4499767a5abcc18f3bb41ea89d884b1a68fa03d5d49aa2a54ecde5",
+          "matches_recorded_greedy_tokens": true
+        }
+      ]
+    }
+  ],
+  "all_five_reproduced": true,
+  "all_five_same_output_tokens": true,
+  "repository_tests": "227 passed; 1 pre-existing Starlette deprecation warning"
+}
