@@ -1659,3 +1659,43 @@ def test_usage_trend_buckets_align_on_step_grid(console_admin, monkeypatch):
     hit = [x for x in hourly if x["in"]]
     assert len(hit) == 1
     assert hit[0]["label"] == "22:00" and hit[0]["reqs"] == 34 and hit[0]["in"] == 10333036
+
+
+# ---------------------------------------------------------------- 会话滑动过期（issue #162 跟进）
+
+def test_session_sliding_ttl_extends_on_access(console_admin):
+    """把会话老化到剩余 1h,一次已鉴权访问后续期回满 8h;登录 cookie 寿命独立放长到 30 天。"""
+    install_litellm_stub2 = None  # 占位避免误用;本测试不走 LiteLLM
+    del install_litellm_stub2
+    client = TestClient(console_admin.app)
+    ok = client.post("/console/api/admin-login",
+                     json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}, headers=XRW)
+    assert ok.status_code == 200
+    assert "max-age=2592000" in ok.headers["set-cookie"].lower()   # 浏览器 cookie 30 天
+    cookie = _cookie_of(ok)
+    hdr = {"Cookie": cookie, **XRW}
+    sid = cookie.split("=", 1)[1].split(".", 1)[0]
+    db = sqlite3.connect(console_admin.STATE_DIR / "sessions.db")
+    db.execute("UPDATE sessions SET exp=? WHERE sid=?", (time.time() + 3600, sid))
+    db.commit()
+    assert client.get("/console/api/me", headers=hdr).status_code == 200
+    exp = db.execute("SELECT exp FROM sessions WHERE sid=?", (sid,)).fetchone()[0]
+    db.close()
+    left = exp - time.time()
+    assert 28700 < left <= 28800, f"会话未滑动续期:剩余 {left}s"
+
+
+def test_session_expired_without_access(console_admin):
+    """8 小时无访问:服务端 exp 过线后即 401,前端据此跳登录页。"""
+    client = TestClient(console_admin.app)
+    ok = client.post("/console/api/admin-login",
+                     json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}, headers=XRW)
+    cookie = _cookie_of(ok)
+    hdr = {"Cookie": cookie, **XRW}
+    sid = cookie.split("=", 1)[1].split(".", 1)[0]
+    db = sqlite3.connect(console_admin.STATE_DIR / "sessions.db")
+    db.execute("UPDATE sessions SET exp=? WHERE sid=?", (time.time() - 60, sid))
+    db.commit()
+    db.close()
+    resp = client.get("/console/api/me", headers=hdr)
+    assert resp.status_code == 401
