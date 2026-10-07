@@ -286,9 +286,14 @@ def _collect_image_refs(messages: list) -> list[tuple[int, int, int | None]]:
     return refs
 
 
-def _image_placeholder(seq: int, kept: int) -> str:
-    """`[IMAGE_` 前缀与 collector/replay 占位符约定对齐，文本规则会跳过它。"""
-    return f"[IMAGE_EVICTED: 会话第 {seq} 张截图已移除，仅保留最近 {kept} 张]"
+def _image_placeholder(seq: int, keep_target: int) -> str:
+    """`[IMAGE_` 前缀与 collector/replay 占位符约定对齐，文本规则会跳过它。
+
+    N 用配置目标（keep_last / max_images）而非本轮实际保留数：kept 在保护与
+    降级情形下跨轮浮动（9↔8），写进占位符会把全部历史占位符改写、在最早
+    裁剪点打断上游 prefix cache（PR #167 评审 P2-2）。
+    """
+    return f"[IMAGE_EVICTED: 会话第 {seq} 张截图已移除，仅保留最近 {keep_target} 张]"
 
 
 @dataclass
@@ -367,7 +372,7 @@ def apply_image_evictions(body: dict[str, Any], plan: ImageEviction) -> tuple[in
         message = messages[mi]
         container = message["content"] if si is None else message["content"][pi]["content"]
         part = container[pi if si is None else si]
-        replacement: dict[str, Any] = {"type": "text", "text": _image_placeholder(seq, plan.kept)}
+        replacement: dict[str, Any] = {"type": "text", "text": _image_placeholder(seq, plan.target)}
         if isinstance(part.get("cache_control"), (dict, str)):
             replacement["cache_control"] = part["cache_control"]
         removed += _json_bytes(part)
@@ -515,14 +520,6 @@ class ContextOptimizer:
                                  image_guard=active_config.image_guard)
         stats = TransformStats()
         candidate = _transform(copy.deepcopy(body), VisitContext(), config, stats, root=True)
-        image_info: dict[str, Any] = {"active": False}
-        if image_plan is not None:
-            try:
-                removed, added = apply_image_evictions(candidate, image_plan)
-                image_info = image_plan.as_dict()
-                image_info.update(bytes_removed=removed, bytes_added=added)
-            except Exception:
-                image_info = {"active": False}
         optimized_bytes = _json_bytes(candidate)
         if optimized_bytes >= raw_bytes:
             candidate = body
@@ -530,11 +527,28 @@ class ContextOptimizer:
             fallback = True
         else:
             fallback = False
+        # 工具结果字节按文本候选计量：图片裁剪若作用于 tool 消息内，不应把
+        # base64 字节混进文本压缩的节省口径。
+        optimized_tool_bytes = self._tool_result_bytes(candidate)
+        # 图片限额救援独立于文本 never-worse 回退（PR #167 评审 P2-1）：占位符可能
+        # 比短 URL 图 part 大，候选总字节因此变大时只应回退文本变换——若在此恢复
+        # 全部图片，51 张请求会重新回到上游 400。救援在回退判定之后作用于最终体，
+        # 指标与 x-portal-images-pruned 因此始终与实发请求一致。
+        image_info: dict[str, Any] = {"active": False}
+        if image_plan is not None:
+            try:
+                evicted = copy.deepcopy(candidate)
+                removed, added = apply_image_evictions(evicted, image_plan)
+                candidate = evicted
+                image_info = image_plan.as_dict()
+                image_info.update(bytes_removed=removed, bytes_added=added)
+            except Exception:
+                image_info = {"active": False}
         return candidate, {
             "mode": mode, "enabled": True, "changed": candidate is not body,
             "key_hash": digest[:12], "raw_bytes": raw_bytes, "optimized_bytes": optimized_bytes,
             "bytes_saved": raw_bytes - optimized_bytes,
-            "tool_result_bytes_saved": raw_tool_bytes - self._tool_result_bytes(candidate),
+            "tool_result_bytes_saved": raw_tool_bytes - optimized_tool_bytes,
             "fallback_never_worse": fallback, "rule_hits": stats.hits.as_dict(),
             "image_evict": image_info,
         }

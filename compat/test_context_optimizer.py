@@ -251,3 +251,63 @@ def test_openai_tool_message_images_counted():
     tool_parts = result["messages"][2]["content"]
     assert tool_parts[1]["type"] == "text" and tool_parts[1]["text"].startswith("[IMAGE_EVICTED")
     assert result["messages"][3]["content"][0]["type"] == "image_url"
+
+
+def test_short_url_images_rescue_survives_text_size_fallback():
+    # PR #167 评审 P2-1：短 URL 图 part 比占位符小 → 候选总字节变大 → 文本
+    # never-worse 回退，但图片限额救援必须保留，指标与实发请求一致。
+    messages = [
+        {"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": f"https://example.com/{i}.png"}}
+            for i in range(51)]},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "next"},
+    ]
+    body = {"model": "g", "messages": messages}
+    optimizer = ContextOptimizer(OptimizerConfig(mode="safe", key_hashes=frozenset({"*"}),
+                                                 image_limits={"g": 50}, image_keep_last=8))
+    result, info = optimizer.transform(body, "sk-canary")
+    assert info["fallback_never_worse"] is True  # 文本无节省，回退
+    assert info["changed"] is True               # 但图片救援生效
+    assert info["image_evict"]["pruned"] == 43
+    assert _count_parts(result, "image_url") == 8  # 实发请求确实只剩 8 张
+    placeholders = [p for m in result["messages"] for p in m["content"]
+                    if isinstance(p, dict) and p.get("type") == "text"
+                    and p["text"].startswith("[IMAGE_EVICTED: ")]
+    assert len(placeholders) == 43
+
+
+def test_placeholder_stable_when_kept_varies_across_rounds():
+    # PR #167 评审 P2-2：canary 保护规则使 kept 跨轮浮动（9→8），占位符不写
+    # 本轮 kept（改用配置目标），历史占位符逐字节稳定，prefix cache 不塌。
+    optimizer = ContextOptimizer(OptimizerConfig(mode="safe", key_hashes=frozenset({"*"}),
+                                                 image_limits={"g": 50}, image_keep_last=8))
+
+    def history(images: int) -> list:
+        msgs = []
+        for _ in range(images):
+            msgs.append({"role": "user", "content": [_image_part()]})
+            msgs.append({"role": "assistant", "content": "ok"})
+        return msgs
+
+    def placeholders(result: dict) -> list:
+        return [p["text"] for m in result["messages"] for p in m["content"]
+                if isinstance(p, dict) and p.get("type") == "text"
+                and p["text"].startswith("[IMAGE_EVICTED: ")]
+
+    round1 = {"model": "g", "messages": history(43) + [
+        {"role": "user", "content": [_image_part() for _ in range(9)]}]}
+    r1, i1 = optimizer.transform(round1, "k")
+    assert i1["image_evict"]["kept"] == 9  # 最后 user 的 9 张受保护，裁不到 8
+    assert "仅保留最近 8 张" in placeholders(r1)[0]  # 占位符用配置目标而非 kept
+
+    round2 = {"model": "g", "messages": history(43) + [
+        {"role": "user", "content": [_image_part() for _ in range(9)]},   # 上一轮的最后 user，已成历史
+        {"role": "assistant", "content": "edited"},
+        {"role": "user", "content": [_image_part()]},                     # 本轮新截图
+    ]}
+    r2, i2 = optimizer.transform(round2, "k")
+    assert i2["image_evict"]["kept"] == 8
+    p1, p2 = placeholders(r1), placeholders(r2)
+    assert len(p1) == 43 and len(p2) == 45
+    assert p2[:43] == p1  # 同一批历史截图的占位符跨轮逐字节一致
