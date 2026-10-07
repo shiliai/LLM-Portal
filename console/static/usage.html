@@ -586,23 +586,30 @@
         '<span class="ug-policy-mode-title">' + item.title + '</span><span class="ug-policy-mode-copy">' + item.copy + '</span></label>';
     }).join('');
     $('ug-optimization-body').innerHTML =
-      '<div class="ug-policy-intro"><span class="ug-policy-intro-mark">◈</span><span>只处理工具结果文本，默认关闭。选中的 Key 才会进入 canary；请求结构、tool ID、JSON、代码和图片保持原样。</span></div>' +
+      '<div class="ug-policy-intro"><span class="ug-policy-intro-mark">◈</span><span>工具结果文本压缩默认关闭，选中的 Key 才会进入 canary。图片历史裁剪独立于模式：配置了上限的模型组在图片数超限时由限额守卫对全部 Key 生效，白名单 Key 额外裁到保留张数；请求结构、tool ID、JSON 与代码保持原样。</span></div>' +
       '<div class="ug-policy-overview"><div><div class="ug-policy-overview-title">当前优化策略</div><div class="ug-policy-overview-meta">版本 ' + esc(String(policy.version == null ? '—' : policy.version)) + ' · 更新于 ' + esc(policy.updated_at || '—') + '</div></div>' +
-        '<div class="ug-policy-overview-right"><span class="pf-chip accent">' + esc(mode) + '</span><span class="pf-chip gray">' + fmt((policy.keys || []).length) + ' 个 Key</span></div></div>' +
+        '<div class="ug-policy-overview-right"><span class="pf-chip accent">' + esc(mode) + '</span><span class="pf-chip gray">' + fmt((policy.keys || []).length) + ' 个 Key</span>' + (policy.image_guard === false ? '<span class="pf-chip gray">守卫关</span>' : '') + '</div></div>' +
       '<div class="ug-policy-field"><label>优化模式</label><div class="ug-policy-mode-grid">' + modeCards + '</div>' +
-        '<div class="ug-policy-help">关闭时请求不重序列化；safe 和 bounded 都执行 never-worse 回退。</div></div>' +
+        '<div class="ug-policy-help">关闭时请求不重序列化；safe 和 bounded 都执行 never-worse 回退。图片裁剪独立于此开关。</div></div>' +
       '<div class="ug-policy-grid"><div class="ug-policy-field"><label for="ug-opt-max">工具结果上限（bytes）</label><input class="pf-input" id="ug-opt-max" type="number" min="512" max="1048576" step="512"><div class="ug-policy-help">bounded 超过此大小才截断。</div></div>' +
       '<div class="ug-policy-field"><label for="ug-opt-repeat">连续重复行阈值</label><input class="pf-input" id="ug-opt-repeat" type="number" min="2" max="20" step="1"><div class="ug-policy-help">safe 和 bounded 共用。</div></div>' +
       '<div class="ug-policy-field"><label for="ug-opt-head">保留头部（bytes）</label><input class="pf-input" id="ug-opt-head" type="number" min="0" max="1048576" step="512"></div>' +
       '<div class="ug-policy-field"><label for="ug-opt-tail">保留尾部（bytes）</label><input class="pf-input" id="ug-opt-tail" type="number" min="0" max="1048576" step="512"></div></div>' +
+      '<div class="ug-policy-field"><label for="ug-opt-limits">模型组图片上限</label><textarea class="pf-input" id="ug-opt-limits" rows="3" placeholder="GLM-5.3-Flash-EXL3:50&#10;deepseek-v4-flash-0731:16&#10;*:50" spellcheck="false"></textarea><div class="ug-policy-help">每行「模型组:单请求图片上限」，与上游 max_images 对齐；未列出的组不裁剪。留空表示全部不裁。</div></div>' +
+      '<div class="ug-policy-grid"><div class="ug-policy-field"><label for="ug-opt-keep">canary 保留张数（keep_last）</label><input class="pf-input" id="ug-opt-keep" type="number" min="1" max="256" step="1"><div class="ug-policy-help">白名单 Key 超限时裁到此张数；TensorFold GLM ≤8 张每张保持满额 token。</div></div>' +
+      '<div class="ug-policy-field"><label>限额守卫（全量 Key）</label><label class="ug-policy-key-select-all"><input type="checkbox" id="ug-opt-guard"' + (policy.image_guard === false ? '' : ' checked') + '>超上限的请求最旧优先裁到上限，避免上游 400</label><div class="ug-policy-help">只改变本会 400 的请求；未配置上限的组不受影响。</div></div></div>' +
       '<div class="ug-policy-field"><label for="ug-opt-search">Key allowlist</label><label class="ug-policy-key-select-all" style="margin:0 0 8px"><input type="checkbox" id="ug-opt-all-keys"' + (wildcard ? ' checked' : '') + '>全量 Key（*，仅用于临时 canary）</label><input class="pf-input" id="ug-opt-search" type="search" placeholder="按名称或尾号筛选 Key" autocomplete="off">' +
         '<div class="ug-policy-key-tools"><label class="ug-policy-key-select-all"><input type="checkbox" id="ug-opt-select-all">全选当前筛选</label><button class="pf-btn sm" id="ug-opt-select-visible" type="button">全选</button><button class="pf-btn sm" id="ug-opt-clear-visible" type="button">清空</button><span class="ug-policy-key-count" id="ug-opt-key-count">已选 0/0</span></div>' +
-        '<div class="ug-policy-keys" id="ug-opt-key-list">' + keyMarkup + '</div><div class="ug-policy-help">只提交 SHA-256 hash；不会保存 Key 明文。</div></div>' +
+        '<div class="ug-policy-keys" id="ug-opt-key-list">' + keyMarkup + '</div><div class="ug-policy-help">只提交 SHA-256 hash；不会保存 Key 明文。图片裁剪到 keep_last 仅对选中 Key 生效。</div></div>' +
       '<div class="ug-policy-status" id="ug-optimization-status"></div>';
     $('ug-opt-max').value = String(policy.max_tool_result_bytes == null ? 8192 : policy.max_tool_result_bytes);
     $('ug-opt-repeat').value = String(policy.repeat_min_lines == null ? 2 : policy.repeat_min_lines);
     $('ug-opt-head').value = String(policy.head_bytes == null ? 4096 : policy.head_bytes);
     $('ug-opt-tail').value = String(policy.tail_bytes == null ? 4096 : policy.tail_bytes);
+    $('ug-opt-keep').value = String(policy.image_keep_last == null ? 8 : policy.image_keep_last);
+    $('ug-opt-limits').value = Object.keys(policy.image_limits || {}).sort().map(function (name) {
+      return name + ':' + String(policy.image_limits[name]);
+    }).join('\n');
     document.querySelectorAll('#ug-optimization-body .ug-policy-mode').forEach(function (card) {
       card.addEventListener('click', function () {
         document.querySelectorAll('#ug-optimization-body .ug-policy-mode').forEach(function (item) { item.classList.toggle('selected', item === card); });
@@ -646,10 +653,19 @@
     var save = $('ug-optimization-save');
     var hashes = $('ug-opt-all-keys').checked ? ['*'] : Array.from(document.querySelectorAll('#ug-opt-key-list input[data-opt-key-hash]:checked')).map(function (input) { return policyHash(input.dataset.optKeyHash); }).filter(Boolean);
     var selected = document.querySelector('#ug-optimization-body .ug-policy-mode.selected');
+    var limits = {};
+    ($('ug-opt-limits').value || '').split(/[\n,]+/).forEach(function (line) {
+      var entry = line.trim(); if (!entry) return;
+      var at = entry.lastIndexOf(':'); if (at <= 0) return;
+      var name = entry.slice(0, at).trim(), value = Number(entry.slice(at + 1).trim());
+      if (name && Number.isInteger(value) && value >= 1 && value <= 256) limits[name] = value;
+    });
     var payload = {
       mode: selected ? selected.dataset.optMode : 'off', keys: Array.from(new Set(hashes)),
       max_tool_result_bytes: Number($('ug-opt-max').value), repeat_min_lines: Number($('ug-opt-repeat').value),
-      head_bytes: Number($('ug-opt-head').value), tail_bytes: Number($('ug-opt-tail').value)
+      head_bytes: Number($('ug-opt-head').value), tail_bytes: Number($('ug-opt-tail').value),
+      image_limits: limits, image_keep_last: Number($('ug-opt-keep').value),
+      image_guard: $('ug-opt-guard').checked
     };
     save.disabled = true; $('ug-optimization-status').textContent = '正在保存策略…';
     try {

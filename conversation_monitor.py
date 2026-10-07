@@ -29,6 +29,9 @@ DEFAULT_CONTEXT_MAX_TOOL_RESULT_BYTES = 8192
 DEFAULT_CONTEXT_REPEAT_MIN_LINES = 2
 DEFAULT_CONTEXT_HEAD_BYTES = 4096
 DEFAULT_CONTEXT_TAIL_BYTES = 4096
+DEFAULT_CONTEXT_IMAGE_KEEP_LAST = 8
+DEFAULT_CONTEXT_IMAGE_GUARD = True
+MAX_CONTEXT_IMAGE_LIMIT = 256
 REPLAY_LIMIT = 2048
 CLIENT_QUEUE_LIMIT = 256
 DEFAULT_MAX_CAPTURE_BYTES = 4 * 1024 * 1024
@@ -107,6 +110,43 @@ def max_capture_bytes() -> int:
     return min(max(value, 64 * 1024), 64 * 1024 * 1024)
 
 
+def parse_context_image_limits(raw: str) -> dict[str, int]:
+    """`group:50,other:16,*:50` → {group: 50}；与 compat 层 parse_image_limits 同语义。
+
+    conversation_monitor 被 compat 与 console 两个镜像共享，不能依赖
+    context_optimizer 模块，故在此保持一份等价实现。
+    """
+    limits: dict[str, int] = {}
+    for item in (raw or "").split(","):
+        name, sep, value = item.strip().rpartition(":")
+        name = name.strip()
+        if not sep or not name:
+            continue
+        try:
+            limit = int(value.strip())
+        except ValueError:
+            continue
+        if 1 <= limit <= MAX_CONTEXT_IMAGE_LIMIT:
+            limits[name] = limit
+    return limits
+
+
+def normalize_context_image_limits(value: Any) -> dict[str, int]:
+    """策略库/接口来的限额（dict 或 JSON 字符串）→ 合法 dict。"""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            return {}
+    if not isinstance(value, dict):
+        return {}
+    limits: dict[str, int] = {}
+    for name, limit in value.items():
+        if isinstance(name, str) and name and isinstance(limit, int) and 1 <= limit <= MAX_CONTEXT_IMAGE_LIMIT:
+            limits[name] = limit
+    return limits
+
+
 class ConversationMonitor:
     def __init__(self, db_path: str | Path | None = None):
         self.db_path = Path(db_path) if db_path else _db_path()
@@ -125,6 +165,10 @@ class ConversationMonitor:
             "repeat_min_lines": self._context_env_int("CONTEXT_OPTIMIZATION_REPEAT_MIN_LINES", DEFAULT_CONTEXT_REPEAT_MIN_LINES, 2, 20),
             "head_bytes": self._context_env_int("CONTEXT_OPTIMIZATION_HEAD_BYTES", DEFAULT_CONTEXT_HEAD_BYTES, 0, 1024 * 1024),
             "tail_bytes": self._context_env_int("CONTEXT_OPTIMIZATION_TAIL_BYTES", DEFAULT_CONTEXT_TAIL_BYTES, 0, 1024 * 1024),
+            "image_limits": parse_context_image_limits(os.environ.get("CONTEXT_OPTIMIZATION_IMAGE_LIMITS", "")),
+            "image_keep_last": self._context_env_int("CONTEXT_OPTIMIZATION_IMAGE_KEEP_LAST", DEFAULT_CONTEXT_IMAGE_KEEP_LAST, 1, MAX_CONTEXT_IMAGE_LIMIT),
+            "image_guard": os.environ.get("CONTEXT_OPTIMIZATION_IMAGE_GUARD", "on").strip().lower()
+            not in {"off", "0", "false", "no"},
             "version": 1, "updated_at": _utc_now(),
         }
         self._context_policy_checked = 0.0
@@ -174,7 +218,10 @@ class ConversationMonitor:
                     keys_json TEXT NOT NULL, max_tool_result_bytes INTEGER NOT NULL,
                     repeat_min_lines INTEGER NOT NULL, head_bytes INTEGER NOT NULL,
                     tail_bytes INTEGER NOT NULL, version INTEGER NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    image_limits_json TEXT NOT NULL DEFAULT '{}',
+                    image_keep_last INTEGER NOT NULL DEFAULT 8,
+                    image_guard INTEGER NOT NULL DEFAULT 1
                 );
             """)
             row = conn.execute("SELECT mode, keys_json, ttl_days, capacity, version, updated_at "
@@ -191,15 +238,40 @@ class ConversationMonitor:
                                 "keys": keys if isinstance(keys, list) else [],
                                 "ttl_days": int(row[2]), "capacity": int(row[3]),
                                 "version": int(row[4]), "updated_at": row[5]}
+            # 旧部署迁移（issue #166）：为已有表补图片裁剪列。列首次加入时以
+            # env 值播种——沿用「env 只作首次初始化默认值，之后以 DB 为准」。
+            columns = {col[1] for col in conn.execute("PRAGMA table_info(context_optimization_policy)")}
+            if "image_limits_json" not in columns:
+                conn.execute("ALTER TABLE context_optimization_policy "
+                             "ADD COLUMN image_limits_json TEXT NOT NULL DEFAULT '{}'")
+            if "image_keep_last" not in columns:
+                conn.execute(f"ALTER TABLE context_optimization_policy "
+                             f"ADD COLUMN image_keep_last INTEGER NOT NULL DEFAULT {DEFAULT_CONTEXT_IMAGE_KEEP_LAST}")
+            if "image_guard" not in columns:
+                conn.execute("ALTER TABLE context_optimization_policy "
+                             f"ADD COLUMN image_guard INTEGER NOT NULL DEFAULT {1 if DEFAULT_CONTEXT_IMAGE_GUARD else 0}")
+            if not columns >= {"image_limits_json", "image_keep_last", "image_guard"}:
+                if conn.execute("SELECT 1 FROM context_optimization_policy WHERE id=1").fetchone():
+                    conn.execute(
+                        "UPDATE context_optimization_policy SET image_limits_json=?, image_keep_last=?, image_guard=? WHERE id=1",
+                        (_json(self._context_policy["image_limits"]),
+                         int(self._context_policy["image_keep_last"]),
+                         1 if self._context_policy["image_guard"] else 0))
             context_row = conn.execute(
-                "SELECT mode, keys_json, max_tool_result_bytes, repeat_min_lines, head_bytes, tail_bytes, version, updated_at "
+                "SELECT mode, keys_json, max_tool_result_bytes, repeat_min_lines, head_bytes, tail_bytes, "
+                "image_limits_json, image_keep_last, image_guard, version, updated_at "
                 "FROM context_optimization_policy WHERE id=1").fetchone()
             if context_row is None:
                 conn.execute(
-                    "INSERT INTO context_optimization_policy VALUES (1,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO context_optimization_policy "
+                    "(id, mode, keys_json, max_tool_result_bytes, repeat_min_lines, head_bytes, tail_bytes, "
+                    "image_limits_json, image_keep_last, image_guard, version, updated_at) "
+                    "VALUES (1,?,?,?,?,?,?,?,?,?,?,?)",
                     (self._context_policy["mode"], _json(self._context_policy["keys"]),
                      self._context_policy["max_tool_result_bytes"], self._context_policy["repeat_min_lines"],
                      self._context_policy["head_bytes"], self._context_policy["tail_bytes"],
+                     _json(self._context_policy["image_limits"]), int(self._context_policy["image_keep_last"]),
+                     1 if self._context_policy["image_guard"] else 0,
                      self._context_policy["version"], self._context_policy["updated_at"]))
             else:
                 try:
@@ -213,7 +285,10 @@ class ConversationMonitor:
                     "repeat_min_lines": int(context_row[3]),
                     "head_bytes": int(context_row[4]),
                     "tail_bytes": int(context_row[5]),
-                    "version": int(context_row[6]), "updated_at": context_row[7],
+                    "image_limits": normalize_context_image_limits(context_row[6]),
+                    "image_keep_last": int(context_row[7]),
+                    "image_guard": bool(context_row[8]),
+                    "version": int(context_row[9]), "updated_at": context_row[10],
                 }
             self._policy_loaded = True
 
@@ -309,9 +384,10 @@ class ConversationMonitor:
             try:
                 with self._connect() as conn:
                     row = conn.execute(
-                        "SELECT mode, keys_json, max_tool_result_bytes, repeat_min_lines, head_bytes, tail_bytes, version, updated_at "
+                        "SELECT mode, keys_json, max_tool_result_bytes, repeat_min_lines, head_bytes, tail_bytes, "
+                        "image_limits_json, image_keep_last, image_guard, version, updated_at "
                         "FROM context_optimization_policy WHERE id=1").fetchone()
-                if row is not None and int(row[6]) >= int(self._context_policy.get("version", 0)):
+                if row is not None and int(row[9]) >= int(self._context_policy.get("version", 0)):
                     try:
                         keys = json.loads(row[1])
                     except (ValueError, TypeError):
@@ -321,7 +397,11 @@ class ConversationMonitor:
                         "keys": keys if isinstance(keys, list) else [],
                         "max_tool_result_bytes": int(row[2]),
                         "repeat_min_lines": int(row[3]), "head_bytes": int(row[4]),
-                        "tail_bytes": int(row[5]), "version": int(row[6]), "updated_at": row[7],
+                        "tail_bytes": int(row[5]),
+                        "image_limits": normalize_context_image_limits(row[6]),
+                        "image_keep_last": int(row[7]),
+                        "image_guard": bool(row[8]),
+                        "version": int(row[9]), "updated_at": row[10],
                     }
             except Exception:
                 self._drop("context_policy_error")
@@ -331,7 +411,10 @@ class ConversationMonitor:
     async def update_context_optimization_policy(self, *, mode: str, keys: list[str],
                                                  max_tool_result_bytes: int,
                                                  repeat_min_lines: int, head_bytes: int,
-                                                 tail_bytes: int) -> dict:
+                                                 tail_bytes: int,
+                                                 image_limits: Any = None,
+                                                 image_keep_last: Any = None,
+                                                 image_guard: Any = None) -> dict:
         mode = str(mode).lower()
         if mode not in CONTEXT_OPTIMIZATION_MODES:
             raise ValueError("mode must be off, safe, or bounded")
@@ -343,6 +426,25 @@ class ConversationMonitor:
         repeat_min_lines = min(max(int(repeat_min_lines), 2), 20)
         head_bytes = min(max(int(head_bytes), 0), 1024 * 1024)
         tail_bytes = min(max(int(tail_bytes), 0), 1024 * 1024)
+        # 未提交的图片字段保持现值——旧版控制台/脚本 PUT 不带这些字段时不应清空配置
+        next_limits = normalize_context_image_limits(
+            image_limits if image_limits is not None else self._context_policy["image_limits"])
+        if isinstance(image_keep_last, (int, str)) and str(image_keep_last) != "":
+            try:
+                next_keep_last = min(max(int(image_keep_last), 1), MAX_CONTEXT_IMAGE_LIMIT)
+            except (TypeError, ValueError):
+                raise ValueError("image_keep_last must be an integer")
+        else:
+            next_keep_last = int(self._context_policy["image_keep_last"])
+        if image_guard is None:
+            next_guard = bool(self._context_policy["image_guard"])
+        elif isinstance(image_guard, bool):
+            next_guard = image_guard
+        else:
+            guard_text = str(image_guard).strip().lower()
+            if guard_text not in {"on", "off", "1", "0", "true", "false"}:
+                raise ValueError("image_guard must be a boolean")
+            next_guard = guard_text in {"on", "1", "true"}
         with self._policy_lock:
             updated = _utc_now()
             with self._connect() as conn:
@@ -354,11 +456,16 @@ class ConversationMonitor:
                     "max_tool_result_bytes": max_tool_result_bytes,
                     "repeat_min_lines": repeat_min_lines, "head_bytes": head_bytes,
                     "tail_bytes": tail_bytes, "version": version, "updated_at": updated,
+                    "image_limits": next_limits, "image_keep_last": next_keep_last,
+                    "image_guard": next_guard,
                 }
                 conn.execute(
-                    "UPDATE context_optimization_policy SET mode=?, keys_json=?, max_tool_result_bytes=?, repeat_min_lines=?, head_bytes=?, tail_bytes=?, version=?, updated_at=? WHERE id=1",
+                    "UPDATE context_optimization_policy SET mode=?, keys_json=?, max_tool_result_bytes=?, "
+                    "repeat_min_lines=?, head_bytes=?, tail_bytes=?, image_limits_json=?, image_keep_last=?, "
+                    "image_guard=?, version=?, updated_at=? WHERE id=1",
                     (mode, _json(next_policy["keys"]), max_tool_result_bytes, repeat_min_lines,
-                     head_bytes, tail_bytes, version, updated))
+                     head_bytes, tail_bytes, _json(next_limits), next_keep_last,
+                     1 if next_guard else 0, version, updated))
             self._context_policy = next_policy
             self._context_policy_checked = time.monotonic()
             return dict(next_policy, keys=list(next_policy["keys"]))

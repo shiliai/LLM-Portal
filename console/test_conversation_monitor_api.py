@@ -123,3 +123,51 @@ def test_context_optimization_policy_is_admin_only_and_persistent(tmp_path, monk
         assert client.get("/console/api/context-optimization/policy").json()["repeat_min_lines"] == 3
 
 
+
+
+def test_context_optimization_image_fields_persist_and_migrate(tmp_path, monkeypatch):
+    install_litellm_stub(monkeypatch, handler)
+    monkeypatch.setenv("CONTEXT_OPTIMIZATION_IMAGE_LIMITS", "GLM-5.3-Flash-EXL3:50,deepseek-v4-flash-0731:16")
+    monkeypatch.setenv("CONTEXT_OPTIMIZATION_IMAGE_KEEP_LAST", "8")
+    monkeypatch.setenv("CONTEXT_OPTIMIZATION_IMAGE_GUARD", "on")
+    # 先铺 #142 时代的旧 schema（无图片列）：加载模块构造 MONITOR 即触发 ALTER 迁移 + env 播种
+    import sqlite3
+    with sqlite3.connect(tmp_path / "monitor.db") as raw:
+        raw.execute(
+            "CREATE TABLE context_optimization_policy ("
+            "id INTEGER PRIMARY KEY CHECK (id = 1), mode TEXT NOT NULL, keys_json TEXT NOT NULL, "
+            "max_tool_result_bytes INTEGER NOT NULL, repeat_min_lines INTEGER NOT NULL, "
+            "head_bytes INTEGER NOT NULL, tail_bytes INTEGER NOT NULL, version INTEGER NOT NULL, "
+            "updated_at TEXT NOT NULL)")
+        raw.execute(
+            "INSERT INTO context_optimization_policy VALUES (1,'off','[]',8192,2,4096,4096,3,'2026-01-01T00:00:00Z')")
+    mod = load_console(tmp_path)
+    mod.MONITOR = ConversationMonitor(tmp_path / "monitor.db")
+    with TestClient(mod.app) as client:
+        assert client.post("/console/api/login", json={"key": MASTER}, headers=XRW).status_code == 200
+        migrated = client.get("/console/api/context-optimization/policy").json()
+        assert migrated["image_limits"] == {"GLM-5.3-Flash-EXL3": 50, "deepseek-v4-flash-0731": 16}
+        assert migrated["image_keep_last"] == 8
+        assert migrated["image_guard"] is True
+        saved = client.put("/console/api/context-optimization/policy", json={
+            "mode": "off", "keys": [], "max_tool_result_bytes": 8192,
+            "repeat_min_lines": 2, "head_bytes": 4096, "tail_bytes": 4096,
+            "image_limits": {"GLM-5.3-Flash-EXL3": 50}, "image_keep_last": 6,
+            "image_guard": False}, headers=XRW)
+        assert saved.status_code == 200
+        assert saved.json()["image_limits"] == {"GLM-5.3-Flash-EXL3": 50}
+        assert saved.json()["image_keep_last"] == 6
+        assert saved.json()["image_guard"] is False
+        # 老版本控制台 PUT 不带图片字段：现值保持，不被清空
+        legacy = client.put("/console/api/context-optimization/policy", json={
+            "mode": "safe", "keys": [], "max_tool_result_bytes": 8192,
+            "repeat_min_lines": 2, "head_bytes": 4096, "tail_bytes": 4096}, headers=XRW)
+        assert legacy.status_code == 200
+        assert legacy.json()["image_limits"] == {"GLM-5.3-Flash-EXL3": 50}
+        assert legacy.json()["image_keep_last"] == 6
+        assert legacy.json()["image_guard"] is False
+        bad = client.put("/console/api/context-optimization/policy", json={
+            "mode": "safe", "keys": [], "max_tool_result_bytes": 8192,
+            "repeat_min_lines": 2, "head_bytes": 4096, "tail_bytes": 4096,
+            "image_keep_last": "abc"}, headers=XRW)
+        assert bad.status_code == 400
