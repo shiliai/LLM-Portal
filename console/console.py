@@ -1985,7 +1985,10 @@ async def api_context_optimization_policy(request: Request) -> Response:
             max_tool_result_bytes=body.get("max_tool_result_bytes", 8192),
             repeat_min_lines=body.get("repeat_min_lines", 2),
             head_bytes=body.get("head_bytes", 4096),
-            tail_bytes=body.get("tail_bytes", 4096))
+            tail_bytes=body.get("tail_bytes", 4096),
+            image_limits=body.get("image_limits"),
+            image_keep_last=body.get("image_keep_last"),
+            image_guard=body.get("image_guard"))
     except (ValueError, TypeError, AttributeError) as exc:
         return jerr(str(exc) or "bad context optimization policy", 400)
     except Exception:

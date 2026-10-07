@@ -14,6 +14,12 @@
      多工具返回稳定 400，不静默删参、不代客户端选第一个。
   3. OpenAI 流式 finish_reason 修正：已观察到 tool_calls fragments 的 choice 最终
      报 stop 时规范化为 tool_calls（仅重写该行，其余字节原样）。
+  4. 上下文优化 canary（#127/#142）与图片历史裁剪（#166，吸收 #98）：策略与
+     Key 白名单见 context_optimizer；图片裁剪两档——guard（全量 Key，仅当图片数
+     超过模型组上限、必 400 时最旧优先裁到上限）与 canary（白名单 Key 裁到
+     keep_last）。最后一条 user 消息的图片不动，除非留着仍会超上限；占位符走
+     `[IMAGE_EVICTED: …]` 约定；`/count_tokens` 同规则；裁剪发生时响应带
+     x-portal-images-pruned 计数头，指标记 compat.image_evict。
 
 原则：请求不命中任何规则 → 原始字节透传（保护 prompt cache 前缀与上游语义）；
 SSE 逐行流式转发、绝不缓冲完整响应；指标脱敏——只记规则版本/索引/哈希，
@@ -416,6 +422,7 @@ async def compat_proxy(request: Request) -> Response:
     request_id = request.headers.get("x-request-id") or request.headers.get("x-litellm-call-id") or f"req_{time.time_ns()}"
 
     out_body = raw
+    images_pruned = 0
     try:
         parsed = json.loads(raw) if raw else None
     except ValueError:
@@ -440,11 +447,23 @@ async def compat_proxy(request: Request) -> Response:
                 metric("compat.dsml_args_normalized", endpoint=path, side="request", **dsml_info)
         if optimization_info["enabled"] and optimization_info["changed"]:
             out_body = json.dumps(parsed, separators=(",", ":"), ensure_ascii=False).encode()
-            metric("compat.context_optimized", endpoint=path,
-                   mode=optimization_info["mode"], bytes_saved=optimization_info["bytes_saved"],
-                   tool_result_bytes_saved=optimization_info["tool_result_bytes_saved"],
-                   fallback_never_worse=optimization_info["fallback_never_worse"],
-                   rule_hits=optimization_info["rule_hits"])
+            if optimization_info["mode"] != "off":
+                metric("compat.context_optimized", endpoint=path,
+                       mode=optimization_info["mode"], bytes_saved=optimization_info["bytes_saved"],
+                       tool_result_bytes_saved=optimization_info["tool_result_bytes_saved"],
+                       fallback_never_worse=optimization_info["fallback_never_worse"],
+                       rule_hits=optimization_info["rule_hits"])
+        image_evict = optimization_info.get("image_evict") if isinstance(optimization_info, dict) else None
+        if isinstance(image_evict, dict) and image_evict.get("active") and image_evict.get("pruned"):
+            images_pruned = int(image_evict["pruned"])
+            # 独立事件：图片字节是 MB 级，混进 context_optimized 会淹没文本压缩对照
+            metric("compat.image_evict", endpoint=path,
+                   tier=image_evict.get("tier"), model=image_evict.get("model"),
+                   max_images=image_evict.get("max_images"), target=image_evict.get("target"),
+                   total=image_evict.get("total"), pruned=images_pruned,
+                   kept=image_evict.get("kept"),
+                   last_user_degraded=image_evict.get("last_user_degraded"),
+                   bytes_removed=image_evict.get("bytes_removed", 0))
 
     fwd = forwarded_headers(request.headers, request_id)
     upstream_request = client.build_request(request.method, url, headers=fwd, content=out_body)
@@ -454,7 +473,10 @@ async def compat_proxy(request: Request) -> Response:
         metric("compat.upstream_error", endpoint=path, error=type(exc).__name__)
         return error_response(CompatReject(502, "upstream_unavailable", UPSTREAM_MESSAGE), proto)
 
-    headers = Headers(raw=[(k.encode("latin-1"), v.encode("latin-1")) for k, v in upstream.headers.items() if k.lower() not in RESP_DROP])
+    header_pairs = [(k.encode("latin-1"), v.encode("latin-1")) for k, v in upstream.headers.items() if k.lower() not in RESP_DROP]
+    if images_pruned:
+        header_pairs.append((b"x-portal-images-pruned", str(images_pruned).encode()))
+    headers = Headers(raw=header_pairs)
     content_type = upstream.headers.get("content-type", "").split(";")[0].strip()
     # OpenAI 非流式响应：forced 路径下 vLLM 会回 DSML 标记文本作 arguments——读转 JSON 再回客户端。
     # 非流式响应本就要完整到达，读改写不引入缓冲延迟；流式仍走逐行转发不受影响。
