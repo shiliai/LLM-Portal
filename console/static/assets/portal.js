@@ -69,6 +69,10 @@
       opt.body = JSON.stringify(body);
     }
     var r = await fetch(API + path, opt);
+    if (r.status === 401 && location.pathname.indexOf('login') < 0) {
+      location.href = '/console/login.html';     // 会话已失效：直接去登录页
+      throw { status: 401, error: 'not logged in' };
+    }
     var data = null;
     try { data = await r.json(); } catch (e) { /* 空响应 */ }
     if (!r.ok) throw { status: r.status, error: (data && data.error) || (r.status + ' ' + r.statusText) };
@@ -213,6 +217,10 @@
     navigationBusy = true;
     try {
       var r = await fetch(target.href, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+      if (r.status === 401 || (r.redirected && r.url.indexOf('login.html') >= 0)) {
+        location.href = '/console/login.html';   // 会话已失效：直接去登录页，而不是报页面结构无效
+        return;
+      }
       if (!r.ok) throw new Error('页面加载失败（' + r.status + '）');
       var html = await r.text();
       var parsed = new DOMParser().parseFromString(html, 'text/html');

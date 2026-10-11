@@ -159,6 +159,9 @@ VAULT_KEY_PATH = STATE_DIR / "keyvault.key"
 MODELS_DEV_CACHE = STATE_DIR / "models-dev-cache.json"
 MODELS_DEV_CACHE_TTL = 24 * 3600
 SESSION_TTL = 8 * 3600
+# 浏览器 cookie 的寿命放长（默认 30 天）：真正的有效期由服务端滑动过期（SESSION_TTL 无访问
+# 才失效）决定；cookie 过早消失会让仍在活跃的用户被迫重新登录
+SESSION_COOKIE_MAX_AGE = int(os.environ.get("SESSION_COOKIE_MAX_AGE", str(30 * 86400)))
 LOGIN_FAIL_LIMIT, LOGIN_WINDOW = 5, 60
 HANDSHAKE_ONLINE = 180  # 最近握手 3 分钟内视为在线
 # issue #46：drop_params=true 下通用 openai/ deployment 会静默丢弃 reasoning_effort
@@ -279,6 +282,13 @@ def session_of(request: Request) -> dict | None:
     with sqlite3.connect(SESSIONS_DB) as conn:
         row = conn.execute("SELECT role, key_hash, key_last4, exp FROM sessions WHERE sid=?",
                            (sid,)).fetchone()
+        # 滑动过期（issue #162 跟进）：8 小时内没有任何访问才失效；剩余不足 3/4 TTL 时
+        # 顺带续期，既让间歇访问的会话一直活着，又避免高频轮询反复写库。
+        # 只续尚未过期的会话：过期的必须保持过期，否则一次访问就把死会话复活
+        if row is not None and 0 < row[3] - time.time() < SESSION_TTL * 0.75:
+            sliding_exp = time.time() + SESSION_TTL
+            conn.execute("UPDATE sessions SET exp=? WHERE sid=?", (sliding_exp, sid))
+            row = (row[0], row[1], row[2], sliding_exp)
     if row is None or row[3] < time.time():
         return None
     return {"role": row[0], "key_hash": row[1], "key_last4": row[2]}
@@ -422,7 +432,7 @@ def _start_session(role: str, key_hash: str = "", key_last4: str = "") -> Respon
         conn.execute("INSERT INTO sessions (sid, role, key_hash, key_last4, exp) VALUES (?,?,?,?,?)",
                      (sid, role, key_hash, key_last4, exp))
     resp = JSONResponse({"ok": True, "role": role})
-    resp.set_cookie("pll_session", f"{sid}.{sign(sid)}", max_age=SESSION_TTL,
+    resp.set_cookie("pll_session", f"{sid}.{sign(sid)}", max_age=SESSION_COOKIE_MAX_AGE,
                     httponly=True, secure=SESSION_COOKIE_SECURE, samesite="lax", path="/console")
     return resp
 
