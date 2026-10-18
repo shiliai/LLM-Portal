@@ -1,0 +1,4 @@
+services:
+  vmagent:
+    volumes:
+      - ./prometheus-gb10-worker.yml:/etc/vmagent/prometheus.yml:ro

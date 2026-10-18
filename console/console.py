@@ -98,6 +98,7 @@ LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://127.0.0.1:4000")
 ONBOARD_URL = os.environ.get("ONBOARDD_URL", "http://127.0.0.1:8100")
 MCP_HUB_URL = os.environ.get("MCP_HUB_URL", "http://127.0.0.1:8200")
 VM_URL = os.environ.get("VM_URL", "http://127.0.0.1:8428")
+GB10_STATUS_URL = os.environ.get("GB10_STATUS_URL", "").strip().rstrip("/")
 LITELLM_MASTER_KEY = os.environ["LITELLM_MASTER_KEY"]
 ONBOARD_ADMIN_TOKEN = os.environ["ONBOARD_ADMIN_TOKEN"]
 # 管理员网页登录凭据（console.env，deploy.sh 从 vps/.env 生成）：邮箱 + 密码 + 可选 TOTP。
@@ -858,6 +859,23 @@ _VM_METRIC_RE = r"(llamacpp:[a-z_0-9]+|vllm:[a-z_0-9]+|tensorfold(_health)?:[a-z
 # label matching, so existing deployments do not need a destructive rename.
 SITE_DISPLAY_NAMES = {"workstation": "x570"}
 
+# GB10 exports both machines with the same ``site`` label.  Keep the expected
+# members in the Portal contract so a missing exporter series is visible as a
+# real no-data member instead of silently removing the worker from the view.
+CLUSTER_MEMBER_CONFIG = {
+    "gb10": (
+        {"instance": "gb10-head", "display_name": "Header"},
+        {"instance": "gb10-worker", "display_name": "Worker"},
+    ),
+}
+
+MEMORY_METRIC_NAMES = {
+    "DCGM_FI_DEV_FB_USED",
+    "DCGM_FI_DEV_FB_FREE",
+    "DCGM_FI_DEV_FB_TOTAL",
+    "DCGM_FI_DEV_FB_RESERVED",
+}
+
 
 def site_display_name(name: str) -> str:
     return SITE_DISPLAY_NAMES.get(str(name), str(name))
@@ -865,8 +883,9 @@ def site_display_name(name: str) -> str:
 # vmagent 每 15 秒抓取一次节点指标。吞吐使用 irate 读取最近两个采样点，
 # 1 分钟只作为容错回看范围（允许一次抓取延迟/丢失），不再对过去 5 分钟做平滑平均。
 # 趋势查询的逻辑名 → PromQL 片段列表（{M} 为标签匹配占位符）。适配器的
-# interval gauge 先按站点聚合成一个无标签序列，再用历史计数器速率兜底；
-# 这样同一站点不会把「真实 gauge」和缺失计数器的 0 一起返回给前端均值。
+# 历史计数器速率优先，interval gauge 只在没有计数器时回退；
+# 这样趋势反映每个采样窗口真实发生的 token 数，而不是重复展示上一次
+# 请求的平均值或空闲时的 0。每个候选查询仍按站点聚合成一个序列。
 _TPS_RATE_FUNCTION = "irate"
 _TPS_RATE_WINDOW = "1m"
 
@@ -876,12 +895,15 @@ def _tps_rate(metric: str) -> str:
 
 
 LOGICAL_RANGE_METRICS: dict[str, list[str]] = {
-    "output_tok_s": ["avg(llamacpp:predicted_tokens_seconds{M})",
+    "output_tok_s": [_tps_rate("tensorfold:generation_tokens_total"),
+                     _tps_rate("tensorfold_health:completion_tokens_total"),
+                     _tps_rate("vllm:generation_tokens_total"),
                      _tps_rate("llamacpp:tokens_predicted_total"),
-                     _tps_rate("vllm:generation_tokens_total")],
-    "input_tok_s": ["avg(llamacpp:prompt_tokens_seconds{M})",
+                     "avg(llamacpp:predicted_tokens_seconds{M})"],
+    "input_tok_s": [_tps_rate("tensorfold:prompt_tokens_total"),
+                    _tps_rate("vllm:prompt_tokens_total"),
                     _tps_rate("llamacpp:prompt_tokens_total"),
-                    _tps_rate("vllm:prompt_tokens_total")],
+                    "avg(llamacpp:prompt_tokens_seconds{M})"],
     "requests_running": ["avg(llamacpp:requests_processing{M})",
                          "avg(vllm:num_requests_running{M})"],
     "requests_waiting": ["avg(llamacpp:requests_deferred{M})",
@@ -941,6 +963,22 @@ def _derive_metrics(vals: dict) -> dict:
         hit = _ratio(vals, "tensorfold_health_cached_tokens_total", "tensorfold_prompt_tokens_total")
     if hit is not None:
         out["cache_hit_pct"] = round(hit, 1)
+    used = vals.get("DCGM_FI_DEV_FB_USED")
+    free = vals.get("DCGM_FI_DEV_FB_FREE")
+    reserved = vals.get("DCGM_FI_DEV_FB_RESERVED")
+    total = vals.get("DCGM_FI_DEV_FB_TOTAL")
+    # DCGM exporter versions commonly omit FB_TOTAL.  USED/FREE/RESERVED are
+    # all MiB, so their sum is the only honest fallback for total capacity.
+    if total is None and used is not None and free is not None and reserved is not None:
+        total = used + free + reserved
+    if used is not None:
+        out["memory_used_mib"] = round(used, 1)
+    if free is not None:
+        out["memory_free_mib"] = round(free, 1)
+    if total is not None:
+        out["memory_total_mib"] = round(total, 1)
+    if reserved is not None:
+        out["memory_reserved_mib"] = round(reserved, 1)
     return out
 
 
@@ -1077,8 +1115,9 @@ async def site_metrics(site: dict, deps: list[dict]) -> dict:
     return out or {}
 
 
-async def vm_query_instant(query: str, timeout: float = 3) -> dict[str, float]:
-    """一次 instant 查询，返回 {__name__: 跨序列均值}（DCGM 多 GPU / 双 vmagent 实例取均值）。"""
+async def vm_query_instant(query: str, timeout: float = 3,
+                           sum_names: set[str] | None = None) -> dict[str, float]:
+    """一次 instant 查询，保留逻辑名并按指标选择均值或求和。"""
     async with httpx.AsyncClient(timeout=timeout) as client:
         r = await client.get(VM_URL.rstrip("/") + "/api/v1/query", params={"query": query})
     if r.status_code != 200:
@@ -1091,29 +1130,36 @@ async def vm_query_instant(query: str, timeout: float = 3) -> dict[str, float]:
             acc.setdefault(name, []).append(float(s.get("value", [0, 0])[1]))
         except (TypeError, ValueError):
             continue
-    return {k: sum(v) / len(v) for k, v in acc.items()}
+    sum_names = sum_names or set()
+    return {k: sum(v) if k in sum_names else sum(v) / len(v) for k, v in acc.items()}
 
 
-def vm_site_matcher(site_name: str) -> str:
+def vm_site_matcher(site_name: str, instance_name: str | None = None) -> str:
     """portal 站点名 → VM 标签匹配：约定 NODE_INSTANCE=<site>-llm，兼容裸站点名
     （gb10 双 DGX 共用 site=gb10、instance=gb10-head/gb10-worker）。
     站点名只允许 [A-Za-z0-9_-]（与 NAME_RE 同口径）；不做 re.escape——Go 正则
     （VictoriaMetrics）不认 \\- 这类转义，遇连字符会整条查询 400。"""
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", site_name or ""):
         return '{__name__="__none__"}'
-    return '{__name__=~"' + _VM_METRIC_RE + '",site=~"^{name}(-llm)?$"}'.replace("{name}", site_name)
+    matcher = '{__name__=~"' + _VM_METRIC_RE + '",site=~"^{name}(-llm)?$"}'.replace("{name}", site_name)
+    if instance_name is None:
+        return matcher
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", instance_name):
+        return '{__name__="__none__"}'
+    return matcher[:-1] + ',instance="' + instance_name + '"}'
 
 
-async def vm_site_metrics(site_name: str) -> dict:
+async def vm_site_metrics(site_name: str, instance_name: str | None = None) -> dict:
     if not site_name:
         return {}
-    matcher = vm_site_matcher(site_name)
+    matcher = vm_site_matcher(site_name, instance_name)
     try:
-        vals = await vm_query_instant(matcher)
-        if not vals:
+        vals = await vm_query_instant(matcher, sum_names=MEMORY_METRIC_NAMES)
+        if not vals and instance_name is None:
             # 兜底：实例标签=站点名（如 instance="gb10-head" 的非 -llm 命名）
             vals = await vm_query_instant(
-                '{__name__=~"' + _VM_METRIC_RE + '",instance=~"^{name}(-llm)?$"}'.replace("{name}", site_name))
+                '{__name__=~"' + _VM_METRIC_RE + '",instance=~"^{name}(-llm)?$"}'.replace("{name}", site_name),
+                sum_names=MEMORY_METRIC_NAMES)
         # 用计数器最近两个采样点的即时速率作为 VM 吞吐，避免 llama.cpp
         # 的滚动 gauge 在采集间隔内归零造成卡片和曲线看起来没有变化。
         if vals and "llamacpp:tokens_predicted_total" in vals:
@@ -1166,6 +1212,135 @@ async def vm_site_metrics(site_name: str) -> dict:
     return _finish_metrics(vals)
 
 
+GB10_INFERENCE_METRICS = (
+    "output_tok_s", "input_tok_s", "requests_running", "requests_waiting",
+    "kv_cache_pct", "cache_hit_pct", "spec_accept_pct", "runtime",
+)
+
+
+def _gb10_model_metrics(payload: dict) -> dict:
+    """Map the cluster model status into shared inference metrics."""
+    model = payload.get("model") or {}
+    if not isinstance(model, dict):
+        return {}
+    aliases = {
+        "running": "requests_running",
+        "waiting": "requests_waiting",
+        "kv_pct": "kv_cache_pct",
+        "prompt_tps": "input_tok_s",
+        "generation_tps": "output_tok_s",
+        "prefix_cache_hit_pct": "cache_hit_pct",
+        "spec_accept_pct": "spec_accept_pct",
+    }
+    out: dict[str, float | str] = {}
+    for source, target in aliases.items():
+        value = model.get(source)
+        if value is not None:
+            try:
+                out[target] = round(float(value), 1)
+            except (TypeError, ValueError):
+                continue
+    if model.get("healthy") is not None:
+        out["runtime"] = "vllm"
+    return out
+
+
+def _gb10_member_metrics(payload: dict, instance_name: str) -> dict:
+    """Map cluster-display-status host telemetry into the dashboard contract."""
+    host_key = "head" if instance_name == "gb10-head" else "worker"
+    host = payload.get(host_key) or {}
+    if not isinstance(host, dict):
+        return {}
+    out: dict[str, float | str] = {}
+    aliases = {
+        "gpu_util_pct": "gpu_util_pct",
+        "temp_c": "gpu_temp_c",
+        "power_w": "power_w",
+        "gpu_mem_mb": "gpu_memory_used_mib",
+    }
+    for source, target in aliases.items():
+        value = host.get(source)
+        if value is not None:
+            try:
+                out[target] = round(float(value), 1)
+            except (TypeError, ValueError):
+                continue
+    total = host.get("mem_total_mb")
+    free = host.get("mem_avail_mb")
+    try:
+        if total is not None:
+            total = float(total)
+            out["memory_total_mib"] = round(total, 1)
+        if free is not None:
+            free = float(free)
+            out["memory_free_mib"] = round(free, 1)
+        if total is not None and free is not None:
+            out["memory_used_mib"] = round(max(0.0, total - free), 1)
+    except (TypeError, ValueError):
+        pass
+    # The model endpoint describes the cluster, so inference values are
+    # intentionally copied to both Header and Worker member rows.
+    out.update(_gb10_model_metrics(payload))
+    if out:
+        out["memory_kind"] = "unified"
+    return out
+
+
+async def gb10_status_members() -> dict[str, dict]:
+    if not GB10_STATUS_URL:
+        return {}
+    try:
+        async with httpx.AsyncClient(timeout=2, follow_redirects=False) as client:
+            response = await client.get(GB10_STATUS_URL + "/status")
+        if response.status_code != 200:
+            return {}
+        payload = response.json()
+        if not isinstance(payload, dict):
+            return {}
+        shared = _gb10_model_metrics(payload)
+        return {member["instance"]: {**_gb10_member_metrics(payload, member["instance"]), **shared}
+                for member in cluster_member_config("gb10")}
+    except (httpx.HTTPError, ValueError, TypeError):
+        return {}
+
+
+def cluster_member_config(site_name: str) -> list[dict]:
+    return [dict(member) for member in CLUSTER_MEMBER_CONFIG.get(site_name, ())]
+
+
+async def site_members(site_name: str) -> list[dict]:
+    """Return configured cluster members, including members with no samples."""
+    members = cluster_member_config(site_name)
+    if not members:
+        return []
+    agent_metrics = await gb10_status_members() if site_name == "gb10" else {}
+    metrics = await asyncio.gather(
+        *(vm_site_metrics(site_name, member["instance"]) for member in members),
+        return_exceptions=True,
+    )
+    rows = []
+    for member, metric in zip(members, metrics):
+        if not isinstance(metric, dict):
+            metric = {}
+        merged = dict(metric)
+        merged.update(agent_metrics.get(member["instance"], {}))
+        rows.append({**member, "id": member["instance"],
+                     "status": "online" if merged else "no_data",
+                     "metrics": merged})
+    # A cluster runs one inference service.  Keep the model/throughput view
+    # identical on every member card while leaving host resources member-local.
+    shared = {}
+    for row in rows:
+        shared.update({key: row["metrics"][key] for key in GB10_INFERENCE_METRICS
+                       if key in row["metrics"]})
+        if shared:
+            break
+    if shared:
+        for row in rows:
+            row["metrics"] = {**row["metrics"], **shared}
+    return rows
+
+
 def _dep_port(dep: dict) -> int:
     """从 api_base（http://wg_ip:port/v1）解出端口；解析失败给 0。"""
     tail = str((dep.get("litellm_params") or {}).get("api_base") or "").rsplit(":", 1)[-1]
@@ -1214,6 +1389,19 @@ def key_last4(row: dict) -> str:
     return f"…{ak[-4:]}" if len(ak) >= 8 else (ak or "—")
 
 
+def first_forwarded_ip(value) -> str:
+    """显示 X-Forwarded-For 首跳，隐藏后续反向代理/网关地址。"""
+    return str(value or "").split(",", 1)[0].strip()
+
+
+def client_label(value) -> str:
+    """把 request_tags 中的 User-Agent 标签变成紧凑的客户端名称。"""
+    text = str(value or "").strip()
+    if text.lower().startswith("user-agent:"):
+        text = text.split(":", 1)[1].strip()
+    return text[:200]
+
+
 def row_cached(row: dict) -> int:
     """缓存读取 token（vLLM/OpenAI：prompt_tokens_details.cached_tokens；Anthropic：cache_read_input_tokens）。"""
     uo = (row.get("metadata") or {}).get("usage_object") or {}
@@ -1238,6 +1426,10 @@ async def api_overview(request: Request) -> Response:
     deps, sites, hs = await litellm_deployments(), await onboard_sites(), wg_handshakes()
     health = await direct_health(sites)
     metrics = await asyncio.gather(*(site_metrics(s, deps) for s in sites), return_exceptions=True)
+    member_metrics = await asyncio.gather(
+        *(site_members(str(s.get("name") or "")) for s in sites),
+        return_exceptions=True,
+    )
     # KPI 使用本地只读账本聚合，避免每次刷新从 LiteLLM 下载约 17 MB 的全量 spend logs。
     # 账本暂不可用时保留旧回退路径，兼容迁移中的部署。
     filters = await _usage_dims(request)
@@ -1259,9 +1451,11 @@ async def api_overview(request: Request) -> Response:
                   "cached_tokens": sum(row_cached(r) for r in today),
                   "errors": sum(1 for r in today if r.get("status") == "failure")}
     site_rows = []
-    for s, metric in zip(sites, metrics):
+    for s, metric, members in zip(sites, metrics, member_metrics):
         if not isinstance(metric, dict):
             metric = {}
+        if not isinstance(members, list):
+            members = []
         direct = s.get("transport", "wireguard") == "direct"
         ago = None if direct else hs.get(s.get("pubkey") or "", -1)
         n_deps = sum(1 for d in deps if dep_of_site_row(d, s))
@@ -1269,10 +1463,13 @@ async def api_overview(request: Request) -> Response:
                  s["status"] in ("active", "partial") and 0 <= ago < HANDSHAKE_ONLINE
         status = "offline" if direct and s["status"] in ("active", "partial") and not online else \
                  "online" if online else s["status"]
+        if members and status != "online":
+            members = [{**member, "status": "offline"} for member in members]
         site_rows.append({"name": s["name"], "display_name": site_display_name(s["name"]),
                           "transport": "direct" if direct else "wireguard",
                           "address": s.get("address") if direct else None, "wg_ip": None if direct else s["wg_ip"], "handshake": ago,
-                          "deployments": n_deps, "status": status, "metrics": metric})
+                          "deployments": n_deps, "status": status, "metrics": metric,
+                          "cluster": bool(members), "members": members})
     per_dep = {}
     dep_source = today or usage_rows
     for r in dep_source:
@@ -1348,12 +1545,15 @@ async def api_metrics_range(request: Request) -> Response:
         return sess
     metric = request.query_params.get("metric", "").strip()
     site = request.query_params.get("site", "").strip()[:120]
+    instance = request.query_params.get("instance", "").strip()[:128] or None
     try:
         hours = int(request.query_params.get("hours", "1"))
     except ValueError:
         return jerr("invalid hours", 400)
     if metric not in LOGICAL_RANGE_METRICS or not site:
         return jerr("invalid metric or site", 400)
+    if instance and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", instance):
+        return jerr("invalid instance", 400)
     step = _RANGE_HOURS.get(hours)
     if not step:
         return jerr("hours must be one of 1/6/24/168", 400)
@@ -1362,7 +1562,7 @@ async def api_metrics_range(request: Request) -> Response:
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             result = []
-            matcher = vm_site_matcher(site)
+            matcher = vm_site_matcher(site, instance)
             # Keep the same source priority as the live card.  Querying all
             # alternatives with PromQL `or` and averaging the returned series
             # blended llama.cpp and adapter samples when both profiles existed.
@@ -1389,7 +1589,10 @@ async def api_metrics_range(request: Request) -> Response:
             except (TypeError, ValueError):
                 continue
     points = [[ts, round(sum(v) / len(v), 3)] for ts, v in sorted(by_ts.items())]
-    return JSONResponse({"metric": metric, "site": site, "step": step, "points": points})
+    body = {"metric": metric, "site": site, "step": step, "points": points}
+    if instance:
+        body["instance"] = instance
+    return JSONResponse(body)
 
 
 _ENDPOINT_OF = {
@@ -1938,6 +2141,8 @@ async def api_usage_logs(request: Request) -> Response:
         r["ts"]=iso_to_cst(str(r.pop("startTime"))); r["key"]=key_last4({"api_key":ak})
         r["alias"]=aliases.get(ak) or ("管理员（master key）" if ak=="litellm_proxy_master_key" else "已删除密钥")
         r["group"]=group_of.get(ak, "default"); r["node"]=node; r["endpoint"]=endpoint
+        r["ip"] = first_forwarded_ip(r.get("ip"))
+        r["client"] = client_label(r.get("client"))
         r["status"]="failure" if r["status"]=="failure" else "ok"
     return JSONResponse({"logs": rows[:2000], "count": len(rows),
                          "next_cursor": next_cursor, "has_more": bool(next_cursor)})
