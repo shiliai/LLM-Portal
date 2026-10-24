@@ -188,7 +188,7 @@ def snapshot(args, root: Path, config: dict) -> dict:
                         tar.extractfile(member), "sha256").hexdigest()
             if archived_files != inventory:
                 raise ValueError("source recovery file inventory mismatch")
-        body = {"version": 1, "root": str(root), "source_sha256": digest(archive),
+        body = {"version": 2, "root": str(root), "source_sha256": digest(archive),
                 "source_files": inventory, "protected": config, "recovery": recovery,
                 "target_commit": args.commit}
         if protected(root, args.protect) != config or source_inventory(root) != inventory:
@@ -200,17 +200,70 @@ def snapshot(args, root: Path, config: dict) -> dict:
         raise
 
 
-def receipt(args, root: Path) -> dict:
+def receipt(args, root: Path, config: dict) -> dict:
     body = json.loads(regular(args.receipt / "receipt.json").read_text())
-    if body.get("version") != 1 or body.get("root") != str(root):
+    if body.get("version") != 2 or body.get("root") != str(root):
         raise ValueError("receipt deployment identity mismatch")
     if digest(regular(args.receipt / "source.tar")) != body["source_sha256"]:
         raise ValueError("source recovery checksum mismatch")
     verify_recoveries(body["recovery"])
-    extra = list(set(body["protected"]) - set(DEFAULT_PROTECTED))
-    if protected(root, extra) != body["protected"]:
-        raise ValueError("protected configuration changed since recovery point")
+    if config != body["protected"]:
+        raise ValueError("requested protected paths or configuration differ from recovery point")
     return body
+
+
+def source_intent(action: str, body: dict, before: dict, target: dict) -> dict:
+    return {"version": 1, "action": action, "root": body["root"],
+            "target_commit": body["target_commit"], "source_sha256": body["source_sha256"],
+            "before_source_files": before, "target_source_files": target}
+
+
+def read_intent(path: Path, action: str, body: dict) -> dict:
+    value = json.loads(regular(path).read_text())
+    expected = source_intent(action, body, value["before_source_files"], value["target_source_files"])
+    if value != expected:
+        raise ValueError("source intent identity mismatch")
+    for inventory in (value["before_source_files"], value["target_source_files"]):
+        if not isinstance(inventory, dict):
+            raise ValueError("invalid source intent inventory")
+        for name, checksum in inventory.items():
+            if relative(name) != name or not re.fullmatch(r"[0-9a-f]{64}", checksum):
+                raise ValueError("invalid source intent entry")
+    if action == "stage" and value["before_source_files"] != body["source_files"]:
+        raise ValueError("stage intent baseline mismatch")
+    if action == "restore-source" and value["target_source_files"] != body["source_files"]:
+        raise ValueError("restore intent target mismatch")
+    return value
+
+
+def explained_mix(actual: dict, before: dict, target: dict) -> bool:
+    # 缺失也属于状态：只有某一已知端点本来就没有该文件，才允许中断时缺失。
+    return all(actual.get(name) in (before.get(name), target.get(name))
+               for name in actual.keys() | before.keys() | target.keys())
+
+
+def restore_source_allowed(directory: Path, body: dict, actual: dict) -> None:
+    baseline = body["source_files"]
+    if actual == baseline:
+        return
+    intent_path = directory / "stage-intent.json"
+    intent = read_intent(intent_path, "stage", body)
+    target = intent["target_source_files"]
+    completion_path = directory / "stage-complete.json"
+    if completion_path.exists():
+        completion = json.loads(regular(completion_path).read_text())
+        if completion.get("intent_sha256") != digest(intent_path) or \
+                completion.get("target_source_files") != target:
+            raise ValueError("stage completion does not match durable intent")
+        if actual == target:
+            return
+        # 已完成发布后的混合状态，必须另有显式恢复的中断记录，不能推断为新写入可覆盖。
+        restore = read_intent(directory / "restore-source-intent.json", "restore-source", body)
+        if not explained_mix(restore["before_source_files"], baseline, target) or \
+                not explained_mix(actual, restore["before_source_files"], baseline):
+            raise ValueError("source changes are not explained by restore intent")
+    elif not explained_mix(actual, baseline, target):
+        raise ValueError("source changes are not explained by stage intent")
 
 
 def extract(archive: Path, stage: Path) -> None:
@@ -233,7 +286,7 @@ def sync_source(stage: Path, root: Path, names: dict) -> None:
             current /= part
             if current.is_symlink():
                 raise ValueError("protected file has a symlinked parent")
-    command = ["rsync", "-a", "--delete", "--exclude=/.git/"]
+    command = ["rsync", "-a", "--delete", "--exclude=/.git"]
     command.extend(f"--exclude=/{name}" for name in names)
     command.extend([str(stage) + "/", str(root) + "/"])
     # 不打印子进程输出，避免任意文件名或现场路径进入公开日志。
@@ -278,7 +331,7 @@ def main(argv=None) -> int:
         if args.action == "backup":
             snapshot(args, root, config)
         else:
-            body = receipt(args, root)
+            body = receipt(args, root, config)
             if (args.receipt / f"{args.action}-complete.json").exists():
                 raise ValueError("source action already completed; inspect existing receipt")
             if args.action == "stage" and body["target_commit"] != args.commit:
@@ -288,18 +341,35 @@ def main(argv=None) -> int:
             stage = Path(tempfile.mkdtemp(prefix="portal-source-", dir=os.environ["TMPDIR"]))
             # 暂存目录即使失败也保留；现场核验无进程引用后由协调者清理。
             extract(archive, stage)
-            sync_source(stage, root, body["protected"])
-            extra = list(set(body["protected"]) - set(DEFAULT_PROTECTED))
-            if protected(root, extra) != body["protected"]:
-                raise ValueError("protected configuration changed during source sync")
+            before = source_inventory(root)
+            intent_path = args.receipt / f"{args.action}-intent.json"
             if args.action == "stage":
-                for name, expected in inventory.items():
-                    if name not in body["protected"] and digest(regular(root / name)) != expected:
-                        raise ValueError("staged source verification failed")
-            elif source_inventory(root) != body["source_files"]:
-                raise ValueError("restored source inventory mismatch")
+                if before != body["source_files"]:
+                    raise ValueError("source changed since recovery point")
+                target = {name: checksum for name, checksum in inventory.items()
+                          if name not in body["protected"]}
+                target.update({name: before[name] for name in body["protected"] if name in before})
+                private_json(intent_path, source_intent(args.action, body, before, target))
+            else:
+                restore_source_allowed(args.receipt, body, before)
+                target = body["source_files"]
+                if intent_path.exists():
+                    intent = read_intent(intent_path, args.action, body)
+                    if not explained_mix(before, intent["before_source_files"], target):
+                        raise ValueError("source differs from interrupted restore intent")
+                else:
+                    private_json(intent_path, source_intent(args.action, body, before, target))
+            if source_inventory(root) != before or protected(root, args.protect) != body["protected"]:
+                raise ValueError("source or protected configuration changed before sync")
+            sync_source(stage, root, body["protected"])
+            if protected(root, args.protect) != body["protected"]:
+                raise ValueError("protected configuration changed during source sync")
+            actual = source_inventory(root)
+            if actual != target:
+                raise ValueError("source target inventory mismatch")
             private_json(args.receipt / f"{args.action}-complete.json",
-                         {"status": "source-only", "deployment_executed": False})
+                         {"status": "source-only", "deployment_executed": False,
+                          "intent_sha256": digest(intent_path), "target_source_files": actual})
         print(json.dumps({"status": args.action, "deployment_executed": False}))
         return 0
     except (OSError, ValueError, KeyError, TypeError, tarfile.TarError, RuntimeError):

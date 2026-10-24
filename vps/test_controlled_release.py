@@ -179,6 +179,216 @@ def test_failed_sync_retains_source_backup_and_stage(release, monkeypatch):
     assert not (receipt / "stage-complete.json").exists()
 
 
+@pytest.mark.parametrize("change", ["modified", "new", "deleted"])
+def test_review_stage_rejects_source_drift_since_backup(release, change):
+    mod, root, _, _, common, write, backups, receipt = release
+    assert mod.main(["backup", *common, *write, *backups]) == 0
+    path = root / ("unreviewed.py" if change == "new" else "old.txt")
+    if change == "deleted":
+        path.unlink()
+    else:
+        path.write_text("new user work")
+    before = mod.source_inventory(root)
+    assert mod.main(["stage", *common, *write]) == 1
+    assert mod.source_inventory(root) == before
+    assert not (receipt / "stage-intent.json").exists()
+
+
+def test_review_restore_rejects_unexplained_source_without_stage_intent(release):
+    mod, root, _, _, common, write, backups, _ = release
+    assert mod.main(["backup", *common, *write, *backups]) == 0
+    (root / "unreviewed.py").write_text("new user work")
+    before = mod.source_inventory(root)
+    assert mod.main(["restore-source", *common, *write]) == 1
+    assert mod.source_inventory(root) == before
+
+
+@pytest.mark.parametrize("change", ["modified", "new", "deleted"])
+def test_review_restore_rejects_source_drift_after_completed_stage(release, change):
+    mod, root, _, _, common, write, backups, _ = release
+    assert mod.main(["backup", *common, *write, *backups]) == 0
+    assert mod.main(["stage", *common, *write]) == 0
+    path = root / ("unreviewed.py" if change == "new" else "vps/deploy.sh")
+    if change == "deleted":
+        path.unlink()
+    else:
+        path.write_text("new user work")
+    before = mod.source_inventory(root)
+    assert mod.main(["restore-source", *common, *write]) == 1
+    assert mod.source_inventory(root) == before
+
+
+@pytest.mark.parametrize("action", ["stage", "restore-source"])
+def test_review_extra_protection_request_must_match_backup(release, action):
+    mod, root, _, _, common, write, backups, receipt = release
+    assert mod.main(["backup", *common, *write, *backups]) == 0
+    before = mod.source_inventory(root)
+    assert mod.main([action, *common, *write, "--protect", "old.txt"]) == 1
+    assert mod.source_inventory(root) == before
+    assert not (receipt / f"{action}-intent.json").exists()
+
+
+def test_review_missing_protection_request_must_match_backup(release):
+    mod, root, _, _, common, write, backups, _ = release
+    (root / "vps/custom.yml").write_text("local configuration")
+    assert mod.main(["backup", *common, *write, *backups,
+                     "--protect", "vps/custom.yml"]) == 0
+    before = mod.source_inventory(root)
+    assert mod.main(["stage", *common, *write]) == 1
+    assert mod.source_inventory(root) == before
+
+
+def test_review_git_worktree_pointer_survives_stage_and_restore(release):
+    mod, root, _, _, common, write, backups, _ = release
+    shutil.rmtree(root / ".git")
+    (root / ".git").write_text("gitdir: /example/managed-worktree\n")
+    before = mod.metadata(root / ".git")
+    assert mod.main(["backup", *common, *write, *backups]) == 0
+    assert mod.main(["stage", *common, *write]) == 0
+    assert mod.metadata(root / ".git") == before
+    assert mod.main(["restore-source", *common, *write]) == 0
+    assert mod.metadata(root / ".git") == before
+
+
+def test_review_partial_stage_has_durable_intent_and_can_be_explicitly_restored(release, monkeypatch):
+    mod, root, _, _, common, write, backups, receipt = release
+    assert mod.main(["backup", *common, *write, *backups]) == 0
+    baseline = mod.source_inventory(root)
+    sync = mod.sync_source
+
+    def fail_mid_stage(stage, target, names):
+        intent = json.loads((receipt / "stage-intent.json").read_text())
+        assert intent["before_source_files"] == baseline
+        assert intent["target_source_files"]["new.txt"] == mod.digest(stage / "new.txt")
+        assert (receipt / "stage-intent.json").stat().st_mode & 0o777 == 0o600
+        (target / "old.txt").unlink()
+        shutil.copy2(stage / "new.txt", target / "new.txt")
+        raise RuntimeError("simulated rsync failure")
+
+    monkeypatch.setattr(mod, "sync_source", fail_mid_stage)
+    assert mod.main(["stage", *common, *write]) == 1
+    assert not (receipt / "stage-complete.json").exists()
+    monkeypatch.setattr(mod, "sync_source", sync)
+    assert mod.main(["restore-source", *common, *write]) == 0
+    assert mod.source_inventory(root) == baseline
+    completion = json.loads((receipt / "restore-source-complete.json").read_text())
+    assert completion["target_source_files"] == baseline
+
+
+def test_review_completed_stage_records_actual_target_inventory(release):
+    mod, root, _, _, common, write, backups, receipt = release
+    assert mod.main(["backup", *common, *write, *backups]) == 0
+    assert mod.main(["stage", *common, *write]) == 0
+    intent = json.loads((receipt / "stage-intent.json").read_text())
+    completion = json.loads((receipt / "stage-complete.json").read_text())
+    assert completion["target_source_files"] == mod.source_inventory(root)
+    assert completion["target_source_files"] == intent["target_source_files"]
+    assert completion["intent_sha256"] == mod.digest(receipt / "stage-intent.json")
+
+
+def test_review_unknown_content_after_partial_stage_is_not_overwritten(release, monkeypatch):
+    mod, root, _, _, common, write, backups, _ = release
+    assert mod.main(["backup", *common, *write, *backups]) == 0
+    sync = mod.sync_source
+
+    def partial(stage, target, names):
+        shutil.copy2(stage / "new.txt", target / "new.txt")
+        raise RuntimeError("interrupted")
+
+    monkeypatch.setattr(mod, "sync_source", partial)
+    assert mod.main(["stage", *common, *write]) == 1
+    (root / "new.txt").write_text("unknown user edits")
+    before = mod.source_inventory(root)
+    monkeypatch.setattr(mod, "sync_source", sync)
+    assert mod.main(["restore-source", *common, *write]) == 1
+    assert mod.source_inventory(root) == before
+
+
+def test_review_partial_restore_can_be_explicitly_resumed(release, monkeypatch):
+    mod, root, _, _, common, write, backups, receipt = release
+    assert mod.main(["backup", *common, *write, *backups]) == 0
+    baseline = mod.source_inventory(root)
+    assert mod.main(["stage", *common, *write]) == 0
+    target = mod.source_inventory(root)
+    sync = mod.sync_source
+
+    def partial(stage, destination, names):
+        intent = json.loads((receipt / "restore-source-intent.json").read_text())
+        assert intent["before_source_files"] == target
+        assert intent["target_source_files"] == baseline
+        shutil.copy2(stage / "old.txt", destination / "old.txt")
+        (destination / "new.txt").unlink()
+        raise RuntimeError("interrupted restore")
+
+    monkeypatch.setattr(mod, "sync_source", partial)
+    assert mod.main(["restore-source", *common, *write]) == 1
+    intent_hash = mod.digest(receipt / "restore-source-intent.json")
+    assert not (receipt / "restore-source-complete.json").exists()
+    monkeypatch.setattr(mod, "sync_source", sync)
+    assert mod.main(["restore-source", *common, *write]) == 0
+    assert mod.source_inventory(root) == baseline
+    assert mod.digest(receipt / "restore-source-intent.json") == intent_hash
+
+
+def test_review_unknown_content_after_partial_restore_is_not_overwritten(release, monkeypatch):
+    mod, root, _, _, common, write, backups, _ = release
+    assert mod.main(["backup", *common, *write, *backups]) == 0
+    assert mod.main(["stage", *common, *write]) == 0
+    sync = mod.sync_source
+
+    def partial(stage, destination, names):
+        shutil.copy2(stage / "old.txt", destination / "old.txt")
+        raise RuntimeError("interrupted restore")
+
+    monkeypatch.setattr(mod, "sync_source", partial)
+    assert mod.main(["restore-source", *common, *write]) == 1
+    (root / "old.txt").write_text("unknown user edits")
+    before = mod.source_inventory(root)
+    monkeypatch.setattr(mod, "sync_source", sync)
+    assert mod.main(["restore-source", *common, *write]) == 1
+    assert mod.source_inventory(root) == before
+
+
+def test_review_source_drift_during_intent_write_stops_sync(release, monkeypatch):
+    mod, root, _, _, common, write, backups, _ = release
+    assert mod.main(["backup", *common, *write, *backups]) == 0
+    write_json = mod.private_json
+
+    def changed_after_intent(path, body):
+        write_json(path, body)
+        (root / "old.txt").write_text("concurrent user work")
+
+    monkeypatch.setattr(mod, "private_json", changed_after_intent)
+    assert mod.main(["stage", *common, *write]) == 1
+    assert (root / "old.txt").read_text() == "concurrent user work"
+    assert not (root / "new.txt").exists()
+
+
+def test_review_tampered_stage_intent_or_completion_cannot_authorize_restore(release):
+    mod, root, _, _, common, write, backups, receipt = release
+    assert mod.main(["backup", *common, *write, *backups]) == 0
+    assert mod.main(["stage", *common, *write]) == 0
+    intent_path = receipt / "stage-intent.json"
+    intent = json.loads(intent_path.read_text())
+    intent["target_commit"] = "b" * 40
+    intent_path.write_text(json.dumps(intent))
+    before = mod.source_inventory(root)
+    assert mod.main(["restore-source", *common, *write]) == 1
+    assert mod.source_inventory(root) == before
+
+
+def test_review_old_receipt_requires_new_recovery_directory(release):
+    mod, root, _, _, common, write, backups, receipt = release
+    assert mod.main(["backup", *common, *write, *backups]) == 0
+    path = receipt / "receipt.json"
+    body = json.loads(path.read_text())
+    body["version"] = 1
+    path.write_text(json.dumps(body))
+    before = mod.source_inventory(root)
+    assert mod.main(["stage", *common, *write]) == 1
+    assert mod.source_inventory(root) == before
+
+
 @pytest.mark.parametrize("name", ["../outside", "/outside", "a/../../outside", ".git/config"])
 def test_unsafe_paths_are_rejected(name):
     with pytest.raises(ValueError):
