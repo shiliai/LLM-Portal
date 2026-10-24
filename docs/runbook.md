@@ -62,6 +62,10 @@ deploy.sh 幂等；首次在存量部署上运行会自动停用旧 systemd 单�
 
 多台网关必须逐台升级：每台验收通过后再继续下一台，不得并行升级。下文以目标源码目录 `ROOT=$HOME/LLM-Portal` 为例。
 
+需要保护存量 `.env`、compose override、用户会话和模型映射时，先执行
+[受控升级检查与恢复点流程](controlled-upgrade.md)。该辅助流程默认只读，源码发布与
+运行时部署分离，不把脚本自检成功等同真实模型或业务验收成功。
+
 ```bash
 # 本地仓库；MERGE_SHA 必须是已合并 main 的 commit
 vps/release-package.sh "$MERGE_SHA" /tmp/private-llm-release
