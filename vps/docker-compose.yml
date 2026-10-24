@@ -210,7 +210,7 @@ services:
       - vmdata:/storage
     ports:
       # 接收私有节点 vmagent 的 WireGuard remote_write；不暴露公网。
-      - "${WG_VPS_IP:-10.77.0.1}:8428:8428"
+      - "${VM_BIND_HOST:-${WG_VPS_IP:-10.77.0.1}}:${VM_BIND_PORT:-8428}:8428"
     networks:
       - default
 

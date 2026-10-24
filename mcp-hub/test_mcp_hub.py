@@ -19,10 +19,14 @@ import base64
 import hashlib
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from sse_starlette.sse import AppStatus, EventSourceResponse
+from starlette.applications import Starlette
+from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from testutil import install_litellm_stub, load_service
@@ -32,6 +36,56 @@ VALID_KEY = "testkey-valid-0001"
 DISABLED_KEY = "testkey-disabled-02"
 BAD_KEY = "testkey-bad-0003"
 SECOND_KEY = VALID_KEY + "-other"
+
+
+@contextmanager
+def _isolated_client(app):
+    # 旧版 SSE 共享全局 event；新版由库维护 loop-local 状态，不创建已移除的字段。
+    previous_exit = AppStatus.should_exit
+    legacy_event = hasattr(AppStatus, "should_exit_event")
+    if legacy_event:
+        previous_event = AppStatus.should_exit_event
+        AppStatus.should_exit_event = None
+    AppStatus.should_exit = False
+    try:
+        with TestClient(app) as client:
+            yield client
+    finally:
+        AppStatus.should_exit = previous_exit
+        if legacy_event:
+            AppStatus.should_exit_event = previous_event
+
+
+def test_sequential_clients_keep_sse_exit_event_loop_local():
+    serving_loops = []
+
+    async def stream(request):
+        serving_loops.append(asyncio.get_running_loop())
+        async def events():
+            yield {"data": "loop-local"}
+        return EventSourceResponse(events())
+
+    app = Starlette(routes=[Route("/events", stream)])
+    previous_exit = AppStatus.should_exit
+    legacy_event = hasattr(AppStatus, "should_exit_event")
+    previous_event = getattr(AppStatus, "should_exit_event", None)
+    events = []
+    for _ in range(2):
+        with _isolated_client(app) as client:
+            response = client.get("/events")
+            assert response.status_code == 200
+            assert "data: loop-local" in response.text
+            if legacy_event:
+                events.append(AppStatus.should_exit_event)
+        assert AppStatus.should_exit == previous_exit
+        assert hasattr(AppStatus, "should_exit_event") == legacy_event
+        if legacy_event:
+            assert AppStatus.should_exit_event is previous_event
+    assert len(serving_loops) == 2
+    assert serving_loops[0] is not serving_loops[1]
+    if legacy_event:
+        assert all(event is not None for event in events)
+        assert events[0] is not events[1]
 
 
 def _handler(method, path, bearer, json_body):
@@ -85,20 +139,20 @@ def _bearer(key: str) -> dict:
 # ---------------------------------------------------------------- Bearer 门禁
 
 def test_usage_without_bearer_401(hub):
-    with TestClient(hub.app) as client:
+    with _isolated_client(hub.app) as client:
         resp = client.get("/mcp/usage")
     assert resp.status_code == 401
     assert resp.json()["error"] == "invalid or missing key"
 
 
 def test_usage_with_wrong_bearer_401(hub):
-    with TestClient(hub.app) as client:
+    with _isolated_client(hub.app) as client:
         resp = client.get("/mcp/usage", headers=_bearer(BAD_KEY))
     assert resp.status_code == 401
 
 
 def test_usage_with_valid_bearer_200(hub):
-    with TestClient(hub.app) as client:
+    with _isolated_client(hub.app) as client:
         resp = client.get("/mcp/usage", headers=_bearer(VALID_KEY))
     assert resp.status_code == 200
     body = resp.json()
@@ -110,7 +164,7 @@ def test_usage_with_valid_bearer_200(hub):
 def test_valid_bearer_actually_hits_key_info(hub, monkeypatch):
     """放行依据是桩 LiteLLM /key/info 200（回环校验），不是本地白名单。"""
     calls = install_litellm_stub(monkeypatch, _handler)   # 重装以拿本次调用记录
-    with TestClient(hub.app) as client:
+    with _isolated_client(hub.app) as client:
         assert client.get("/mcp/usage", headers=_bearer(VALID_KEY)).status_code == 200
     assert calls and {c["path"] for c in calls} == {"/key/info"}
     assert {c["method"] for c in calls} == {"GET"}
@@ -119,13 +173,13 @@ def test_valid_bearer_actually_hits_key_info(hub, monkeypatch):
 
 def test_disabled_key_rejected(hub):
     """/key/info 明确 is_disabled → 视同无效。"""
-    with TestClient(hub.app) as client:
+    with _isolated_client(hub.app) as client:
         resp = client.get("/mcp/usage", headers=_bearer(DISABLED_KEY))
     assert resp.status_code == 401
 
 
 def test_upload_requires_bearer_key(hub):
-    with TestClient(hub.app) as client:
+    with _isolated_client(hub.app) as client:
         no_auth = client.post("/mcp/upload")
         bad = client.post("/mcp/upload", headers=_bearer(BAD_KEY))
         ok = client.post("/mcp/upload", headers=_bearer(VALID_KEY))  # 缺 multipart 字段 → 400（已过鉴权）
@@ -196,7 +250,7 @@ def test_key_group_reassignment_is_not_cached(hub, monkeypatch):
 def test_usage_counts_recorded_per_key_hash(hub):
     hub.record_usage(VALID_KEY, "analyze_image")
     hub.record_usage(VALID_KEY, "upload")
-    with TestClient(hub.app) as client:
+    with _isolated_client(hub.app) as client:
         resp = client.get("/mcp/usage", headers=_bearer(VALID_KEY))
     assert resp.status_code == 200
     body = resp.json()
@@ -226,7 +280,7 @@ def test_auth_middleware_is_installed(hub):
 
 def test_internal_config_state_binds_loaded_registry(hub):
     expected = hashlib.sha256(b"").hexdigest()
-    with TestClient(hub.app) as client:
+    with _isolated_client(hub.app) as client:
         resp = client.get("/internal/config-state")
     assert resp.status_code == 200
     assert resp.json() == {"sha256": expected, "ok": True,
@@ -332,7 +386,7 @@ def test_config_state_attests_actual_restarted_surface_and_owner(hub, monkeypatc
             return [SimpleNamespace(name="ping", description="Ping", inputSchema={})]
 
     monkeypatch.setattr(hub, "Client", FakeClient)
-    with TestClient(hub.app) as client:
+    with _isolated_client(hub.app) as client:
         state = client.get("/internal/config-state").json()
         tool = asyncio.run(hub.mcp.get_tool("svc_ping"))
     assert state["ok"] is True
@@ -360,7 +414,7 @@ def test_config_state_rejects_builtin_and_inter_entry_collisions(hub, monkeypatc
                                     description="", inputSchema={})]
 
     monkeypatch.setattr(hub, "Client", FakeClient)
-    with TestClient(hub.app) as client:
+    with _isolated_client(hub.app) as client:
         state = client.get("/internal/config-state").json()
     assert state["ok"] is False
     assert state["entries"]["builtin"]["reason"] == "tool_collision"
@@ -391,7 +445,7 @@ def test_config_state_marks_partial_surface_ownership_mismatch(hub, monkeypatch)
 
     monkeypatch.setattr(hub, "Client", FakeClient)
     monkeypatch.setattr(hub.mcp, "get_tool", missing_one)
-    with TestClient(hub.app) as client:
+    with _isolated_client(hub.app) as client:
         state = client.get("/internal/config-state").json()
     assert state["ok"] is False
     assert state["entries"]["svc"] == {"ok": False, "reason": "surface_mismatch", "tools": []}
@@ -499,6 +553,52 @@ def _tool_error(client, session, name, arguments) -> str:
     return text
 
 
+@pytest.mark.parametrize("group,allowed", [("home", True), ("work", False)])
+@pytest.mark.parametrize("transformed", [False, True])
+def test_direct_tool_calls_enforce_final_group_authorization(hub, monkeypatch, group, allowed, transformed):
+    """已知工具名的直接调用也必须鉴权；变换后 tags 不可绕过组件策略。"""
+    from fastmcp.server.transforms.tool_transform import ToolTransform
+    from fastmcp.tools.tool_transform import ToolTransformConfig
+
+    install_litellm_stub(monkeypatch, lambda method, path, bearer, body: (
+        200, {"key_info": {"metadata": {"group": group}, "is_disabled": False}})
+        if path == "/key/info" and bearer == VALID_KEY else (401, {"error": "invalid key"}))
+    calls = []
+    # 一组验证生产 AuthMiddleware，另一组隔离上游漏洞的组件 auth + transform 路径。
+    server = (hub.FastMCP("transformed-policy", auth=hub.LiteLLMTokenVerifier())
+              if transformed else hub.mcp)
+
+    @server.tool(name="policy_probe", tags=set() if transformed else {"home"},
+                 auth=hub.group_access if transformed else None)
+    def policy_probe() -> str:
+        calls.append("executed")
+        return "private-test-result"
+
+    if transformed:
+        server.add_transform(ToolTransform({"policy_probe": ToolTransformConfig(tags={"home"})}))
+    app = server.http_app(path="/mcp") if transformed else hub.app
+    with _isolated_client(app) as client:
+        session = _mcp_session(client)
+        listed = _rpc_text(client.post("/mcp", json={"jsonrpc": "2.0", "id": 2,
+                                                     "method": "tools/list"},
+                                       headers=_mcp_headers(session)))
+        names = {tool["name"] for tool in listed["result"]["tools"]}
+        assert ("policy_probe" in names) is allowed
+        payload = _rpc_text(client.post("/mcp", json={"jsonrpc": "2.0", "id": 3,
+                                                       "method": "tools/call", "params": {
+                                                           "name": "policy_probe", "arguments": {}}},
+                                        headers=_mcp_headers(session)))
+    if allowed:
+        assert "error" not in payload
+        assert payload["result"].get("isError") is not True
+        assert payload["result"]["content"][0]["text"] == "private-test-result"
+        assert calls == ["executed"]
+    else:
+        assert payload.get("error") or payload.get("result", {}).get("isError") is True
+        assert "private-test-result" not in json.dumps(payload)
+        assert calls == []
+
+
 def _as_caller(vhub, monkeypatch, key=VALID_KEY):
     """直调工具函数时伪造 HTTP 请求上下文（current_key 经 contextvar 取 Bearer）。"""
     monkeypatch.setattr(vhub, "get_http_request",
@@ -507,7 +607,7 @@ def _as_caller(vhub, monkeypatch, key=VALID_KEY):
 
 def test_tools_list_discovers_inline_image_capability(vhub):
     """验收：tools/list 能发现本地上传能力（upload_image + analyze_image 可选输入）。"""
-    with TestClient(vhub.app) as client:
+    with _isolated_client(vhub.app) as client:
         session = _mcp_session(client)
         payload = _rpc_text(client.post("/mcp", json={"jsonrpc": "2.0", "id": 2,
                                                       "method": "tools/list"},
@@ -523,7 +623,7 @@ def test_tools_list_discovers_inline_image_capability(vhub):
 def test_analyze_image_inline_base64_roundtrip(vhub, monkeypatch):
     """验收：Base64 调用 analyze_image，模型收到的字节与客户端输入一致，Key 记调用者账上。"""
     calls = install_litellm_stub(monkeypatch, _vision_handler)   # 重装以拿本次调用记录
-    with TestClient(vhub.app) as client:
+    with _isolated_client(vhub.app) as client:
         session = _mcp_session(client)
         result, text = _tools_call(client, session, "analyze_image", {
             "question": "图里是什么颜色",
@@ -580,7 +680,7 @@ def test_analyze_image_image_url_via_temp_file(vhub, monkeypatch):
 
 def test_upload_image_returns_temp_url_and_serves_file(vhub):
     """验收：upload_image 返回 30 分钟临时 URL，文件随机命名、原样落盘可回读。"""
-    with TestClient(vhub.app) as client:
+    with _isolated_client(vhub.app) as client:
         session = _mcp_session(client)
         result, text = _tools_call(client, session, "upload_image", {
             "image_base64": base64.b64encode(_png()).decode(), "mime_type": "image/png"})
@@ -601,7 +701,7 @@ def test_upload_image_returns_temp_url_and_serves_file(vhub):
 
 def test_upload_image_rejects_bad_input_without_leaking(vhub):
     bad_b64 = "%%%not-base64%%%"
-    with TestClient(vhub.app) as client:
+    with _isolated_client(vhub.app) as client:
         session = _mcp_session(client)
         assert "not valid base64" in _tool_error(client, session, "upload_image", {"image_base64": bad_b64})
         assert "non-empty" in _tool_error(client, session, "upload_image", {"image_base64": "  \n "})
@@ -649,7 +749,7 @@ def test_builtin_tools_attested_in_config_state(vhub):
 
 def test_http_upload_validates_signature(vhub):
     """/mcp/upload 与内嵌路径共用校验：声明 MIME 与签名不一致 → 400。"""
-    with TestClient(vhub.app) as client:
+    with _isolated_client(vhub.app) as client:
         ok = client.post("/mcp/upload", headers=_bearer(VALID_KEY),
                          files={"file": ("a.png", _png(), "image/png")})
         assert ok.status_code == 200
