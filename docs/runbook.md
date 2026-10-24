@@ -261,6 +261,20 @@ cd ~/LLM-Portal/vps && ./deploy.sh    # 幂等升级（compose build + up + 收�
 
 ## 7. 密钥与安全（C1/C2/C5）
 
+### FastMCP 授权安全补丁
+
+当前 console 与 mcp-hub 源码构建固定使用 FastMCP `3.4.10`，开发依赖下限同样为
+`3.4.10`，仍限制在 3.x。该补丁修复变换后组件未重新校验授权的
+[GHSA-7xgj-8392-5q4r](https://github.com/PrefectHQ/fastmcp/security/advisories/GHSA-7xgj-8392-5q4r)：
+受影响的 3.x 范围为 `>=3.0.0,<3.4.10`，不能仅靠 `tools/list` 隐藏来保护已知名称的直接调用。
+保持现有 `AuthMiddleware` 和分组策略，发布前必须同时验证允许/拒绝的直接 `tools/call`、
+变换后策略、registry/vision 和 console MCP 预检；不得忽略 advisory 或放宽断言。
+
+前文验收表中的 `3.4.7` 保留为历史验收记录，不表示当前安全版本要求。
+更新 requirements 不等于线上镜像已更新：须记录新构建镜像 ID、实际包版本及受控部署验收，
+无需因此重建无依赖变动的其他服务。新版 SSE 的 loop-local 状态与旧版全局 event 不同，
+测试只按实际能力隔离客户端生命周期，不修改生产 SSE 行为。
+
 - master key / postgres 密码 / onboard admin token / 管理员邮箱密码与 TOTP 密钥：`vps/.env`（VPS 上 0600，不入库），compose 变量注入各容器。配置 `ADMIN_EMAIL` 后控制台管理员登录使用独立邮箱+密码+2FA，master key 仅服务端回环；若留空则保留旧版 master key 网页登录兼容路径，生产部署禁止留空。用户登录使用虚拟 Key；管理员与用户登录均按 IP 限速。
 - **docker.sock 取舍（#7）**：console/onboardd 容器挂 `/var/run/docker.sock`（执行 wg peer 管理 / mcp-hub 重启），挂 sock 的容器 ≈ 宿主机 root——只给这两个管理面容器，且它们本身已是管理员权限面；其余容器（litellm/compat/postgres/mcp-hub/wireguard）不挂（compat 亦不持任何密钥，鉴权头原样透传）。
 - WG 私钥：VPS `/var/lib/private-llm/wireguard-private.key`（0600）与 `/etc/wireguard/wg0.conf`（0600）；站点私钥仅站点本机。

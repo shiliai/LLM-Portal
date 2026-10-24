@@ -40,34 +40,52 @@ SECOND_KEY = VALID_KEY + "-other"
 
 @contextmanager
 def _isolated_client(app):
-    # sse-starlette 的全局退出事件绑定首次 TestClient 的 loop，不能跨客户端复用。
-    previous = AppStatus.should_exit, AppStatus.should_exit_event
-    AppStatus.should_exit, AppStatus.should_exit_event = False, None
+    # 旧版 SSE 共享全局 event；新版由库维护 loop-local 状态，不创建已移除的字段。
+    previous_exit = AppStatus.should_exit
+    legacy_event = hasattr(AppStatus, "should_exit_event")
+    if legacy_event:
+        previous_event = AppStatus.should_exit_event
+        AppStatus.should_exit_event = None
+    AppStatus.should_exit = False
     try:
         with TestClient(app) as client:
             yield client
     finally:
-        AppStatus.should_exit, AppStatus.should_exit_event = previous
+        AppStatus.should_exit = previous_exit
+        if legacy_event:
+            AppStatus.should_exit_event = previous_event
 
 
 def test_sequential_clients_keep_sse_exit_event_loop_local():
+    serving_loops = []
+
     async def stream(request):
+        serving_loops.append(asyncio.get_running_loop())
         async def events():
             yield {"data": "loop-local"}
         return EventSourceResponse(events())
 
     app = Starlette(routes=[Route("/events", stream)])
-    previous = AppStatus.should_exit, AppStatus.should_exit_event
+    previous_exit = AppStatus.should_exit
+    legacy_event = hasattr(AppStatus, "should_exit_event")
+    previous_event = getattr(AppStatus, "should_exit_event", None)
     events = []
     for _ in range(2):
         with _isolated_client(app) as client:
             response = client.get("/events")
             assert response.status_code == 200
             assert "data: loop-local" in response.text
-            events.append(AppStatus.should_exit_event)
-        assert (AppStatus.should_exit, AppStatus.should_exit_event) == previous
-    assert all(event is not None for event in events)
-    assert events[0] is not events[1]
+            if legacy_event:
+                events.append(AppStatus.should_exit_event)
+        assert AppStatus.should_exit == previous_exit
+        assert hasattr(AppStatus, "should_exit_event") == legacy_event
+        if legacy_event:
+            assert AppStatus.should_exit_event is previous_event
+    assert len(serving_loops) == 2
+    assert serving_loops[0] is not serving_loops[1]
+    if legacy_event:
+        assert all(event is not None for event in events)
+        assert events[0] is not events[1]
 
 
 def _handler(method, path, bearer, json_body):
@@ -533,6 +551,52 @@ def _tool_error(client, session, name, arguments) -> str:
     result, text = _tools_call(client, session, name, arguments)
     assert result.get("isError") is True, f"expected tool error, got: {text[:200]}"
     return text
+
+
+@pytest.mark.parametrize("group,allowed", [("home", True), ("work", False)])
+@pytest.mark.parametrize("transformed", [False, True])
+def test_direct_tool_calls_enforce_final_group_authorization(hub, monkeypatch, group, allowed, transformed):
+    """已知工具名的直接调用也必须鉴权；变换后 tags 不可绕过组件策略。"""
+    from fastmcp.server.transforms.tool_transform import ToolTransform
+    from fastmcp.tools.tool_transform import ToolTransformConfig
+
+    install_litellm_stub(monkeypatch, lambda method, path, bearer, body: (
+        200, {"key_info": {"metadata": {"group": group}, "is_disabled": False}})
+        if path == "/key/info" and bearer == VALID_KEY else (401, {"error": "invalid key"}))
+    calls = []
+    # 一组验证生产 AuthMiddleware，另一组隔离上游漏洞的组件 auth + transform 路径。
+    server = (hub.FastMCP("transformed-policy", auth=hub.LiteLLMTokenVerifier())
+              if transformed else hub.mcp)
+
+    @server.tool(name="policy_probe", tags=set() if transformed else {"home"},
+                 auth=hub.group_access if transformed else None)
+    def policy_probe() -> str:
+        calls.append("executed")
+        return "private-test-result"
+
+    if transformed:
+        server.add_transform(ToolTransform({"policy_probe": ToolTransformConfig(tags={"home"})}))
+    app = server.http_app(path="/mcp") if transformed else hub.app
+    with _isolated_client(app) as client:
+        session = _mcp_session(client)
+        listed = _rpc_text(client.post("/mcp", json={"jsonrpc": "2.0", "id": 2,
+                                                     "method": "tools/list"},
+                                       headers=_mcp_headers(session)))
+        names = {tool["name"] for tool in listed["result"]["tools"]}
+        assert ("policy_probe" in names) is allowed
+        payload = _rpc_text(client.post("/mcp", json={"jsonrpc": "2.0", "id": 3,
+                                                       "method": "tools/call", "params": {
+                                                           "name": "policy_probe", "arguments": {}}},
+                                        headers=_mcp_headers(session)))
+    if allowed:
+        assert "error" not in payload
+        assert payload["result"].get("isError") is not True
+        assert payload["result"]["content"][0]["text"] == "private-test-result"
+        assert calls == ["executed"]
+    else:
+        assert payload.get("error") or payload.get("result", {}).get("isError") is True
+        assert "private-test-result" not in json.dumps(payload)
+        assert calls == []
 
 
 def _as_caller(vhub, monkeypatch, key=VALID_KEY):
