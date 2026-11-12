@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><script>try{var q=new URLSearchParams(location.search).get("theme");var t=(q==="light"||q==="dark")?q:(localStorage.getItem("llm-portal-theme")||"dark");document.documentElement.setAttribute("data-theme",t);}catch(e){document.documentElement.setAttribute("data-theme","dark")}</script>
-<title>节点性能 · 远程模型网关</title><link rel="stylesheet" href="assets/portal.css"><link rel="icon" href="assets/brand/favicon.svg" type="image/svg+xml"></head>
+<title>节点性能 · 远程模型网关</title><link rel="stylesheet" href="assets/portal.css"><link rel="icon" href="assets/brand/favicon.svg" type="image/svg+xml">
+<style>.nd-request-link{color:inherit;display:inline-block;min-width:24px;text-align:center;text-decoration:underline;text-decoration-color:var(--muted);text-underline-offset:4px}.nd-request-link:hover{color:var(--accent);text-decoration-color:currentColor}.nd-request-link:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:2px}</style></head>
 <body data-page="nodes"><template id="page">
   <div class="pf-toolbar">
     <div class="pf-tb-item"><label>节点</label><select class="pf-select" id="nd-node"><option value="">全部节点</option></select></div>
@@ -167,6 +168,11 @@
     var hist = st.hist[s.name] || {};
     var act = m.requests_running == null ? null : Math.round(m.requests_running);
     var que = m.requests_waiting == null ? null : Math.round(m.requests_waiting);
+    function requestLink(count, view) {
+      if (count == null) return dash();
+      var label = '查看 ' + (s.display_name || s.name) + (view === 'waiting' ? ' 的排队概览与等待响应请求' : ' 的活动概览与关联请求');
+      return '<a class="nd-request-link" href="requests.html?site=' + esc(encodeURIComponent(s.name)) + '&amp;view=' + view + '" aria-label="' + esc(label) + '" title="' + esc(label) + '">' + count + '</a>';
+    }
     var kvHit = m.cache_hit_pct == null ? null : m.cache_hit_pct;
     var spec = m.spec_accept_pct == null ? null : m.spec_accept_pct;
     function tile(label, val, sub, cls) {
@@ -178,7 +184,7 @@
       tile('输出 TOK/S', num(m.output_tok_s, 1), spark(hist.speed, 78, 15, TC().s.cyan), 'c-accent'),
       tile('输入 TOK/S · PREFILL', num(m.input_tok_s, 1), spark(hist.pre, 78, 15, TC().s.violet)),
       tile('活动 / 排队',
-        (act == null ? dash() : act) + ' <span class="unit">/ ' + (que == null ? dash() : que) + '</span>',
+        requestLink(act, 'running') + ' <span class="unit">/ ' + requestLink(que, 'waiting') + '</span>',
         '实时并发' + pctTile(act == null ? null : act * 12.5)),
       tile('KV CACHE 占用 / 命中率',
         m.kv_cache_pct == null ? dash() : m.kv_cache_pct.toFixed(0) + '<span class="unit">%</span>',

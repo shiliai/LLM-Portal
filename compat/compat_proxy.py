@@ -54,12 +54,15 @@ from starlette.datastructures import Headers
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
+from starlette.middleware import Middleware
+from live_requests import LiveRequests, LiveRequestsMiddleware
 
 LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://litellm:4000").rstrip("/")
 COMPAT_PORT = int(os.environ.get("COMPAT_PORT", "8400"))
 US13_VERSION = "us13-v1"
 PROXY_PATHS = ("/v1/messages", "/v1/messages/count_tokens", "/v1/chat/completions")
 OPTIMIZER = ContextOptimizer(policy_provider=MONITOR.context_optimization_policy)
+LIVE_REQUESTS = LiveRequests(os.environ.get("LIVE_REQUESTS_DB") or MONITOR.db_path.with_name("live-requests.db"))
 
 # 逐跳头 + 交给 httpx 按目标重建的头（Host/Content-Length/Accept-Encoding）；
 # Authorization、x-api-key、anthropic-version、anthropic-beta、X-Forwarded-For 等一律原样透传
@@ -419,7 +422,7 @@ async def compat_proxy(request: Request) -> Response:
     raw = await request.body()
     started = time.monotonic()
     credential = extract_credential(request.headers)
-    request_id = request.headers.get("x-request-id") or request.headers.get("x-litellm-call-id") or f"req_{time.time_ns()}"
+    request_id = request.headers.get("x-request-id") or request.headers.get("x-litellm-call-id") or request.scope.get("live_request_id") or f"req_{time.time_ns()}"
 
     out_body = raw
     images_pruned = 0
@@ -427,6 +430,10 @@ async def compat_proxy(request: Request) -> Response:
         parsed = json.loads(raw) if raw else None
     except ValueError:
         parsed = None
+    await LIVE_REQUESTS.describe(request.scope.get("live_request_id"),
+                                 model=parsed.get("model") if isinstance(parsed, dict) else "",
+                                 streaming=isinstance(parsed, dict) and parsed.get("stream") is True,
+                                 body=parsed if isinstance(parsed, dict) else None, request_bytes=len(raw))
     if isinstance(parsed, dict):
         try:
             tc_info = rewrite_forced_tool_choice(parsed, proto)
@@ -465,6 +472,9 @@ async def compat_proxy(request: Request) -> Response:
                    last_user_degraded=image_evict.get("last_user_degraded"),
                    bytes_removed=image_evict.get("bytes_removed", 0))
 
+    live_row = LIVE_REQUESTS.rows.get(request.scope.get("live_request_id"))
+    if live_row is not None:
+        live_row["forwarded_request_bytes"] = len(out_body)
     fwd = forwarded_headers(request.headers, request_id)
     upstream_request = client.build_request(request.method, url, headers=fwd, content=out_body)
     try:
@@ -487,6 +497,7 @@ async def compat_proxy(request: Request) -> Response:
             value = json.loads(raw_response)
         except ValueError:
             value = None
+        LIVE_REQUESTS.usage(request.scope.get("live_request_id"), value)
         if isinstance(value, dict) and normalize_dsml_response(value):
             metric("compat.dsml_args_normalized", endpoint=path, side="response", calls=1)
             raw_response = json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
@@ -545,11 +556,16 @@ ROUTES.append(Route("/api/v1/conversation-monitor/stream", conversation_monitor_
 
 @asynccontextmanager
 async def _lifespan(_: Any) -> AsyncIterator[None]:
-    yield
-    await client.aclose()
+    await LIVE_REQUESTS.start()
+    try:
+        yield
+    finally:
+        await LIVE_REQUESTS.stop()
+        await client.aclose()
 
 
-app = Starlette(routes=ROUTES, lifespan=_lifespan)
+app = Starlette(routes=ROUTES, lifespan=_lifespan,
+                middleware=[Middleware(LiveRequestsMiddleware, tracker=LIVE_REQUESTS)])
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=COMPAT_PORT, log_level="info", timeout_keep_alive=120)

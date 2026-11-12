@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<script>try{var t=new URLSearchParams(location.search).get('theme')||localStorage.getItem('llm-portal-theme')||'dark';document.documentElement.setAttribute('data-theme',t==='light'?'light':'dark');}catch(e){}</script>
+<title>活动任务 · 远程模型网关</title><link rel="stylesheet" href="assets/portal.css"><link rel="icon" href="assets/brand/favicon.svg" type="image/svg+xml">
+<style>
+.rq-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:16px}
+.rq-summary strong{display:block;font-size:28px;font-family:var(--mono);margin:8px 0}
+.rq-summary .pf-card{padding:16px}.rq-note{color:var(--text2);font-size:12px;line-height:1.7;margin:10px 0}
+.rq-scroll{overflow:auto}.rq-scroll table{min-width:850px}.rq-scroll td.rq-code{font-family:var(--mono);white-space:normal;overflow-wrap:anywhere;max-width:270px}
+.rq-warn{color:var(--amber)}.rq-live{color:var(--accent)}.rq-status{padding:10px 0;font-size:12px}
+.rq-history-scroll{max-height:560px}.rq-history-scroll thead th{position:sticky;top:0;background:var(--panel2);z-index:1}
+.rq-history-head{flex-wrap:wrap;gap:10px}.rq-history-head .pf-card-title{white-space:nowrap;margin-right:auto}.rq-history-head .pf-select{width:auto;max-width:100%}
+.rq-detail{width:min(760px,calc(100vw - 32px));max-height:85vh;overflow:auto;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:20px}.rq-detail::backdrop{background:rgba(0,0,0,.55)}.rq-detail dl{display:grid;grid-template-columns:150px minmax(0,1fr);gap:10px 16px;font-size:12px}.rq-detail dt{color:var(--text2)}.rq-detail dd{margin:0;overflow-wrap:anywhere;white-space:pre-wrap}.rq-agent{max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--text2)}
+.pf-toolbar button,.pf-toolbar input,.pf-toolbar select{scroll-margin-top:72px}
+@media(max-width:800px){.rq-summary{grid-template-columns:1fr}.pf-toolbar{gap:10px}.rq-summary strong{font-size:24px}}
+</style></head>
+<body data-page="requests"><template id="page">
+  <div class="pf-toolbar">
+    <div class="pf-tb-item"><label for="rq-phase">实时阶段</label><select id="rq-phase" class="pf-select"><option value="">全部活动阶段</option><option value="awaiting_response">等待响应</option><option value="receiving_response">接收响应</option><option value="receiving_request">接收请求</option></select></div>
+    <div class="pf-tb-item"><label for="rq-search">搜索</label><input id="rq-search" class="pf-input" type="search" placeholder="请求 ID / Key / 模型 / IP / User-Agent"></div>
+    <div style="margin-left:auto;display:flex;gap:12px;align-items:center"><label><input type="checkbox" id="rq-auto" checked> 每 5 秒刷新</label><button id="rq-refresh" class="pf-btn" type="button">刷新</button></div>
+  </div>
+  <div id="rq-context" class="rq-note" hidden><strong id="rq-site"></strong> · <a href="requests.html">查看全部节点</a><br>顶部卡片为 Portal 全局统计；下方请求按该节点关联的模型筛选，实际执行节点与后端排队状态未确认；同模型多节点的请求可能同时出现。</div>
+  <div id="rq-status" class="rq-status" role="status" aria-live="polite">正在加载活动任务…</div>
+  <div class="rq-summary">
+    <div class="pf-card">Portal 活动请求<strong id="rq-active">—</strong><span class="rq-note">当前经过网关兼容入口的请求</span></div>
+    <div class="pf-card">等待响应<strong id="rq-waiting">—</strong><span class="rq-note">可能在排队或计算，后端状态未确认</span></div>
+    <div class="pf-card">接收响应<strong id="rq-responding">—</strong><span class="rq-note">正在转发响应，不等同于后端运行数</span></div>
+  </div>
+  <section class="pf-card"><div class="pf-card-head"><div class="pf-card-title">实时请求 <span id="rq-count"></span></div></div>
+    <p class="rq-note">仅展示启用追踪后经过 Portal 的请求；直连模型、内部服务直连和启用前的请求不在此列表。实际部署与后端队列顺序尚未确认。请求结束后移入下方「历史请求」，可继续查看同一请求的结果与详情。</p>
+    <div class="rq-scroll"><table class="pf-table"><thead><tr><th>请求 ID / 开始时间</th><th>Key / 分组</th><th>模型 / 协议</th><th>调用来源 / User-Agent</th><th>阶段</th><th>已耗时 / 本阶段</th><th>输入 / 输出 Token</th></tr></thead><tbody id="rq-rows"><tr><td colspan="7">加载中…</td></tr></tbody></table></div>
+    <p id="rq-stale" class="rq-note rq-warn" hidden></p>
+  </section>
+  <section class="pf-card" style="margin-top:16px"><div class="pf-card-head rq-history-head"><div class="pf-card-title">历史请求</div>
+    <label for="rq-outcome">结果</label><select id="rq-outcome" class="pf-select"><option value="">全部结果</option><option value="completed">已完成</option><option value="failed">失败</option><option value="cancelled">已取消</option><option value="disconnected">连接断开</option><option value="interrupted">响应中断</option><option value="unknown">追踪中断 · 结果未知</option></select></div>
+    <p class="rq-note">保留最近 30 天、最多 50,000 条请求元数据，不依赖对话原文采集开关。仅从本次版本启用后记录，旧版已消失的活动无法补回。Token 取模型返回的 usage，未返回时显示 —；输入数包含缓存，可能与网关优化前的原请求不同。</p>
+    <div id="rq-history-status" class="rq-status" role="status">正在加载历史…</div>
+    <div class="rq-scroll rq-history-scroll"><table class="pf-table"><thead><tr><th>请求 ID / 结束或最后追踪时间</th><th>Key / 分组</th><th>模型 / 协议</th><th>调用来源 / User-Agent</th><th>结果 / HTTP</th><th>总耗时</th><th>输入 / 输出 Token</th></tr></thead><tbody id="rq-history"><tr><td colspan="7">加载中…</td></tr></tbody></table></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px"><button id="rq-prev" class="pf-btn" type="button" disabled>上一页</button><button id="rq-next" class="pf-btn" type="button" disabled>下一页</button></div>
+  </section>
+  <dialog id="rq-detail" class="rq-detail" aria-labelledby="rq-detail-title"><div class="pf-card-head"><h2 id="rq-detail-title" style="font-size:16px;margin:0">请求详情</h2><button id="rq-detail-close" class="pf-btn" type="button" autofocus>关闭</button></div><p id="rq-detail-status" class="rq-note" role="status"></p><dl id="rq-detail-fields"></dl></dialog>
+  <section class="pf-card" style="margin-top:16px"><div class="pf-card-head"><div class="pf-card-title">后端排队与运行</div></div>
+    <p class="rq-note">后端统计可能包含直连请求，与上方列表覆盖范围不同；同一后端的多个模型别名合并计数。无法采集的指标显示 —。</p>
+    <div id="rq-backend-status" class="rq-status" role="status">正在采集…</div>
+    <div class="rq-scroll"><table class="pf-table"><thead><tr><th>站点 / 后端</th><th>模型与别名</th><th>运行</th><th>排队</th><th>采集时间</th></tr></thead><tbody id="rq-backends"></tbody></table></div>
+  </section>
+</template><script src="assets/portal.js"></script><script>
+(function(){
+  'use strict';
+  var rows=[], current=null, liveBusy=false, backendBusy=false, liveError=false, site='', backends=null;
+  var historyRows=[], historyPages=[''], historyNext='', historyBusy=false, historyEpoch=0, searchTimer;
+  var selectedId='', detailBusy=false, pageAlive=true;
+  var $=function(id){return document.getElementById(id);};
+  function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+  function clock(v){return v?new Date(v*1000).toLocaleString('zh-CN',{hour12:false}):'—';}
+  function duration(v){return v==null?'—':v<60?Math.floor(v)+'s':Math.floor(v/60)+'m '+Math.floor(v%60)+'s';}
+  function number(v){return v==null?'—':Number(v).toLocaleString('zh-CN');}
+  var labels={receiving_request:'接收请求',awaiting_response:'等待响应 · 排队状态未知',receiving_response:'接收响应'};
+  var outcomes={completed:'已完成',failed:'失败',cancelled:'已取消',disconnected:'连接断开',interrupted:'响应中断',unknown:'追踪中断 · 结果未知'};
+  function siteModels(){return site&&backends?backends.filter(function(b){return b.sites.indexOf(site)>=0;}).reduce(function(a,b){return a.concat(b.models);},[]):[];}
+  function tokenLabel(r){return number(r.total_input_tokens)+' / '+number(r.output_tokens)+'<div class="rq-note">'+(r.usage_source?'后端 usage':r.outcome?'后端未提供':'待后端返回')+'</div>';}
+  function requestRow(r,historical){
+    var state=historical?(outcomes[r.outcome]||'未知'):(labels[r.phase]||'未知');
+    return '<tr><td class="rq-code">'+esc(r.request_id)+'<div class="rq-note">'+clock(historical?r.ended_at:r.started_at)+'</div><button class="pf-btn" type="button" data-request-id="'+esc(r.request_id)+'" aria-label="查看请求 '+esc(r.request_id)+' 详情">详情</button></td><td>'+esc(r.alias)+'<div class="rq-note">'+esc(r.key_ref)+' · '+esc(r.group)+'</div></td><td class="rq-code">'+esc(r.model||'尚未读取模型')+'<div class="rq-note">'+esc(r.protocol)+(r.streaming?' · 流式':' · 非流式')+'</div></td><td>'+esc(r.source_ip||'未知')+'<div class="rq-agent" title="'+esc(r.user_agent||'未提供 User-Agent')+'">'+esc(r.user_agent||'User-Agent 未提供')+'</div></td><td class="'+(r.phase==='awaiting_response'||(r.outcome&&r.outcome!=='completed')?'rq-warn':'rq-live')+'">'+esc(state)+(historical?'<div class="rq-note">HTTP '+number(r.status_code)+'</div>':'')+'</td><td>'+duration(r.elapsed_seconds)+(historical?'':' / '+duration(r.phase_seconds))+'</td><td>'+tokenLabel(r)+'</td></tr>';
+  }
+  function render(){
+    if(!pageAlive)return;
+    var q=$('rq-search').value.trim().toLowerCase(), phase=$('rq-phase').value, models=siteModels();
+    var visible=rows.filter(function(r){return (!site||models.indexOf(r.model)>=0)&&(!phase||r.phase===phase)&&(!q||[r.request_id,r.alias,r.key_ref,r.group,r.model,r.source_ip,r.user_agent].join(' ').toLowerCase().indexOf(q)>=0);});
+    $('rq-count').textContent='（'+visible.length+' / '+rows.length+'）';
+    $('rq-rows').innerHTML=visible.map(function(r){return requestRow(r,false);}).join('')||'<tr><td colspan="7">'+(site&&!backends?'节点关联信息尚不可用，无法筛选请求':!current||!current.available?'实时追踪不可用，无法确认活动任务':liveError?'刷新失败，暂无可显示的已知请求':q||phase||site?'没有符合筛选条件的活动任务':'当前没有可追踪的活动任务；已结束的请求请查看下方历史')+'</td></tr>';
+  }
+  function markLiveUnavailable(text){
+    liveError=true;$('rq-status').textContent=text;$('rq-status').className='rq-status rq-warn';
+    ['rq-active','rq-waiting','rq-responding'].forEach(function(id){$(id).textContent='—';});render();
+  }
+  async function refreshLive(){
+    if(liveBusy)return;liveBusy=true;
+    try{
+      var d=await window.pfApi('GET','/requests/live');if(!pageAlive)return;current=d;rows=d.requests||[];liveError=false;
+      if(d.available){
+        $('rq-status').textContent='更新于 '+clock(d.updated_at)+' · '+(d.stale_workers?'部分追踪已过期':'实时追踪正常')+(d.overflow?' · '+d.overflow+' 条请求超出展示容量':'');
+        $('rq-status').className='rq-status'+(d.stale_workers||d.overflow?' rq-warn':'');
+        $('rq-active').textContent=rows.length;
+        $('rq-waiting').textContent=rows.filter(function(r){return r.phase==='awaiting_response';}).length;
+        $('rq-responding').textContent=rows.filter(function(r){return r.phase==='receiving_response';}).length;
+      }else markLiveUnavailable('实时追踪尚未启用或心跳已过期，当前活动数未知');
+      $('rq-stale').hidden=!(d.stale_requests||[]).length;
+      $('rq-stale').textContent=(d.stale_requests||[]).length+' 条旧记录的追踪心跳已过期，未计入活动数；历史会标注结果未知，不代表它们已完成。';render();
+    }catch(e){if(pageAlive)markLiveUnavailable('刷新失败，所列请求为上次快照；当前数量未知。请刷新重试。');}
+    finally{liveBusy=false;}
+  }
+  async function refreshHistory(){
+    if(!pageAlive)return;
+    var epoch=++historyEpoch, params=new URLSearchParams();
+    params.set('limit','50');params.set('cursor',historyPages[historyPages.length-1]);
+    params.set('q',$('rq-search').value.trim());params.set('outcome',$('rq-outcome').value);
+    if(site){
+      if(!backends){$('rq-history-status').textContent='节点关联信息不可用，无法筛选历史';$('rq-history').innerHTML='<tr><td colspan="7">请刷新重试</td></tr>';return;}
+      var models=siteModels();if(!models.length)params.append('model','');else models.forEach(function(m){params.append('model',m);});
+    }
+    historyBusy=true;$('rq-prev').disabled=$('rq-next').disabled=true;
+    try{
+      var d=await window.pfApi('GET','/requests/history?'+params.toString());if(!pageAlive||epoch!==historyEpoch)return;
+      historyRows=d.records||[];historyNext=d.next_cursor||'';
+      $('rq-history-status').textContent=d.available?'本页 '+historyRows.length+' 条 · 第 '+historyPages.length+' 页 · 最近 '+d.retention_days+' 天'+(d.dropped_records?' · 追踪进程累计 '+d.dropped_records+' 条历史未保存（自 '+clock(d.dropped_since)+'，含保留期外）':''):'历史存储尚不可用，无法确认记录';
+      $('rq-history-status').className='rq-status'+(!d.available||d.dropped_records?' rq-warn':'');
+      $('rq-history').innerHTML=historyRows.map(function(r){return requestRow(r,true);}).join('')||'<tr><td colspan="7">'+(d.available?'没有符合筛选条件的历史请求':'历史存储不可用，请刷新重试')+'</td></tr>';
+      $('rq-prev').disabled=historyPages.length<=1;$('rq-next').disabled=!d.has_more;
+    }catch(e){if(pageAlive&&epoch===historyEpoch){$('rq-history-status').textContent='历史刷新失败，当前显示为上次快照，请刷新重试';}}
+    finally{if(epoch===historyEpoch)historyBusy=false;}
+  }
+  function resetHistory(){historyPages=[''];historyNext='';refreshHistory();}
+  function renderDetail(r){
+    var values=[['请求 ID',r.request_id],['状态',outcomes[r.outcome]||labels[r.phase]||'未知'],['模型',r.model],['接口',r.endpoint],['协议',r.protocol+(r.streaming?' · 流式':' · 非流式')],['Key / 分组',(r.alias||'')+' · '+(r.key_ref||'')+' · '+(r.group||'')],['调用来源 IP',r.source_ip],['User-Agent',r.user_agent],['开始时间',clock(r.started_at)],[r.outcome==='unknown'?'最后追踪时间':'结束时间',clock(r.ended_at)],['总耗时',duration(r.elapsed_seconds)],['首段响应耗时',r.first_response_at?duration(r.first_response_at-r.started_at):'—'],['HTTP 状态',number(r.status_code)],['输入 Token（含缓存）',number(r.total_input_tokens)],['输出 Token',number(r.output_tokens)],['缓存读取 Token',number(r.cache_read_input_tokens)],['缓存写入 Token',number(r.cache_creation_input_tokens)],['Token 来源',r.usage_source?'模型返回的 usage':r.outcome?'后端未提供':'待后端返回'],['接收请求大小',number(r.request_bytes)+' B'],['转发请求大小',number(r.forwarded_request_bytes)+' B'],['响应体大小（网关观测）',number(r.response_bytes)+' B'],['消息数 / 工具数',number(r.message_count)+' / '+number(r.tool_count)],['请求输出上限',number(r.max_output_tokens)],['temperature / top_p',(r.temperature==null?'—':String(r.temperature))+' / '+(r.top_p==null?'—':String(r.top_p))]];
+    $('rq-detail-fields').innerHTML=values.map(function(v){return '<dt>'+esc(v[0])+'</dt><dd>'+esc(v[1]==null||v[1]===''?'—':v[1])+'</dd>';}).join('');
+    $('rq-detail-status').textContent=r.outcome?'已保存到历史；这里只保留请求元数据。':'请求进行中，详情每 5 秒更新；结束后可继续查看历史。';
+  }
+  async function refreshDetail(){
+    if(!selectedId||detailBusy)return;detailBusy=true;var rid=selectedId;
+    try{var d=await window.pfApi('GET','/requests/detail?request_id='+encodeURIComponent(rid));if(pageAlive&&selectedId===rid)renderDetail(d.record);}
+    catch(e){if(pageAlive&&selectedId===rid)$('rq-detail-status').textContent='详情暂时无法刷新，所列为上次快照，请稍后重试。';}
+    finally{detailBusy=false;}
+  }
+  async function refreshBackends(){
+    if(backendBusy)return;backendBusy=true;
+    try{
+      var d=await window.pfApi('GET','/requests/backends');if(!pageAlive)return;backends=d.backends||[];
+      var visible=backends.filter(function(b){return !site||b.sites.indexOf(site)>=0;});
+      $('rq-backend-status').textContent='更新于 '+clock(d.observed_at);
+      $('rq-backends').innerHTML=visible.map(function(b){return '<tr><td class="rq-code">'+esc(b.sites.join(' / ')||'未匹配站点')+'<div class="rq-note">'+esc(b.endpoint)+'</div></td><td class="rq-code">'+esc(b.models.join(' / '))+'</td><td>'+esc(b.running==null?'—':b.running)+'</td><td class="rq-warn">'+esc(b.waiting==null?'—':b.waiting)+'</td><td>'+clock(b.observed_at)+(b.available?'':' · 采集不可用')+'</td></tr>';}).join('')||'<tr><td colspan="5">没有已注册的可采集后端</td></tr>';
+    }catch(e){if(pageAlive){backends=null;$('rq-backend-status').textContent='后端采集失败，请刷新重试';$('rq-backends').innerHTML='<tr><td colspan="5">当前后端排队 / 运行数未知</td></tr>';}}
+    finally{backendBusy=false;render();}
+  }
+  async function refreshAll(){await Promise.all([refreshLive(),refreshBackends()]);if(pageAlive){refreshHistory();refreshDetail();}}
+  window.addEventListener('pfpagehide',function(){pageAlive=false;historyEpoch++;clearTimeout(searchTimer);if($('rq-detail')&&$('rq-detail').open)$('rq-detail').close();});
+  window.pfReady.then(function(sess){
+    if(sess.role!=='admin')return;
+    var params=new URLSearchParams(location.search);site=params.get('site')||'';
+    var phase=params.get('phase')||(params.get('view')==='waiting'?'awaiting_response':'');
+    if(labels[phase])$('rq-phase').value=phase;
+    $('rq-context').hidden=!site;$('rq-site').textContent='节点关联模型筛选：'+site;
+    $('rq-search').addEventListener('input',function(){render();clearTimeout(searchTimer);searchTimer=setTimeout(resetHistory,250);});
+    $('rq-phase').addEventListener('change',function(){
+      var url=new URL(location.href);url.searchParams.delete('view');
+      if(this.value)url.searchParams.set('phase',this.value);else url.searchParams.delete('phase');
+      history.replaceState(history.state,'',url.href);render();
+    });
+    $('rq-outcome').onchange=resetHistory;
+    $('rq-prev').onclick=function(){if(!historyBusy&&historyPages.length>1){historyPages.pop();refreshHistory();}};
+    $('rq-next').onclick=function(){if(!historyBusy&&historyNext){historyPages.push(historyNext);refreshHistory();}};
+    ['rq-rows','rq-history'].forEach(function(id){$(id).addEventListener('click',function(e){
+      var button=e.target.closest('[data-request-id]');if(!button)return;selectedId=button.dataset.requestId;
+      var record=rows.concat(historyRows).find(function(r){return r.request_id===selectedId;});
+      if(record)renderDetail(record);$('rq-detail').showModal();refreshDetail();
+    });});
+    $('rq-detail-close').onclick=function(){$('rq-detail').close();};$('rq-detail').addEventListener('close',function(){selectedId='';});
+    $('rq-refresh').onclick=refreshAll;refreshAll();
+    setInterval(function(){if(!document.hidden&&$('rq-auto').checked)refreshAll();},5000);
+  });
+})();
+</script></body></html>

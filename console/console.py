@@ -77,6 +77,7 @@ import weakref
 import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from contextlib import asynccontextmanager, suppress
 
 import httpx
 import segno
@@ -94,6 +95,9 @@ except ModuleNotFoundError:  # local `python console.py` from the console direct
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from conversation_monitor import MONITOR
 
+from live_requests import read_snapshot, read_history, prune_expired
+
+LIVE_REQUESTS_DB = Path(os.environ.get("LIVE_REQUESTS_DB") or MONITOR.db_path.with_name("live-requests.db"))
 LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://127.0.0.1:4000")
 ONBOARD_URL = os.environ.get("ONBOARDD_URL", "http://127.0.0.1:8100")
 MCP_HUB_URL = os.environ.get("MCP_HUB_URL", "http://127.0.0.1:8200")
@@ -1945,6 +1949,161 @@ async def api_usage_logs(request: Request) -> Response:
 
 # ---------------------------------------------------------------- 对话监控（#130）
 
+async def api_live_requests(request: Request) -> Response:
+    sess = await require(request, role="admin")
+    if isinstance(sess, JSONResponse):
+        return sess
+    snapshot = await asyncio.to_thread(read_snapshot, LIVE_REQUESTS_DB)
+    await _request_key_metadata(snapshot["requests"] + snapshot["stale_requests"])
+    snapshot["coverage"] = "compat_only"
+    return JSONResponse(snapshot, headers={"Cache-Control": "no-store"})
+
+
+async def _request_key_metadata(rows: list[dict], keys: dict | None = None) -> None:
+    if keys is None:
+        keys = {row["key_hash"]: row for row in (key_row(k) for k in await key_list_full())}
+    for row in rows:
+        kh = row.pop("key_hash", "")
+        key = keys.get(kh, {})
+        row["key_ref"] = "#" + kh[:12] if kh else "未提供 Key"
+        row["alias"] = key.get("alias", "未识别 / 鉴权未确认")
+        row["group"] = key.get("group", "未知")
+
+
+async def api_request_history(request: Request) -> Response:
+    sess = await require(request, role="admin")
+    if isinstance(sess, JSONResponse):
+        return sess
+    params = request.query_params
+    search, cursor, outcome = params.get("q", "").strip(), params.get("cursor", ""), params.get("outcome", "")
+    models = params.getlist("model") if "model" in params else None
+    try:
+        limit = int(params.get("limit", "50"))
+        if not 1 <= limit <= 200 or len(search) > 200 or len(cursor) > 256:
+            raise ValueError()
+        if models is not None and (len(models) > 200 or any(len(m) > 200 for m in models)):
+            raise ValueError()
+        if outcome not in {"", "completed", "failed", "cancelled", "disconnected", "interrupted", "unknown"}:
+            raise ValueError()
+        keys = {row["key_hash"]: row for row in (key_row(k) for k in await key_list_full())}
+        hashes = [kh for kh, key in keys.items() if search.lower() in
+                  (str(key.get("alias", "")) + " " + str(key.get("group", "")) + " #" + kh[:12]).lower()] if search else []
+        data = await asyncio.to_thread(read_history, LIVE_REQUESTS_DB, limit=limit, cursor=cursor,
+                                       search=search, outcome=outcome, models=models, key_hashes=hashes)
+    except ValueError:
+        return jerr("历史筛选参数无效", 400)
+    await _request_key_metadata(data["records"], keys)
+    data["coverage"] = "compat_only"
+    return JSONResponse(data, headers={"Cache-Control": "no-store"})
+
+
+async def api_request_detail(request: Request) -> Response:
+    sess = await require(request, role="admin")
+    if isinstance(sess, JSONResponse):
+        return sess
+    rid = request.query_params.get("request_id", "")
+    if not re.fullmatch(r"live_[0-9a-f]{32}", rid):
+        return jerr("请求 ID 无效", 400)
+    snapshot = await asyncio.to_thread(read_snapshot, LIVE_REQUESTS_DB)
+    row = next((r for r in snapshot["requests"] if r["request_id"] == rid), None)
+    if row is None:
+        history = await asyncio.to_thread(read_history, LIVE_REQUESTS_DB, request_id=rid, limit=1)
+        row = next(iter(history["records"]), None)
+    if row is None:
+        row = next((r for r in snapshot["stale_requests"] if r["request_id"] == rid), None)
+        if row is not None:
+            row["outcome"] = "unknown"
+    if row is None:
+        return jerr("尚未找到该请求，或记录已超出保留范围", 404)
+    await _request_key_metadata([row])
+    return JSONResponse({"record": row}, headers={"Cache-Control": "no-store"})
+
+
+_QUEUE_METRICS = {
+    "running": ("vllm:num_requests_running", "tensorfold:requests_running", "tensorfold:num_requests_running",
+                "tensorfold_requests_running", "tensorfold_requests_inflight", "llamacpp:requests_processing"),
+    "waiting": ("vllm:num_requests_waiting", "tensorfold:requests_waiting", "tensorfold:num_requests_waiting",
+                "tensorfold_requests_waiting", "tensorfold_requests_stalled", "llamacpp:requests_deferred"),
+}
+
+
+def queue_gauges(raw: str) -> dict:
+    values: dict[str, float] = {}
+    for line in raw.splitlines():
+        if line.startswith("#") or not line.strip():
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        name = parts[0].split("{")[0]
+        if name not in {n for names in _QUEUE_METRICS.values() for n in names}:
+            continue
+        try:
+            value = float(parts[1])
+        except ValueError:
+            continue
+        if math.isfinite(value) and value >= 0:
+            values[name] = values.get(name, 0) + value
+    # The exporter can emit several aliases of the same gauge. Choose one
+    # family per endpoint, summing label series only within that metric.
+    return {field: next((values[n] for n in names if n in values), None)
+            for field, names in _QUEUE_METRICS.items()}
+
+
+async def api_request_backends(request: Request) -> Response:
+    sess = await require(request, role="admin")
+    if isinstance(sess, JSONResponse):
+        return sess
+    # Unlike historic dashboards, never substitute a stale VM sample for a
+    # live observation here. Deduplicate model aliases by actual endpoint.
+    code, body = await ll_json("GET", "/model/info")
+    if code != 200 or not isinstance(body, dict) or not isinstance(body.get("data"), list):
+        return jerr("无法读取模型部署，请稍后刷新", 503)
+    try:
+        response = await onboard("GET", "/onboard/admin/list")
+        registry = response.json()
+        if response.status_code != 200 or not isinstance(registry, dict) or not isinstance(registry.get("sites"), list):
+            return jerr("无法读取站点登记，请稍后刷新", 503)
+        sites = registry["sites"]
+    except (httpx.HTTPError, ValueError):
+        return jerr("无法读取站点登记，请稍后刷新", 503)
+    endpoints: dict[str, dict] = {}
+    for dep in body.get("data", []):
+        base = str((dep.get("litellm_params") or {}).get("api_base") or "").rstrip("/")
+        try:
+            canonical = direct_address(base)
+        except ValueError:
+            continue
+        registered = [site for site in sites if dep_of_site_row(dep, site)]
+        registered = [site for site in registered if site.get("transport", "wireguard") != "direct"
+                      or direct_address(site.get("address")) == canonical]
+        if not registered:
+            continue
+        base = canonical.removesuffix("/v1")
+        entry = endpoints.setdefault(base, {"endpoint": base, "models": [], "sites": []})
+        model = str(dep.get("model_name") or "")
+        if model not in entry["models"]:
+            entry["models"].append(model)
+        for site in registered:
+            if site["name"] not in entry["sites"]:
+                entry["sites"].append(site["name"])
+
+    gate = asyncio.Semaphore(8)
+
+    async def collect(base: str, entry: dict) -> dict:
+        async with gate:
+            try:
+                async with httpx.AsyncClient(timeout=2, follow_redirects=False) as client:
+                    response = await client.get(base + "/metrics")
+                gauges = queue_gauges(response.text) if response.status_code == 200 else {}
+                ok = any(gauges.get(k) is not None for k in ("running", "waiting"))
+                return {**entry, "running": gauges.get("running"), "waiting": gauges.get("waiting"),
+                        "available": ok, "observed_at": time.time() if ok else None}
+            except httpx.HTTPError:
+                return {**entry, "running": None, "waiting": None, "available": False, "observed_at": None}
+    rows = await asyncio.gather(*(collect(base, entry) for base, entry in endpoints.items()))
+    return JSONResponse({"backends": rows, "observed_at": time.time()}, headers={"Cache-Control": "no-store"})
+
 async def _monitor_require(request: Request) -> dict | JSONResponse:
     sess = await require(request, role="admin")
     if isinstance(sess, JSONResponse):
@@ -3449,6 +3608,10 @@ api_routes = [
     Route("/console/api/metrics/range", api_metrics_range, methods=["GET"]),
     Route("/console/api/usage", api_usage, methods=["GET"]),
     Route("/console/api/usage/logs", api_usage_logs, methods=["GET"]),
+    Route("/console/api/requests/live", api_live_requests, methods=["GET"]),
+    Route("/console/api/requests/history", api_request_history, methods=["GET"]),
+    Route("/console/api/requests/detail", api_request_detail, methods=["GET"]),
+    Route("/console/api/requests/backends", api_request_backends, methods=["GET"]),
     Route("/console/api/conversation-monitor/policy", api_conversation_monitor_policy, methods=["GET", "PUT"]),
     Route("/console/api/context-optimization/policy", api_context_optimization_policy, methods=["GET", "PUT"]),
     Route("/console/api/conversation-monitor/summary", api_conversation_monitor_summary, methods=["GET"]),
@@ -3489,7 +3652,22 @@ api_routes = [
     Route("/console/api/mcp/usage", api_mcp_usage, methods=["GET"]),
 ]
 
-app = Starlette(routes=api_routes + [
+@asynccontextmanager
+async def console_lifespan(app):
+    async def cleanup_live_metadata():
+        while True:
+            await asyncio.to_thread(prune_expired, LIVE_REQUESTS_DB)
+            await asyncio.sleep(60)
+    cleanup = asyncio.create_task(cleanup_live_metadata())
+    try:
+        yield
+    finally:
+        cleanup.cancel()
+        with suppress(asyncio.CancelledError):
+            await cleanup
+
+
+app = Starlette(lifespan=console_lifespan, routes=api_routes + [
     Route("/console", console_redirect),
     Route("/console/{rest:path}", console_static, methods=["GET", "HEAD"]),
 ])
