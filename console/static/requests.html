@@ -17,6 +17,7 @@
     <div class="pf-tb-item"><label for="rq-search">搜索</label><input id="rq-search" class="pf-input" type="search" placeholder="请求 ID / Key / 模型 / 来源"></div>
     <div style="margin-left:auto;display:flex;gap:12px;align-items:center"><label><input type="checkbox" id="rq-auto" checked> 每 5 秒刷新</label><button id="rq-refresh" class="pf-btn" type="button">刷新</button></div>
   </div>
+  <div id="rq-context" class="rq-note" hidden><strong id="rq-site"></strong> · <a href="requests.html">查看全部节点</a><br>顶部卡片为 Portal 全局统计；下方请求按该节点关联的模型筛选，实际执行节点与后端排队状态未确认；同模型多节点的请求可能同时出现。</div>
   <div id="rq-status" class="rq-status" role="status" aria-live="polite">正在加载活动任务…</div>
   <div class="rq-summary">
     <div class="pf-card">Portal 活动请求<strong id="rq-active">—</strong><span class="rq-note">当前经过网关兼容入口的请求</span></div>
@@ -36,7 +37,7 @@
 </template><script src="assets/portal.js"></script><script>
 (function(){
   'use strict';
-  var rows=[], current=null, liveBusy=false, backendBusy=false, liveError=false;
+  var rows=[], current=null, liveBusy=false, backendBusy=false, liveError=false, site='', backends=null;
   var $=function(id){return document.getElementById(id);};
   function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
   function clock(v){return v?new Date(v*1000).toLocaleTimeString('zh-CN',{hour12:false}):'—';}
@@ -44,9 +45,10 @@
   var labels={receiving_request:'接收请求',awaiting_response:'等待响应 · 排队状态未知',receiving_response:'接收响应'};
   function render(){
     var q=$('rq-search').value.trim().toLowerCase(), phase=$('rq-phase').value;
-    var visible=rows.filter(function(r){return (!phase||r.phase===phase)&&(!q||[r.request_id,r.alias,r.key_ref,r.group,r.model,r.source_ip].join(' ').toLowerCase().indexOf(q)>=0);});
+    var models=site&&backends?backends.filter(function(b){return b.sites.indexOf(site)>=0;}).reduce(function(a,b){return a.concat(b.models);},[]):[];
+    var visible=rows.filter(function(r){return (!site||models.indexOf(r.model)>=0)&&(!phase||r.phase===phase)&&(!q||[r.request_id,r.alias,r.key_ref,r.group,r.model,r.source_ip].join(' ').toLowerCase().indexOf(q)>=0);});
     $('rq-count').textContent='（'+visible.length+' / '+rows.length+'）';
-    $('rq-rows').innerHTML=visible.map(function(r){return '<tr><td class="rq-code">'+esc(r.request_id)+'<div class="rq-note">'+clock(r.started_at)+'</div></td><td>'+esc(r.alias)+'<div class="rq-note">'+esc(r.key_ref)+' · '+esc(r.group)+'</div></td><td class="rq-code">'+esc(r.model||'尚未读取模型')+'<div class="rq-note">'+esc(r.protocol)+(r.streaming?' · 流式':' · 非流式')+'</div></td><td>'+esc(r.source_ip||'未知')+'</td><td class="'+(r.phase==='awaiting_response'?'rq-warn':'rq-live')+'">'+esc(labels[r.phase]||'未知')+'</td><td>'+duration(r.elapsed_seconds)+' / '+duration(r.phase_seconds)+'</td></tr>';}).join('')||'<tr><td colspan="6">'+(!current||!current.available?'实时追踪不可用，无法确认活动任务':liveError?'刷新失败，暂无可显示的已知请求':q||phase?'没有符合筛选条件的活动任务':'当前没有可追踪的活动任务；请同时查看后端统计')+'</td></tr>';
+    $('rq-rows').innerHTML=visible.map(function(r){return '<tr><td class="rq-code">'+esc(r.request_id)+'<div class="rq-note">'+clock(r.started_at)+'</div></td><td>'+esc(r.alias)+'<div class="rq-note">'+esc(r.key_ref)+' · '+esc(r.group)+'</div></td><td class="rq-code">'+esc(r.model||'尚未读取模型')+'<div class="rq-note">'+esc(r.protocol)+(r.streaming?' · 流式':' · 非流式')+'</div></td><td>'+esc(r.source_ip||'未知')+'</td><td class="'+(r.phase==='awaiting_response'?'rq-warn':'rq-live')+'">'+esc(labels[r.phase]||'未知')+'</td><td>'+duration(r.elapsed_seconds)+' / '+duration(r.phase_seconds)+'</td></tr>';}).join('')||'<tr><td colspan="6">'+(site&&!backends?'节点关联信息尚不可用，无法筛选请求':!current||!current.available?'实时追踪不可用，无法确认活动任务':liveError?'刷新失败，暂无可显示的已知请求':q||phase||site?'没有符合筛选条件的活动任务':'当前没有可追踪的活动任务；请同时查看后端统计')+'</td></tr>';
   }
   function markLiveUnavailable(text){
     liveError=true;
@@ -75,15 +77,26 @@
   async function refreshBackends(){
     if(backendBusy)return;backendBusy=true;
     try{
-      var d=await window.pfApi('GET','/requests/backends'), backends=d.backends||[];
+      var d=await window.pfApi('GET','/requests/backends');backends=d.backends||[];
+      var visible=backends.filter(function(b){return !site||b.sites.indexOf(site)>=0;});
       $('rq-backend-status').textContent='更新于 '+clock(d.observed_at);
-      $('rq-backends').innerHTML=backends.map(function(b){return '<tr><td class="rq-code">'+esc(b.sites.join(' / ')||'未匹配站点')+'<div class="rq-note">'+esc(b.endpoint)+'</div></td><td class="rq-code">'+esc(b.models.join(' / '))+'</td><td>'+esc(b.running==null?'—':b.running)+'</td><td class="rq-warn">'+esc(b.waiting==null?'—':b.waiting)+'</td><td>'+clock(b.observed_at)+(b.available?'':' · 采集不可用')+'</td></tr>';}).join('')||'<tr><td colspan="5">没有已注册的可采集后端</td></tr>';
-    }catch(e){$('rq-backend-status').textContent='后端采集失败，请刷新重试';$('rq-backends').innerHTML='<tr><td colspan="5">当前后端排队 / 运行数未知</td></tr>';}
-    finally{backendBusy=false;}
+      $('rq-backends').innerHTML=visible.map(function(b){return '<tr><td class="rq-code">'+esc(b.sites.join(' / ')||'未匹配站点')+'<div class="rq-note">'+esc(b.endpoint)+'</div></td><td class="rq-code">'+esc(b.models.join(' / '))+'</td><td>'+esc(b.running==null?'—':b.running)+'</td><td class="rq-warn">'+esc(b.waiting==null?'—':b.waiting)+'</td><td>'+clock(b.observed_at)+(b.available?'':' · 采集不可用')+'</td></tr>';}).join('')||'<tr><td colspan="5">没有已注册的可采集后端</td></tr>';
+    }catch(e){backends=null;$('rq-backend-status').textContent='后端采集失败，请刷新重试';$('rq-backends').innerHTML='<tr><td colspan="5">当前后端排队 / 运行数未知</td></tr>';}
+    finally{backendBusy=false;render();}
   }
   window.pfReady.then(function(sess){
     if(sess.role!=='admin')return;
-    $('rq-search').addEventListener('input',render);$('rq-phase').addEventListener('change',render);
+    // SPA updates history after executing the page script; read the URL in
+    // this ready callback so both direct links and SPA back/forward use it.
+    var params=new URLSearchParams(location.search);site=params.get('site')||'';
+    var phase=params.get('phase')||(params.get('view')==='waiting'?'awaiting_response':'');
+    if(labels[phase])$('rq-phase').value=phase;
+    $('rq-context').hidden=!site;$('rq-site').textContent='节点关联模型筛选：'+site;
+    $('rq-search').addEventListener('input',render);$('rq-phase').addEventListener('change',function(){
+      var url=new URL(location.href);url.searchParams.delete('view');
+      if(this.value)url.searchParams.set('phase',this.value);else url.searchParams.delete('phase');
+      history.replaceState(history.state,'',url.href);render();
+    });
     $('rq-refresh').onclick=function(){refreshLive();refreshBackends();};
     refreshLive();refreshBackends();
     setInterval(function(){if(!document.hidden&&$('rq-auto').checked){refreshLive();refreshBackends();}},5000);

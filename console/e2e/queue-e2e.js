@@ -75,6 +75,49 @@ async function until(check, label) {
     await page.fill('#rq-search','not-a-model');assert.match(await page.locator('#rq-rows').innerText(),/没有符合/);
     await page.fill('#rq-search','');
     await page.screenshot({path:path.join(output,'pending-dark.png'),fullPage:true});
+    // Node counters are direct, accessible links, including zero; unknown
+    // metrics remain non-interactive. Only overview/history are substituted;
+    // the destination uses the real console APIs and compat request metadata.
+    await page.route('**/console/api/overview',r=>r.fulfill({json:{sites:{rows:[
+      {name:'test-gb10',status:'online',metrics:{requests_running:0,requests_waiting:12}},
+      {name:'empty-node',status:'online',metrics:{requests_running:0,requests_waiting:0}},
+      {name:'unknown-node',status:'online',metrics:{}}
+    ]}}}));
+    await page.route('**/console/api/metrics/range?**',r=>r.fulfill({json:{points:[]}}));
+    await page.getByRole('link',{name:'节点性能',exact:true}).click();
+    await page.waitForSelector('#nm-test-gb10 a');
+    assert.equal(await page.locator('#nm-unknown-node a').count(),0);
+    assert.equal(await page.locator('#nm-empty-node a').count(),2);
+    const active=page.getByRole('link',{name:'查看 test-gb10 的活动概览与关联请求',exact:true});
+    assert.equal(await active.innerText(),'0');
+    await active.focus();await page.keyboard.press('Enter');
+    await page.waitForFunction(()=>document.querySelector('#rq-rows')?.textContent.includes('browser-user'));
+    assert.equal(new URL(page.url()).searchParams.get('site'),'test-gb10');
+    assert.equal(await page.locator('#rq-phase').inputValue(),'');
+    assert.equal(await page.locator('#rq-rows tr').count(),12);
+    assert.match(await page.locator('#rq-context').innerText(),/实际执行节点与后端排队状态未确认/);
+    await page.goBack();await page.waitForSelector('#nm-test-gb10 a');
+    await page.getByRole('link',{name:'查看 test-gb10 的排队概览与等待响应请求',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('#rq-rows')?.textContent.includes('browser-user'));
+    assert.equal(await page.locator('#rq-phase').inputValue(),'awaiting_response');
+    assert.equal(await page.locator('#rq-backends tr').count(),1);
+    assert.match(await page.locator('#rq-backends').innerText(),/test-gb10/);
+    await page.selectOption('#rq-phase','receiving_response');
+    assert.match(await page.locator('#rq-rows').innerText(),/没有符合/);
+    await page.reload();await page.waitForFunction(()=>document.querySelector('#rq-phase')?.value==='receiving_response');
+    await page.selectOption('#rq-phase','awaiting_response');
+    await page.waitForFunction(()=>document.querySelector('#rq-rows')?.textContent.includes('browser-user'));
+    await page.screenshot({path:path.join(output,'node-queue-entry.png'),fullPage:true});
+    await page.getByRole('link',{name:'节点性能',exact:true}).click();
+    await page.waitForSelector('#nm-empty-node a');
+    await page.getByRole('link',{name:'查看 empty-node 的排队概览与等待响应请求',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('#rq-backend-status')?.textContent.includes('更新于'));
+    assert.match(await page.locator('#rq-rows').innerText(),/没有符合/);
+    assert.match(await page.locator('#rq-backends').innerText(),/没有已注册/);
+    await page.getByRole('link',{name:'查看全部节点',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('#rq-active')?.textContent==='12');
+    assert(await page.locator('#rq-context').isHidden());
+    assert.equal(await page.locator('#rq-rows tr').count(),12);
     // Existing data becomes visibly unknown on a failed refresh.
     await page.route('**/console/api/requests/live',r=>r.fulfill({status:503,json:{error:'fixture unavailable'}}));
     await page.click('#rq-refresh');await page.waitForFunction(()=>document.querySelector('#rq-status').textContent.includes('刷新失败'));
@@ -102,7 +145,7 @@ async function until(check, label) {
     assert.equal(await page.locator('#rq-active').innerText(),'—');assert(await page.locator('#rq-stale').isVisible());
     assert.deepEqual(errors,[]);
     fs.writeFileSync(path.join(output,'result.json'),JSON.stringify({result:'PASS',pending:12,receiving:12,completed:12,backendAliasesDeduplicated:true,
-      checked:['admin navigation','search','phase filter','live HTTP lifecycle','refresh failure','missing heartbeat','dark/light','narrow layout'],production:false},null,2));
+      checked:['node counter links: keyboard, activity/queue, site and phase context, reload, zero/unknown, clear scope','admin navigation','search','phase filter','live HTTP lifecycle','refresh failure','missing heartbeat','dark/light','narrow layout'],production:false},null,2));
     console.log('PASS: 12 pending -> 12 receiving -> 0 active; filtering, aliases, error/stale states and narrow browser layout.');
   } catch(e) {
     if(page)await page.screenshot({path:path.join(output,'failure.png'),fullPage:true}).catch(()=>{});
