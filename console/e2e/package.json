@@ -4,6 +4,7 @@
   "private": true,
   "description": "private-llm console Playwright E2E（真实浏览器 + mock LiteLLM，见 README.md）",
   "scripts": {
+    "queue": "node queue-e2e.js",
     "keys": "node keys-e2e.js",
     "keys-memory": "node keys-memory-e2e.js",
     "keys-vault": "node keys-vault-e2e.js",

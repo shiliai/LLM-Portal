@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 WORKDIR /app
 COPY console/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY conversation_monitor.py console/console.py console/usage_db.py ./
+COPY live_requests.py conversation_monitor.py console/console.py console/usage_db.py ./
 COPY console/static/ static/
 EXPOSE 8300
 CMD ["python", "console.py"]

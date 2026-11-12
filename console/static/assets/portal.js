@@ -97,6 +97,8 @@
         icon: icon('<rect x="1.8" y="1.8" width="5.2" height="5.2" rx="1"/><rect x="9" y="1.8" width="5.2" height="5.2" rx="1"/><rect x="1.8" y="9" width="5.2" height="5.2" rx="1"/><rect x="9" y="9" width="5.2" height="5.2" rx="1"/>') },
       { key: 'nodes', title: '节点性能', file: 'nodes.html', admin: true,
         icon: icon('<circle cx="4" cy="4" r="2.2"/><circle cx="12" cy="4" r="2.2"/><circle cx="8" cy="12" r="2.2"/><path d="M5.8 5.3 7 10M10.2 5.3 9 10M6.2 4h3.6"/>') },
+      { key: 'requests', title: '活动任务', file: 'requests.html', admin: true,
+        icon: icon('<path d="M2 4h12M2 8h8M2 12h5"/><circle cx="12" cy="11" r="2.5"/>') },
       { key: 'usage', title: '请求与用量', file: 'usage.html', admin: true,
         icon: icon('<path d="M2.4 13.6V8.4M6.4 13.6V4.4M10.4 13.6V6.8M14 13.6V2.4"/>') }
     ] },

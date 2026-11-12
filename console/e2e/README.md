@@ -1,5 +1,15 @@
 # consoled E2E 测试环境（Playwright + mock LiteLLM）
 
+## 活动任务查看（#190 首阶段）
+
+`PYTHON=/path/to/python npm run queue` 自动启动并清理独立的 loopback console、compat
+和受控 HTTP 后端，无需手工起桩。Python 需安装 console/compat 的运行依赖，Node 依赖用
+`npm ci` 安装。可通过 `PLAYWRIGHT_EXECUTABLE_PATH` 指向已有 Chromium/Chrome。
+
+覆盖 12 条并发等待响应、流式接收及完成移出、搜索/阶段筛选、共享后端别名去重、
+失败/心跳过期状态和深浅主题/窄窗口；截图与结果写到 `output/playwright/queue/`。
+只有上游推理与站点登记为测试夹具，浏览器、console、SQLite、compat 和 HTTP 转发均走实际实现。
+
 真实浏览器跑通控制台前端全链路，不依赖 VPS / 真 LiteLLM。2026-08-15 因
 「用户浏览器启发式缓存旧页面」问题搭建（commit 2bd834f），此后页面改动都应先过这里。
 

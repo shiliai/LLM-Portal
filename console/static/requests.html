@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<script>try{var t=new URLSearchParams(location.search).get('theme')||localStorage.getItem('llm-portal-theme')||'dark';document.documentElement.setAttribute('data-theme',t==='light'?'light':'dark');}catch(e){}</script>
+<title>活动任务 · 远程模型网关</title><link rel="stylesheet" href="assets/portal.css"><link rel="icon" href="assets/brand/favicon.svg" type="image/svg+xml">
+<style>
+.rq-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:16px}
+.rq-summary strong{display:block;font-size:28px;font-family:var(--mono);margin:8px 0}
+.rq-summary .pf-card{padding:16px}.rq-note{color:var(--text2);font-size:12px;line-height:1.7;margin:10px 0}
+.rq-scroll{overflow:auto}.rq-scroll table{min-width:850px}.rq-code{font-family:var(--mono);overflow-wrap:anywhere;max-width:270px}
+.rq-warn{color:var(--amber)}.rq-live{color:var(--accent)}.rq-status{padding:10px 0;font-size:12px}
+.pf-toolbar button,.pf-toolbar input,.pf-toolbar select{scroll-margin-top:72px}
+@media(max-width:800px){.rq-summary{grid-template-columns:1fr}.pf-toolbar{gap:10px}.rq-summary strong{font-size:24px}}
+</style></head>
+<body data-page="requests"><template id="page">
+  <div class="pf-toolbar">
+    <div class="pf-tb-item"><label for="rq-phase">阶段</label><select id="rq-phase" class="pf-select"><option value="">全部活动阶段</option><option value="awaiting_response">等待响应</option><option value="receiving_response">接收响应</option><option value="receiving_request">接收请求</option></select></div>
+    <div class="pf-tb-item"><label for="rq-search">搜索</label><input id="rq-search" class="pf-input" type="search" placeholder="请求 ID / Key / 模型 / 来源"></div>
+    <div style="margin-left:auto;display:flex;gap:12px;align-items:center"><label><input type="checkbox" id="rq-auto" checked> 每 5 秒刷新</label><button id="rq-refresh" class="pf-btn" type="button">刷新</button></div>
+  </div>
+  <div id="rq-status" class="rq-status" role="status" aria-live="polite">正在加载活动任务…</div>
+  <div class="rq-summary">
+    <div class="pf-card">Portal 活动请求<strong id="rq-active">—</strong><span class="rq-note">当前经过网关兼容入口的请求</span></div>
+    <div class="pf-card">等待响应<strong id="rq-waiting">—</strong><span class="rq-note">可能在排队或计算，后端状态未确认</span></div>
+    <div class="pf-card">接收响应<strong id="rq-responding">—</strong><span class="rq-note">正在转发响应，不等同于后端运行数</span></div>
+  </div>
+  <section class="pf-card"><div class="pf-card-head"><div class="pf-card-title">实时请求 <span id="rq-count"></span></div></div>
+    <p class="rq-note">仅展示启用追踪后经过 Portal 的请求；直连模型、内部服务直连和启用前的请求不在此列表。实际部署与后端队列顺序尚未确认。请求完成后自动移出，可到「请求与用量」查历史。</p>
+    <div class="rq-scroll"><table class="pf-table"><thead><tr><th>请求 ID / 开始时间</th><th>Key / 分组</th><th>模型 / 协议</th><th>调用来源 IP</th><th>阶段</th><th>已耗时 / 本阶段</th></tr></thead><tbody id="rq-rows"><tr><td colspan="6">加载中…</td></tr></tbody></table></div>
+    <p id="rq-stale" class="rq-note rq-warn" hidden></p>
+  </section>
+  <section class="pf-card" style="margin-top:16px"><div class="pf-card-head"><div class="pf-card-title">后端排队与运行</div></div>
+    <p class="rq-note">后端统计可能包含直连请求，与上方列表覆盖范围不同；同一后端的多个模型别名合并计数。无法采集的指标显示 —。</p>
+    <div id="rq-backend-status" class="rq-status" role="status">正在采集…</div>
+    <div class="rq-scroll"><table class="pf-table"><thead><tr><th>站点 / 后端</th><th>模型与别名</th><th>运行</th><th>排队</th><th>采集时间</th></tr></thead><tbody id="rq-backends"></tbody></table></div>
+  </section>
+</template><script src="assets/portal.js"></script><script>
+(function(){
+  'use strict';
+  var rows=[], current=null, liveBusy=false, backendBusy=false, liveError=false;
+  var $=function(id){return document.getElementById(id);};
+  function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+  function clock(v){return v?new Date(v*1000).toLocaleTimeString('zh-CN',{hour12:false}):'—';}
+  function duration(v){return v<60?Math.floor(v)+'s':Math.floor(v/60)+'m '+Math.floor(v%60)+'s';}
+  var labels={receiving_request:'接收请求',awaiting_response:'等待响应 · 排队状态未知',receiving_response:'接收响应'};
+  function render(){
+    var q=$('rq-search').value.trim().toLowerCase(), phase=$('rq-phase').value;
+    var visible=rows.filter(function(r){return (!phase||r.phase===phase)&&(!q||[r.request_id,r.alias,r.key_ref,r.group,r.model,r.source_ip].join(' ').toLowerCase().indexOf(q)>=0);});
+    $('rq-count').textContent='（'+visible.length+' / '+rows.length+'）';
+    $('rq-rows').innerHTML=visible.map(function(r){return '<tr><td class="rq-code">'+esc(r.request_id)+'<div class="rq-note">'+clock(r.started_at)+'</div></td><td>'+esc(r.alias)+'<div class="rq-note">'+esc(r.key_ref)+' · '+esc(r.group)+'</div></td><td class="rq-code">'+esc(r.model||'尚未读取模型')+'<div class="rq-note">'+esc(r.protocol)+(r.streaming?' · 流式':' · 非流式')+'</div></td><td>'+esc(r.source_ip||'未知')+'</td><td class="'+(r.phase==='awaiting_response'?'rq-warn':'rq-live')+'">'+esc(labels[r.phase]||'未知')+'</td><td>'+duration(r.elapsed_seconds)+' / '+duration(r.phase_seconds)+'</td></tr>';}).join('')||'<tr><td colspan="6">'+(!current||!current.available?'实时追踪不可用，无法确认活动任务':liveError?'刷新失败，暂无可显示的已知请求':q||phase?'没有符合筛选条件的活动任务':'当前没有可追踪的活动任务；请同时查看后端统计')+'</td></tr>';
+  }
+  function markLiveUnavailable(text){
+    liveError=true;
+    $('rq-status').textContent=text;
+    $('rq-status').className='rq-status rq-warn';
+    ['rq-active','rq-waiting','rq-responding'].forEach(function(id){$(id).textContent='—';});
+    render();
+  }
+  async function refreshLive(){
+    if(liveBusy)return;liveBusy=true;
+    try{
+      var d=await window.pfApi('GET','/requests/live');current=d;rows=d.requests||[];liveError=false;
+      if(d.available){
+        $('rq-status').textContent='更新于 '+clock(d.updated_at)+' · '+(d.stale_workers?'部分追踪已过期':'实时追踪正常')+(d.overflow?' · '+d.overflow+' 条请求超出展示容量':'');
+        $('rq-status').className='rq-status'+(d.stale_workers||d.overflow?' rq-warn':'');
+        $('rq-active').textContent=rows.length;
+        $('rq-waiting').textContent=rows.filter(function(r){return r.phase==='awaiting_response';}).length;
+        $('rq-responding').textContent=rows.filter(function(r){return r.phase==='receiving_response';}).length;
+      }else markLiveUnavailable('实时追踪尚未启用或心跳已过期，当前活动数未知');
+      $('rq-stale').hidden=!(d.stale_requests||[]).length;
+      $('rq-stale').textContent=(d.stale_requests||[]).length+' 条旧记录的追踪心跳已过期，未计入活动数；不代表它们仍在运行或已经完成。';
+      render();
+    }catch(e){markLiveUnavailable('刷新失败，所列请求为上次快照；当前数量未知。请刷新重试。');}
+    finally{liveBusy=false;}
+  }
+  async function refreshBackends(){
+    if(backendBusy)return;backendBusy=true;
+    try{
+      var d=await window.pfApi('GET','/requests/backends'), backends=d.backends||[];
+      $('rq-backend-status').textContent='更新于 '+clock(d.observed_at);
+      $('rq-backends').innerHTML=backends.map(function(b){return '<tr><td class="rq-code">'+esc(b.sites.join(' / ')||'未匹配站点')+'<div class="rq-note">'+esc(b.endpoint)+'</div></td><td class="rq-code">'+esc(b.models.join(' / '))+'</td><td>'+esc(b.running==null?'—':b.running)+'</td><td class="rq-warn">'+esc(b.waiting==null?'—':b.waiting)+'</td><td>'+clock(b.observed_at)+(b.available?'':' · 采集不可用')+'</td></tr>';}).join('')||'<tr><td colspan="5">没有已注册的可采集后端</td></tr>';
+    }catch(e){$('rq-backend-status').textContent='后端采集失败，请刷新重试';$('rq-backends').innerHTML='<tr><td colspan="5">当前后端排队 / 运行数未知</td></tr>';}
+    finally{backendBusy=false;}
+  }
+  window.pfReady.then(function(sess){
+    if(sess.role!=='admin')return;
+    $('rq-search').addEventListener('input',render);$('rq-phase').addEventListener('change',render);
+    $('rq-refresh').onclick=function(){refreshLive();refreshBackends();};
+    refreshLive();refreshBackends();
+    setInterval(function(){if(!document.hidden&&$('rq-auto').checked){refreshLive();refreshBackends();}},5000);
+  });
+})();
+</script></body></html>

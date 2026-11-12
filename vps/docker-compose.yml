@@ -43,7 +43,7 @@ services:
       - postgres
 
   # 协议兼容层（issue #9 / US-13 us13-v1）：nginx 三条 API 路径经此转 LiteLLM。
-  # 兼容层不持认证状态；conversation-monitor 仅落共享受限 SQLite 事件库
+  # 兼容层不持认证状态；监控事件与活动请求元数据使用共享受限 SQLite 卷
   compat:
     build:
       context: ..
@@ -55,6 +55,7 @@ services:
     environment:
       LITELLM_BASE: http://litellm:4000
       CONVERSATION_MONITOR_DB: /var/lib/private-llm/conversation-monitor/monitor.db
+      LIVE_REQUESTS_DB: /var/lib/private-llm/conversation-monitor/live-requests.db
       CONVERSATION_MONITOR_SSE_TOKEN: ${CONVERSATION_MONITOR_SSE_TOKEN:-}
       CONTEXT_OPTIMIZATION_MODE: ${CONTEXT_OPTIMIZATION_MODE:-off}
       CONTEXT_OPTIMIZATION_KEYS: ${CONTEXT_OPTIMIZATION_KEYS:-}
@@ -176,6 +177,7 @@ services:
       # Dedicated SELECT-only account; no owner DATABASE_URL is exposed to Console.
       USAGE_DATABASE_URL: postgresql://console_usage:${CONSOLE_USAGE_PASSWORD}@private-llm-postgres:5432/litellm
       CONVERSATION_MONITOR_DB: /var/lib/private-llm/conversation-monitor/monitor.db
+      LIVE_REQUESTS_DB: /var/lib/private-llm/conversation-monitor/live-requests.db
       CONVERSATION_MONITOR_SSE_TOKEN: ${CONVERSATION_MONITOR_SSE_TOKEN:-}
       CONTEXT_OPTIMIZATION_MODE: ${CONTEXT_OPTIMIZATION_MODE:-off}
       CONTEXT_OPTIMIZATION_KEYS: ${CONTEXT_OPTIMIZATION_KEYS:-}
