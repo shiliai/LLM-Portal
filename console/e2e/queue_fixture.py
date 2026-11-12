@@ -48,7 +48,8 @@ async def data(request: Request):
                                        "key_alias": "browser-user", "metadata": {"group": "test"}}]})
     if path == "/model/info":
         return JSONResponse({"data": [{"model_name": name, "litellm_params": {"api_base": f"http://127.0.0.1:{PORT}/v1"}}
-                                      for name in ["test-deepseek", "test-alias"]]})
+                                      for name in ["test-deepseek", "test-alias", "GLM-5.3-Flash-EXL3", "deepseek-v4-flash",
+                                                   "deepseek-v4-flash-0731", "DeepSeek-V4.1-Flash-1017"]]})
     if path == "/onboard/admin/list":
         return JSONResponse({"sites": [{"name": "test-gb10", "wg_ip": "127.0.0.1", "groups": [], "models": [],
                                        "status": "active", "pubkey": "fixture"}]})

@@ -56,11 +56,11 @@ PYTHON=/path/to/python PLAYWRIGHT_EXECUTABLE_PATH=/path/to/chromium npm run queu
 使用 Python 3.13 / Starlette 1.10.0 / httpx 0.28.1 / pytest 9.2.0，浏览器为本机 Chrome。
 浏览器窄窗口复验发现 sticky 顶栏遮挡自动滚动到的刷新按钮，已为该页控件设置滚动安全距离。
 最终 Chromium 本地 HTTP 链路复验 PASS，包含窄窗口刷新与全部上述交互；完整集成测试与发版由主 agent 在任务 PR 合并后负责，
-既有 CI/分支保护不绕过。nasubuntu 尚未安装此版本，现场旧的 14 条等待请求没有被修改或接管。
+既有 CI/分支保护不绕过。上线前的旧等待请求无法恢复逐条归属；现场部署身份和验收另记于 PR 部署回执。
 
 本次查看阶段 playback：US-Q1 以上 Given/When/Then 由针对性 API/lifecycle 检查与真实浏览器流覆盖，
 Complete，drift 0，ALIGNED（限代码评审交付及受控本地链路）。具体后端逐请求排队归属依然未知；
-本阶段不承诺引擎未提供的排队顺序、实际 deployment 或 ETA，不包含 US-Q2 调度。nasubuntu 目标环境未验收。
+本阶段不承诺引擎未提供的排队顺序、实际 deployment 或 ETA，不包含 US-Q2 调度。nasubuntu 验收见后续部署回执。
 
 ## nasubuntu 候选部署授权与依赖门禁
 
@@ -73,3 +73,9 @@ Complete，drift 0，ALIGNED（限代码评审交付及受控本地链路）。�
 现场只更新本功能所需 console/compat，保留部署本地 env/Compose override/模型路由与原 MCP 服务运行状态；
 不把源码依赖版本同步当作其他服务已升级的证据。生产替换前保存镜像、源码与入口配置回退点，
 验证候选源码/镜像身份；部署后检查管理员真实查看流程及匿名/普通 Key 拒绝路径。
+
+2026-11-12 23:19（Asia/Singapore）已在 nasubuntu 候选 d3ce32d 通过真实 HTTPS 浏览器验收：
+管理员活动任务页与构建版本一致，匿名 401 / 普通 Key 403；一条 64-token 的真实 qwen 流式请求
+`live_8fbee3199f5c4d778b471eae1799d957` 出现在列表中并在结束后移除，临时 Key 已删除。
+实际数据暴露了长模型别名列表挤压计数列的布局问题；已修正单元格换行并扩充浏览器长别名回归。
+最终候选身份及复核结果随 PR 部署回执保留；以上真实运行证据没有使用模拟后端。

@@ -69,6 +69,8 @@ async function until(check, label) {
     assert.match(await page.locator('#rq-rows').innerText(),/browser-user/);
     await page.waitForFunction(()=>document.querySelector('#rq-backends').textContent.includes('12'));
     assert.equal(await page.locator('#rq-backends tr').count(),1,'same backend aliases deduplicated');
+    assert(await page.locator('#rq-backends tr td').nth(1).evaluate(el=>el.scrollWidth<=el.clientWidth),
+      'long backend model aliases must wrap inside their cell without overlapping counters');
     await page.fill('#rq-search','test-alias');assert.equal(await page.locator('#rq-rows tr').count(),1);
     await page.fill('#rq-search','not-a-model');assert.match(await page.locator('#rq-rows').innerText(),/没有符合/);
     await page.fill('#rq-search','');
