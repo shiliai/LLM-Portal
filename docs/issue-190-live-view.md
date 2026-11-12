@@ -61,3 +61,15 @@ PYTHON=/path/to/python PLAYWRIGHT_EXECUTABLE_PATH=/path/to/chromium npm run queu
 本次查看阶段 playback：US-Q1 以上 Given/When/Then 由针对性 API/lifecycle 检查与真实浏览器流覆盖，
 Complete，drift 0，ALIGNED（限代码评审交付及受控本地链路）。具体后端逐请求排队归属依然未知；
 本阶段不承诺引擎未提供的排队顺序、实际 deployment 或 ETA，不包含 US-Q2 调度。nasubuntu 目标环境未验收。
+
+## nasubuntu 候选部署授权与依赖门禁
+
+用户后续授权「部署到 nasubuntu，我评审没有问题就可以合并了」：允许部署待合并候选供实地评审，
+合并继续等待用户评审通过。本授权更新交付环境，不扩大到调度功能或合并授权。
+
+为解除依赖审计门禁，将 console 与 mcp-hub 的 FastMCP 锁定统一升级至同一主版本的 3.4.10，
+开发依赖下限同步。此版本修复 [GHSA-7xgj-8392-5q4r](https://github.com/advisories/GHSA-7xgj-8392-5q4r)。
+升级后已执行默认完整 pytest（254 项）与本地真实浏览器活动任务链路，均通过；仍须等待新提交 CI。
+现场只更新本功能所需 console/compat，保留部署本地 env/Compose override/模型路由与原 MCP 服务运行状态；
+不把源码依赖版本同步当作其他服务已升级的证据。生产替换前保存镜像、源码与入口配置回退点，
+验证候选源码/镜像身份；部署后检查管理员真实查看流程及匿名/普通 Key 拒绝路径。
