@@ -481,3 +481,24 @@ def test_disconnect_after_final_body_is_normal_response_teardown(tmp_path):
         await tracker.flush()
         assert read_history(tracker.db_path)['records'][0]['outcome']=='completed'
     asyncio.run(run())
+
+
+def test_disconnect_cancels_pending_final_send_is_not_completed(tmp_path):
+    from starlette.responses import StreamingResponse
+    from live_requests import read_history
+    async def run():
+        tracker=LiveRequests(tmp_path/'live.db')
+        final_sending=asyncio.Event()
+        async def chunks(): yield b'data: [DONE]\n\n'
+        async def app(s, receive, send):
+            await StreamingResponse(chunks(),media_type='text/event-stream')(s,receive,send)
+        async def receive():
+            await final_sending.wait();return {'type':'http.disconnect'}
+        async def send(message):
+            if message['type']=='http.response.body' and not message.get('more_body',False):
+                final_sending.set();await asyncio.Event().wait()
+        s=scope();s['asgi']['spec_version']='2.3'
+        await LiveRequestsMiddleware(app,tracker)(s,receive,send)
+        await tracker.flush()
+        assert read_history(tracker.db_path)['records'][0]['outcome']=='disconnected'
+    asyncio.run(run())

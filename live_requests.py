@@ -376,20 +376,24 @@ class LiveRequestsMiddleware:
         observer = ResponseMetadata(self.tracker, rid)
         outcome = "completed"
         client_disconnected = False
+        final_send_returned = False
 
         async def observed_receive():
             nonlocal client_disconnected
             message = await receive()
             # ASGI servers may report http.disconnect after a successful
             # final response body. That is normal response teardown.
-            client_disconnected |= message["type"] == "http.disconnect" and not observer.body_complete
+            client_disconnected |= message["type"] == "http.disconnect" and not final_send_returned
             return message
 
         async def observed_send(message):
+            nonlocal final_send_returned
             observer.observe(message)
             if message["type"] == "http.response.body" and message.get("body"):
                 await self.tracker.responding(rid)
             await send(message)
+            if message["type"] == "http.response.body" and not message.get("more_body", False):
+                final_send_returned = True
 
         try:
             await self.app(scope, observed_receive, observed_send)

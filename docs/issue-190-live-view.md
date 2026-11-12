@@ -119,7 +119,7 @@ US-Q2 调度继续延后；沿用 nasubuntu 候选部署授权，合并等待用
 SSE只从有界增量缓冲读取白名单 usage 数字，支持跨chunk及Anthropic消息事件；不修改透传字节，不额外调用tokenize。
 正文、完整请求头、Authorization、Cookie和Key明文不进入历史。User-Agent限制512字符并按文本转义展示。
 
-针对性验证命令沿用上文。已通过56项API/lifecycle/compat/原文采集契约检查；本地Chromium真实HTTP链路验证12等待
+针对性验证命令沿用上文。已通过57项API/lifecycle/compat/原文采集契约检查；本地Chromium真实HTTP链路验证12等待
 →12接收→0活动且12条历史保留，详情从实时保持到已完成、输入1234/输出8/cache256（受控后端usage）、
 User-Agent搜索与XSS文本转义、结果筛选、页面重载保留、节点入口、深浅与窄窗口。历史重启、失联/恢复、
 游标分页、过期、权限及敏感内容不落库由针对性后端检查证明。现场结果和当前提交CI另记PR部署回执。
@@ -132,3 +132,5 @@ User-Agent搜索与XSS文本转义、结果筛选、页面重载保留、节点�
 丢弃计数明确为最近仍有上报的追踪进程生命周期累计，API给出scope与起始时间，UI标注包含保留期外，避免把长期累计误称最近30天丢失；跨31天的语义回归通过。
 
 真实HTTP浏览器复验识别并修正ASGI2.3正常响应完成后的http.disconnect teardown被误判断连；仅提前断连信号作为断连依据，最终body发送异常仍由异常路径归类。对应正常teardown和真实提前断连回归均通过。
+
+最终发送阻塞与断连竞争使用独立final_send_returned判据，只有底层最终send正常返回后才当作完成；补充真实StreamingResponse终包发送阻塞被断连取消的回归。独立增量复核已清除全部findings，最终57项针对性检查和本地Chromium真实HTTP流程PASS。
