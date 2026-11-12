@@ -95,7 +95,7 @@ except ModuleNotFoundError:  # local `python console.py` from the console direct
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from conversation_monitor import MONITOR
 
-from live_requests import read_snapshot, prune_expired
+from live_requests import read_snapshot, read_history, prune_expired
 
 LIVE_REQUESTS_DB = Path(os.environ.get("LIVE_REQUESTS_DB") or MONITOR.db_path.with_name("live-requests.db"))
 LITELLM_BASE = os.environ.get("LITELLM_BASE", "http://127.0.0.1:4000")
@@ -1954,15 +1954,69 @@ async def api_live_requests(request: Request) -> Response:
     if isinstance(sess, JSONResponse):
         return sess
     snapshot = await asyncio.to_thread(read_snapshot, LIVE_REQUESTS_DB)
-    keys = {row["key_hash"]: row for row in (key_row(k) for k in await key_list_full())}
-    for row in snapshot["requests"] + snapshot["stale_requests"]:
-        kh = row.pop("key_hash")
+    await _request_key_metadata(snapshot["requests"] + snapshot["stale_requests"])
+    snapshot["coverage"] = "compat_only"
+    return JSONResponse(snapshot, headers={"Cache-Control": "no-store"})
+
+
+async def _request_key_metadata(rows: list[dict], keys: dict | None = None) -> None:
+    if keys is None:
+        keys = {row["key_hash"]: row for row in (key_row(k) for k in await key_list_full())}
+    for row in rows:
+        kh = row.pop("key_hash", "")
         key = keys.get(kh, {})
         row["key_ref"] = "#" + kh[:12] if kh else "未提供 Key"
         row["alias"] = key.get("alias", "未识别 / 鉴权未确认")
         row["group"] = key.get("group", "未知")
-    snapshot["coverage"] = "compat_only"
-    return JSONResponse(snapshot, headers={"Cache-Control": "no-store"})
+
+
+async def api_request_history(request: Request) -> Response:
+    sess = await require(request, role="admin")
+    if isinstance(sess, JSONResponse):
+        return sess
+    params = request.query_params
+    search, cursor, outcome = params.get("q", "").strip(), params.get("cursor", ""), params.get("outcome", "")
+    models = params.getlist("model") if "model" in params else None
+    try:
+        limit = int(params.get("limit", "50"))
+        if not 1 <= limit <= 200 or len(search) > 200 or len(cursor) > 256:
+            raise ValueError()
+        if models is not None and (len(models) > 200 or any(len(m) > 200 for m in models)):
+            raise ValueError()
+        if outcome not in {"", "completed", "failed", "cancelled", "disconnected", "interrupted", "unknown"}:
+            raise ValueError()
+        keys = {row["key_hash"]: row for row in (key_row(k) for k in await key_list_full())}
+        hashes = [kh for kh, key in keys.items() if search.lower() in
+                  (str(key.get("alias", "")) + " " + str(key.get("group", "")) + " #" + kh[:12]).lower()] if search else []
+        data = await asyncio.to_thread(read_history, LIVE_REQUESTS_DB, limit=limit, cursor=cursor,
+                                       search=search, outcome=outcome, models=models, key_hashes=hashes)
+    except ValueError:
+        return jerr("历史筛选参数无效", 400)
+    await _request_key_metadata(data["records"], keys)
+    data["coverage"] = "compat_only"
+    return JSONResponse(data, headers={"Cache-Control": "no-store"})
+
+
+async def api_request_detail(request: Request) -> Response:
+    sess = await require(request, role="admin")
+    if isinstance(sess, JSONResponse):
+        return sess
+    rid = request.query_params.get("request_id", "")
+    if not re.fullmatch(r"live_[0-9a-f]{32}", rid):
+        return jerr("请求 ID 无效", 400)
+    snapshot = await asyncio.to_thread(read_snapshot, LIVE_REQUESTS_DB)
+    row = next((r for r in snapshot["requests"] if r["request_id"] == rid), None)
+    if row is None:
+        history = await asyncio.to_thread(read_history, LIVE_REQUESTS_DB, request_id=rid, limit=1)
+        row = next(iter(history["records"]), None)
+    if row is None:
+        row = next((r for r in snapshot["stale_requests"] if r["request_id"] == rid), None)
+        if row is not None:
+            row["outcome"] = "unknown"
+    if row is None:
+        return jerr("尚未找到该请求，或记录已超出保留范围", 404)
+    await _request_key_metadata([row])
+    return JSONResponse({"record": row}, headers={"Cache-Control": "no-store"})
 
 
 _QUEUE_METRICS = {
@@ -3555,6 +3609,8 @@ api_routes = [
     Route("/console/api/usage", api_usage, methods=["GET"]),
     Route("/console/api/usage/logs", api_usage_logs, methods=["GET"]),
     Route("/console/api/requests/live", api_live_requests, methods=["GET"]),
+    Route("/console/api/requests/history", api_request_history, methods=["GET"]),
+    Route("/console/api/requests/detail", api_request_detail, methods=["GET"]),
     Route("/console/api/requests/backends", api_request_backends, methods=["GET"]),
     Route("/console/api/conversation-monitor/policy", api_conversation_monitor_policy, methods=["GET", "PUT"]),
     Route("/console/api/context-optimization/policy", api_context_optimization_policy, methods=["GET", "PUT"]),

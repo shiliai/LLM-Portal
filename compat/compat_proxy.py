@@ -432,7 +432,8 @@ async def compat_proxy(request: Request) -> Response:
         parsed = None
     await LIVE_REQUESTS.describe(request.scope.get("live_request_id"),
                                  model=parsed.get("model") if isinstance(parsed, dict) else "",
-                                 streaming=isinstance(parsed, dict) and parsed.get("stream") is True)
+                                 streaming=isinstance(parsed, dict) and parsed.get("stream") is True,
+                                 body=parsed if isinstance(parsed, dict) else None, request_bytes=len(raw))
     if isinstance(parsed, dict):
         try:
             tc_info = rewrite_forced_tool_choice(parsed, proto)
@@ -471,6 +472,9 @@ async def compat_proxy(request: Request) -> Response:
                    last_user_degraded=image_evict.get("last_user_degraded"),
                    bytes_removed=image_evict.get("bytes_removed", 0))
 
+    live_row = LIVE_REQUESTS.rows.get(request.scope.get("live_request_id"))
+    if live_row is not None:
+        live_row["forwarded_request_bytes"] = len(out_body)
     fwd = forwarded_headers(request.headers, request_id)
     upstream_request = client.build_request(request.method, url, headers=fwd, content=out_body)
     try:
@@ -493,6 +497,7 @@ async def compat_proxy(request: Request) -> Response:
             value = json.loads(raw_response)
         except ValueError:
             value = None
+        LIVE_REQUESTS.usage(request.scope.get("live_request_id"), value)
         if isinstance(value, dict) and normalize_dsml_response(value):
             metric("compat.dsml_args_normalized", endpoint=path, side="response", calls=1)
             raw_response = json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()

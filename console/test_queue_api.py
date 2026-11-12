@@ -123,3 +123,51 @@ def test_site_registry_failure_is_not_no_registered_backends(tmp_path, monkeypat
         response = client.get("/console/api/requests/backends")
         assert response.status_code == 503
         assert "/metrics" not in calls
+
+
+def test_history_and_detail_admin_metadata_persistence_filters_and_validation(tmp_path, monkeypatch):
+    install_litellm_stub(monkeypatch, handler)
+    mod = load_console(tmp_path)
+    tracker = LiveRequests(tmp_path / 'live.db')
+    ua = 'test-agent/1.0 <script>alert(1)</script>'
+
+    async def prepare():
+        for i in range(3):
+            rid = await tracker.begin({'headers': [(b'authorization', ('Bearer '+KEY).encode()),
+                                                   (b'user-agent', ua.encode()), (b'cookie', b'session-private-secret')],
+                                       'path': '/v1/chat/completions', 'client': ('192.0.2.9', 1)})
+            await tracker.describe(rid, model='history-model', streaming=False,
+                                   body={'messages': [{'content':'private-request-body'}], 'max_tokens':32}, request_bytes=123)
+            if i < 2: await tracker.finish(rid, outcome='completed' if i == 0 else 'failed')
+        await tracker.flush()
+        return rid
+    live_id = asyncio.run(prepare())
+    routes = ['/console/api/requests/history', '/console/api/requests/detail?request_id='+live_id]
+    with TestClient(mod.app) as client:
+        for route in routes: assert client.get(route).status_code == 401
+        client.post('/console/api/login',json={'key':KEY},headers=XRW)
+        for route in routes: assert client.get(route).status_code == 403
+        client.post('/console/api/logout',headers=XRW)
+        client.post('/console/api/login',json={'key':MASTER},headers=XRW)
+        response=client.get(routes[0]);data=response.json()
+        assert response.headers['cache-control'] == 'no-store' and len(data['records']) == 2
+        assert data['retention_days'] == 30
+        assert all(r['user_agent'] == ua and r['alias'] == 'unit-caller' for r in data['records'])
+        for secret in [KEY,MASTER,'key_hash','session-private-secret','private-request-body']:
+            assert secret not in response.text
+        for q in ['unit-caller','dev','test-agent','history-model','#'+hashlib.sha256(KEY.encode()).hexdigest()[:12]]:
+            assert len(client.get(routes[0],params={'q':q}).json()['records']) == 2
+        assert len(client.get(routes[0],params={'model':'different'}).json()['records']) == 0
+        assert len(client.get(routes[0],params={'outcome':'failed'}).json()['records']) == 1
+        page=client.get(routes[0],params={'limit':1}).json()
+        assert page['has_more']
+        second=client.get(routes[0],params={'limit':1,'cursor':page['next_cursor']}).json()
+        assert len(second['records'])==1 and second['records'][0]['request_id']!=page['records'][0]['request_id']
+        detail=client.get(routes[1]);assert detail.status_code == 200
+        assert detail.json()['record']['user_agent'] == ua and detail.headers['cache-control'] == 'no-store'
+        completed_id=data['records'][0]['request_id']
+        assert client.get('/console/api/requests/detail',params={'request_id':completed_id}).json()['record']['outcome'] in {'completed','failed'}
+        for params in [{'cursor':'malformed'}, {'limit':0},{'limit':9999},{'outcome':'fake'}, {'q':'x'*201}]:
+            assert client.get(routes[0],params=params).status_code == 400
+        assert client.get('/console/api/requests/detail?request_id=bad').status_code == 400
+        assert client.get('/console/api/requests/detail?request_id=live_'+'0'*32).status_code == 404

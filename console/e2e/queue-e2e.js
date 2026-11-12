@@ -58,8 +58,8 @@ async function until(check, label) {
     await page.getByRole('link',{name:'活动任务',exact:true}).click();
     await page.waitForSelector('#rq-rows');
     for(let i=0;i<12;i++)requests.push(fetch('http://127.0.0.1:'+compatPort+'/v1/chat/completions',{
-      method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer sk-queue-browser'},
-      body:JSON.stringify({model:i===11?'test-alias':'test-deepseek',stream:true,messages:[{role:'user',content:'fixture'}]})
+      method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer sk-queue-browser','User-Agent':'queue-browser/1.0 <img src=x onerror=window.__uaXss=1>'},
+      body:JSON.stringify({model:i===11?'test-alias':'test-deepseek',stream:true,max_tokens:64,messages:[{role:'user',content:'fixture'}]})
     }).then(async r=>{assert.equal(r.status,200);return r.text();}));
     await until(async()=>(await (await fetch(upstream+'/test/state')).json()).pending===12,'12 pending');
     await page.click('#rq-refresh');
@@ -74,6 +74,15 @@ async function until(check, label) {
     await page.fill('#rq-search','test-alias');assert.equal(await page.locator('#rq-rows tr').count(),1);
     await page.fill('#rq-search','not-a-model');assert.match(await page.locator('#rq-rows').innerText(),/没有符合/);
     await page.fill('#rq-search','');
+    await page.fill('#rq-search','queue-browser/1.0');assert.equal(await page.locator('#rq-rows tr').count(),12);
+    await page.fill('#rq-search','');
+    await page.locator('#rq-rows button[data-request-id]').first().click();
+    const detailId=await page.locator('#rq-detail-fields dd').first().innerText();
+    await page.waitForFunction(()=>document.querySelector('#rq-detail-fields')?.textContent.includes('queue-browser/1.0'));
+    assert.match(await page.locator('#rq-detail-fields').innerText(),/待后端返回/);
+    assert.match(await page.locator('#rq-detail-fields').innerText(),/64/);
+    assert.equal(await page.evaluate(()=>window.__uaXss),undefined,'User-Agent must render as text');
+    await page.click('#rq-detail-close');
     await page.screenshot({path:path.join(output,'pending-dark.png'),fullPage:true});
     // Node counters are direct, accessible links, including zero; unknown
     // metrics remain non-interactive. Only overview/history are substituted;
@@ -130,22 +139,52 @@ async function until(check, label) {
     await page.waitForFunction(()=>document.querySelector('#rq-responding').textContent==='12');
     await page.selectOption('#rq-phase','receiving_response');
     assert.equal(await page.locator('#rq-rows tr').count(),12);
+    await page.locator('#rq-rows button[data-request-id]').first().click();
+    await page.waitForFunction(()=>document.querySelector('#rq-detail-fields')?.textContent.includes('1,234'));
+    assert.match(await page.locator('#rq-detail-fields').innerText(),/256/);
+    await page.click('#rq-detail-close');
     await page.setViewportSize({width:780,height:1000});
     await page.evaluate(()=>document.documentElement.setAttribute('data-theme','light'));
     await page.screenshot({path:path.join(output,'receiving-light-narrow.png'),fullPage:true});
     assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'page must not overflow viewport');
+    await page.locator('#rq-rows button[data-request-id]').first().click();
     await fetch(upstream+'/test/end',{method:'POST'});
     const results=await Promise.all(requests);assert(results.every(r=>r.includes('[DONE]')));
+    await page.waitForFunction(()=>document.querySelector('#rq-detail-status')?.textContent.includes('已保存到历史'));
+    assert(await page.locator('#rq-detail').isVisible(),'details remain open when a request moves to history');
+    assert.match(await page.locator('#rq-detail-fields').innerText(),/已完成/);
+    assert.match(await page.locator('#rq-detail-fields').innerText(),/1,234/);
+    assert.match(await page.locator('#rq-detail-fields').innerText(),/8/);
+    await page.screenshot({path:path.join(output,'completed-detail-light-narrow.png'),fullPage:true});
+    await page.click('#rq-detail-close');
     await page.selectOption('#rq-phase','');await page.click('#rq-refresh');
     await page.waitForFunction(()=>document.querySelector('#rq-active').textContent==='0');
     assert.match(await page.locator('#rq-rows').innerText(),/当前没有可追踪/);
+    await page.waitForFunction(()=>document.querySelectorAll('#rq-history tr button[data-request-id]').length===12);
+    assert.match(await page.locator('#rq-history').innerText(),/已完成/);
+    assert.match(await page.locator('#rq-history').innerText(),/1,234/);
+    assert.match(await page.locator('#rq-history').innerText(),new RegExp(detailId));
+    await page.fill('#rq-search','queue-browser');
+    await page.waitForFunction(()=>document.querySelectorAll('#rq-history tr button[data-request-id]').length===12);
+    await page.selectOption('#rq-outcome','failed');
+    await page.waitForFunction(()=>document.querySelector('#rq-history')?.textContent.includes('没有符合'));
+    await page.selectOption('#rq-outcome','');await page.fill('#rq-search','');
+    await page.waitForFunction(()=>document.querySelectorAll('#rq-history tr button[data-request-id]').length===12);
+    await page.reload();
+    await page.waitForFunction(()=>document.querySelectorAll('#rq-history tr button[data-request-id]').length===12);
+    await page.locator('#rq-history button[data-request-id]').first().click();
+    await page.waitForFunction(()=>document.querySelector('#rq-detail-status')?.textContent.includes('已保存到历史'));
+    assert.match(await page.locator('#rq-detail-fields').innerText(),/queue-browser/);
+    assert.equal(await page.evaluate(()=>window.__uaXss),undefined);
+    await page.click('#rq-detail-close');
+    await page.screenshot({path:path.join(output,'history-light-narrow.png'),fullPage:true});
     // Missing heartbeat must never look like a healthy empty queue.
     await page.route('**/console/api/requests/live',r=>r.fulfill({json:{available:false,requests:[],stale_requests:[{}],stale_workers:1}}));
     await page.click('#rq-refresh');await page.waitForFunction(()=>document.querySelector('#rq-status').textContent.includes('心跳已过期'));
     assert.equal(await page.locator('#rq-active').innerText(),'—');assert(await page.locator('#rq-stale').isVisible());
     assert.deepEqual(errors,[]);
     fs.writeFileSync(path.join(output,'result.json'),JSON.stringify({result:'PASS',pending:12,receiving:12,completed:12,backendAliasesDeduplicated:true,
-      checked:['node counter links: keyboard, activity/queue, site and phase context, reload, zero/unknown, clear scope','admin navigation','search','phase filter','live HTTP lifecycle','refresh failure','missing heartbeat','dark/light','narrow layout'],production:false},null,2));
+      checked:['durable history after completion/reload, live/history details, backend token usage, User-Agent search and XSS, result filters','node counter links: keyboard, activity/queue, site and phase context, reload, zero/unknown, clear scope','admin navigation','search','phase filter','live HTTP lifecycle','refresh failure','missing heartbeat','dark/light','narrow layout'],production:false},null,2));
     console.log('PASS: 12 pending -> 12 receiving -> 0 active; filtering, aliases, error/stale states and narrow browser layout.');
   } catch(e) {
     if(page)await page.screenshot({path:path.join(output,'failure.png'),fullPage:true}).catch(()=>{});

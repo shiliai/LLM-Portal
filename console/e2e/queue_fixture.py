@@ -24,9 +24,9 @@ async def inference(request: Request):
     async def chunks():
         global running
         try:
-            yield b'data: {"choices":[{"delta":{"content":"fixture"}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{"content":"fixture"}}],"usage":{"prompt_tokens":1234,"completion_tokens":1,"prompt_tokens_details":{"cached_tokens":256}}}\n\n'
             await end.wait()
-            yield b'data: [DONE]\n\n'
+            yield b'data: {"choices":[],"usage":{"prompt_tokens":1234,"completion_tokens":8,"prompt_tokens_details":{"cached_tokens":256}}}\n\ndata: [DONE]\n\n'
         finally:
             running -= 1
     return StreamingResponse(chunks(), media_type="text/event-stream")
