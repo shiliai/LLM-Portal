@@ -2787,8 +2787,10 @@ async def api_keys_update(request: Request) -> Response:
             return jerr("bad group name", 400)
         payload["metadata"] = {"group": group}
     if "models" in body:
-        models = body.get("models") or []
-        if not isinstance(models, list) or any(not NAME_RE.fullmatch(str(m) or "") for m in models):
+        models = body["models"]
+        if not isinstance(models, list) or any(
+            not isinstance(m, str) or not MODEL_RE.fullmatch(m) for m in models
+        ):
             return jerr("bad models list", 400)
         payload["models"] = models
     if len(payload) == 1:
