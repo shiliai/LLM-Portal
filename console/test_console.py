@@ -944,6 +944,43 @@ def test_group_rename_rolls_back_keys_before_mcp_on_partial_failure(mcp_console,
     assert updates[-1] == {"key": "a" * 64, "metadata": {"group": "home"}}
 
 
+@pytest.mark.parametrize("models", [
+    ["DeepSeek-V4.1-Flash-1017"],
+    ["qwen3.8-27b", "a" * 64],
+    ["legacy-model"],
+    [],
+])
+def test_key_update_accepts_model_names_and_clearing(console, monkeypatch, models):
+    updates = []
+
+    def handler(method, path, bearer, body):
+        if path == "/key/update":
+            updates.append(body)
+            return 200, {"ok": True}
+        return _handler(method, path, bearer, body)
+
+    install_litellm_stub(monkeypatch, handler)
+    client, hdr = _admin_client(console)
+    token = hashlib.sha256(USER_KEY.encode()).hexdigest()
+    resp = client.post("/console/api/keys/update", headers=hdr,
+                       json={"key": token, "alias": "mao", "models": models})
+    assert resp.status_code == 200, resp.text
+    assert updates == [{"key": token, "key_alias": "mao", "models": models}]
+
+
+@pytest.mark.parametrize("models", [
+    "DeepSeek-V4.1-Flash-1017", {}, False, 0, "", None,
+    [123], [None], [{}], [""], ["a" * 65], ["model name"], ["model\n"],
+])
+def test_key_update_rejects_invalid_models_without_forwarding(console, monkeypatch, models):
+    install_litellm_stub(monkeypatch, _handler)
+    client, hdr = _admin_client(console)
+    resp = client.post("/console/api/keys/update", headers=hdr,
+                       json={"key": "a" * 64, "models": models})
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "bad models list"
+
+
 def test_historic_key_import_requires_matching_live_key(console, monkeypatch):
     install_litellm_stub(monkeypatch, _handler)
     token = hashlib.sha256(USER_KEY.encode()).hexdigest()

@@ -110,10 +110,19 @@ const AUTOFILL_EMAIL = ['autofill', 'example.com'].join('@');
   await page.waitForTimeout(300);
   console.log('edit modal open:', await page.locator('#modal-editkey.open').count());
   await page.fill('#edit-alias', 'justink-改名');
+  await page.fill('#edit-models', 'DeepSeek-V4.1-Flash-1017');
+  const updateResponse = page.waitForResponse(r => r.url().endsWith('/console/api/keys/update') && r.request().method() === 'POST');
   await page.click('#btn-editkey');
+  const updated = await updateResponse;
+  if (updated.status() !== 200) throw new Error('model scope update failed: ' + await updated.text());
   await page.waitForTimeout(600);
   const firstAlias = await page.locator('#keys-tbody tr:not(.pf-row-muted) td').first().textContent();
   console.log('alias after edit:', firstAlias);
+  await page.locator('.js-edit-key').first().click();
+  if (await page.locator('#edit-models').inputValue() !== 'DeepSeek-V4.1-Flash-1017') {
+    throw new Error('saved model scope was not retained after reload');
+  }
+  await page.keyboard.press('Escape');
 
   console.log('== 禁用/启用');
   await page.locator('.js-toggle-key').first().click();
